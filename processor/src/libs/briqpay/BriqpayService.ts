@@ -13,6 +13,7 @@ import {
   PAYMENT_TOOLS_PRODUCT,
   RegularCartItem,
   SESSION_INTENT,
+  TRANSACTION_STATUS,
 } from '../../services/types/briqpay-payment.type'
 import { Money } from '@commercetools/connect-payments-sdk'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
@@ -162,8 +163,8 @@ class BriqpayService {
       country: ctCart.country,
       locale: ctCart.locale || 'en-GB',
       urls: {
-        terms: 'https://example.com/terms',
-        redirect: 'https://example.com/redirect',
+        terms: process.env.BRIQPAY_TERMS_URL as string,
+        redirect: process.env.BRIQPAY_REDIRECT_URL as string,
       },
       hooks: [
         {
@@ -175,7 +176,19 @@ class BriqpayService {
             ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
           ],
           method: 'POST',
-          url: 'https://example.com/notifications',
+          url: process.env.BRIQPAY_HOOK_URL as string,
+        },
+        {
+          eventType: EVENT_HOOK.CAPTURE_STATUS,
+          statuses: [TRANSACTION_STATUS.PENDING, TRANSACTION_STATUS.APPROVED, TRANSACTION_STATUS.REJECTED],
+          method: 'POST',
+          url: process.env.BRIQPAY_HOOK_URL as string,
+        },
+        {
+          eventType: EVENT_HOOK.REFUND_STATUS,
+          statuses: [TRANSACTION_STATUS.PENDING, TRANSACTION_STATUS.APPROVED, TRANSACTION_STATUS.REJECTED],
+          method: 'POST',
+          url: process.env.BRIQPAY_HOOK_URL as string,
         },
       ],
       references: {
