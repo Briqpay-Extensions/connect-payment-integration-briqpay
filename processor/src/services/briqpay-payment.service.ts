@@ -800,8 +800,6 @@ export class BriqpayPaymentService extends AbstractPaymentService {
    * @returns Promise with mocking data containing operation status and PSP reference
    */
   public async createPayment(request: CreatePaymentRequest): Promise<PaymentResponseSchemaDTO> {
-    // this.validatePaymentMethod(request);
-
     const ctCart = await this.ctCartService.getCart({
       id: getCartIdFromContext(),
     })
@@ -833,7 +831,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       paymentId: ctPayment.id,
     })
 
-    const pspReference = request.data.briqpaySessionId
+    const pspReference = ctCart.custom?.fields?.[briqpaySessionIdCustomType.briqpaySessionId]
 
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: ctPayment.id,

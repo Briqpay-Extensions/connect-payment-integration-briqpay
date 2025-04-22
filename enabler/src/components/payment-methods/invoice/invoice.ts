@@ -1,8 +1,16 @@
-import { ComponentOptions, PaymentComponent, PaymentComponentBuilder, PaymentMethod } from "../../../payment-enabler/payment-enabler";
+import {
+  ComponentOptions,
+  PaymentComponent,
+  PaymentComponentBuilder,
+  PaymentMethod,
+} from "../../../payment-enabler/payment-enabler";
 import { BaseComponent } from "../../base";
 import styles from "../../../style/style.module.scss";
 import buttonStyles from "../../../style/button.module.scss";
-import { PaymentOutcome, PaymentRequestSchemaDTO } from "../../../dtos/mock-payment.dto";
+import {
+  PaymentOutcome,
+  PaymentRequestSchemaDTO,
+} from "../../../dtos/mock-payment.dto";
 import { BaseOptions } from "../../../payment-enabler/payment-enabler-briqpay";
 
 export class InvoiceBuilder implements PaymentComponentBuilder {
@@ -23,13 +31,17 @@ export class Invoice extends BaseComponent {
   }
 
   mount(selector: string) {
-    document.querySelector(selector).insertAdjacentHTML("afterbegin", this._getTemplate());
+    document
+      .querySelector(selector)
+      .insertAdjacentHTML("afterbegin", this._getTemplate());
 
     if (this.showPayButton) {
-      document.querySelector("#invoiceForm-paymentButton").addEventListener("click", (e) => {
-        e.preventDefault();
-        this.submit();
-      });
+      document
+        .querySelector("#invoiceForm-paymentButton")
+        .addEventListener("click", (e) => {
+          e.preventDefault();
+          this.submit();
+        });
     }
   }
 
@@ -41,7 +53,7 @@ export class Invoice extends BaseComponent {
         paymentMethod: {
           type: this.paymentMethod,
         },
-        paymentOutcome: PaymentOutcome.AUTHORIZED,
+        paymentOutcome: PaymentOutcome.APPROVED,
       };
       const response = await fetch(this.processorUrl + "/payments", {
         method: "POST",

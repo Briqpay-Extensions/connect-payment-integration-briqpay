@@ -60,7 +60,7 @@ export const PaymentRequestSchema = Type.Object({
   paymentMethod: Type.Object({
     type: Type.Enum(PaymentMethodType),
   }),
-  briqpaySessionId: Type.String(),
+  briqpaySessionId: Type.Optional(Type.String()),
   paymentOutcome: PaymentOutcomeSchema,
 })
 
