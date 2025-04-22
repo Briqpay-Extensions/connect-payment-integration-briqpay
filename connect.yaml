@@ -35,7 +35,27 @@ deployAs:
           description: JWT Issuer for jwt validation (example - https://mc-api.europe-west1.gcp.commercetools.com)
           required: true
           default: https://mc-api.europe-west1.gcp.commercetools.com
+        - key: BRIQPAY_USERNAME
+          description: Your Briqpay API username
+          required: true
+        - key: BRIQPAY_BASE_URL
+          description: The Briqpay API url
+          required: true
+          default: https://playground-api.briqpay.com/v3
+        - key: BRIQPAY_TERMS_URL
+          description: The URL to your terms page
+          required: true
+        - key: BRIQPAY_REDIRECT_URL
+          description: The URL to your order confirmation page
+          required: true
+        - key: BRIQPAY_HOOK_URL
+          description: The full URL to the Briqpay connector
+          required: true
+          default: https://[PLUGIN_URL]/notifications
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
           description: commercetools client secret
+          required: true
+        - key: BRIQPAY_SECRET
+          description: Your Briqpay API secret
           required: true
