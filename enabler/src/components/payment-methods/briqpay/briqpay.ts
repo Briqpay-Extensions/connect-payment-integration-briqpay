@@ -5,7 +5,6 @@ import {
   PaymentMethod,
 } from "../../../payment-enabler/payment-enabler.ts";
 import { BaseComponent } from "../../base.ts";
-import { addFormFieldsEventListeners, validateAllFields } from "./utils.ts";
 import {
   PaymentOutcome,
   PaymentRequestSchemaDTO,
@@ -59,13 +58,11 @@ declare global {
 }
 
 export class Briqpay extends BaseComponent {
-  private showPayButton: boolean;
   private snippet: string;
   private briqpaySessionId: string;
 
   constructor(baseOptions: BaseOptions, componentOptions: ComponentOptions) {
     super(PaymentMethod.briqpay, baseOptions, componentOptions);
-    this.showPayButton = false; //componentOptions?.showPayButton ?? false;
     this.snippet = baseOptions.snippet;
     this.briqpaySessionId = baseOptions.briqpaySessionId;
   }
@@ -102,12 +99,10 @@ export class Briqpay extends BaseComponent {
 
         const customDecisionResponse: unknown = await Promise.race([
           promiseForResponse,
-          new Promise(
-            (resolve) =>
-              setTimeout(async () => {
-                resolve({ decision: true });
-              }, 3000)
-            // }, 10000)
+          new Promise((resolve) =>
+            setTimeout(async () => {
+              resolve({ decision: true });
+            }, 10000)
           ),
         ]);
 
@@ -168,17 +163,6 @@ export class Briqpay extends BaseComponent {
     document
       .querySelector(selector)
       .insertAdjacentHTML("afterbegin", this._getTemplate());
-
-    if (this.showPayButton) {
-      document
-        .querySelector("#creditCardForm-paymentButton")
-        .addEventListener("click", (e) => {
-          e.preventDefault();
-          this.submit();
-        });
-    }
-
-    addFormFieldsEventListeners();
   }
 
   async submit() {
@@ -213,30 +197,11 @@ export class Briqpay extends BaseComponent {
     return this.snippet;
   }
 
-  showValidation() {
-    validateAllFields();
-  }
-
-  isValid() {
-    return validateAllFields();
-  }
-
   getState() {
-    return {
-      // card: {
-      //   endDigits: getInput(fieldIds.cardNumber).value.slice(-4),
-      //   brand: getCardBrand(getInput(fieldIds.cardNumber).value),
-      //   expiryDate: getInput(fieldIds.expiryDate).value,
-      // },
-    };
+    return {};
   }
 
   isAvailable() {
     return Promise.resolve(true);
   }
-
-  // private isCreditCardAllowed(cardNumber: string) {
-  //   const allowedCreditCards = ["4111111111111111", "5555555555554444", "341925950237632"];
-  //   return allowedCreditCards.includes(cardNumber);
-  // }
 }

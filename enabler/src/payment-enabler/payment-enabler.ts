@@ -34,7 +34,9 @@ export interface PaymentEnabler {
    * @returns A promise that resolves to the payment component builder.
    * @throws {Error} If the payment component builder cannot be created.
    */
-  createComponentBuilder: (type: string) => Promise<PaymentComponentBuilder | never>;
+  createComponentBuilder: (
+    type: string
+  ) => Promise<PaymentComponentBuilder | never>;
 
   /**
    * Creates a payment drop-in builder of the specified type.
@@ -42,7 +44,9 @@ export interface PaymentEnabler {
    * @returns A promise that resolves to the payment drop-in builder.
    * @throws {Error} If the payment drop-in builder cannot be created.
    */
-  createDropinBuilder: (type: DropinType) => Promise<PaymentDropinBuilder | never>;
+  createDropinBuilder: (
+    type: DropinType
+  ) => Promise<PaymentDropinBuilder | never>;
 }
 
 /**
@@ -150,32 +154,6 @@ export type EnablerOptions = {
  * Represents the payment method code.
  */
 export enum PaymentMethod {
-  /* Apple Pay */
-  applepay = "applepay",
-  /* Bancontact card */
-  bancontactcard = "bcmc",
-  /* Card */
-  card = "card",
-  /* EPS */
-  eps = "eps",
-  /* Google Pay */
-  googlepay = "googlepay",
-  /* iDeal */
-  ideal = "ideal",
-  /* iDeal */
-  invoice = "invoice",
-  /* Klarna Pay Later */
-  klarna_pay_later = "klarna",
-  /* Klarna Pay Now */
-  klarna_pay_now = "klarna_paynow",
-  /* Klarna Pay Over Time */
-  klarna_pay_overtime = "klarna_account",
-  /* PayPal */
-  paypal = "paypal",
-  /* Purchase Order */
-  purchaseorder = "purchaseorder",
-  /* TWINT */
-  twint = "twint",
   /* BRIQPAY */
   briqpay = "briqpay",
 }
@@ -210,18 +188,7 @@ export type PaymentResult =
 /**
  * Represents the options for a payment component.
  */
-export type ComponentOptions = {
-  /**
-   * Indicates whether to show the pay button.
-   */
-  showPayButton?: boolean;
-
-  /**
-   * A callback function that is called when the pay button is clicked.
-   * @returns A Promise indicating whether the payment should proceed.
-   */
-  onPayButtonClick?: () => Promise<void>;
-};
+export type ComponentOptions = {};
 
 /**
  * Represents the payment drop-in types.
@@ -257,11 +224,6 @@ export interface DropinComponent {
  * Represents the options for a drop-in component.
  */
 export type DropinOptions = {
-  /**
-   * Indicates whether to show the pay button.
-   **/
-  showPayButton?: boolean;
-
   /**
    * A callback function that is called when the drop-in component is ready.
    * @returns A Promise indicating whether the drop-in component is ready.

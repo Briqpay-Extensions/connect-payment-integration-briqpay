@@ -45,13 +45,9 @@ deployAs:
         - key: BRIQPAY_TERMS_URL
           description: The URL to your terms page
           required: true
-        - key: BRIQPAY_REDIRECT_URL
+        - key: BRIQPAY_CONFIRMATION_URL
           description: The URL to your order confirmation page
           required: true
-        - key: BRIQPAY_HOOK_URL
-          description: The full URL to the Briqpay connector
-          required: true
-          default: https://[PLUGIN_URL]/notifications
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
           description: commercetools client secret

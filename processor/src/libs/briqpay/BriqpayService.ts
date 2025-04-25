@@ -139,6 +139,8 @@ const mapBriqpayAddress = (address: Address): IAddressSchema => ({
   country: address.country,
 })
 
+const hookUrl = process.env.URL + '/notifications'
+
 class BriqpayService {
   private username: string
   private secret: string
@@ -157,14 +159,11 @@ class BriqpayService {
         intent: SESSION_INTENT.PAYMENT_ONE_TIME,
       },
       customerType: CUSTOMER_TYPE.CONSUMER,
-      config: {
-        disableSessionCompleteRedirect: true,
-      },
       country: ctCart.country,
       locale: ctCart.locale || 'en-GB',
       urls: {
         terms: process.env.BRIQPAY_TERMS_URL as string,
-        redirect: process.env.BRIQPAY_REDIRECT_URL as string,
+        redirect: process.env.BRIQPAY_CONFIRMATION_URL as string,
       },
       hooks: [
         {
@@ -176,19 +175,19 @@ class BriqpayService {
             ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
           ],
           method: 'POST',
-          url: process.env.BRIQPAY_HOOK_URL as string,
+          url: hookUrl,
         },
         {
           eventType: EVENT_HOOK.CAPTURE_STATUS,
           statuses: [TRANSACTION_STATUS.PENDING, TRANSACTION_STATUS.APPROVED, TRANSACTION_STATUS.REJECTED],
           method: 'POST',
-          url: process.env.BRIQPAY_HOOK_URL as string,
+          url: hookUrl,
         },
         {
           eventType: EVENT_HOOK.REFUND_STATUS,
           statuses: [TRANSACTION_STATUS.PENDING, TRANSACTION_STATUS.APPROVED, TRANSACTION_STATUS.REJECTED],
           method: 'POST',
-          url: process.env.BRIQPAY_HOOK_URL as string,
+          url: hookUrl,
         },
       ],
       references: {
