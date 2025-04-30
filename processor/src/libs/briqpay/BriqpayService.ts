@@ -139,7 +139,7 @@ const mapBriqpayAddress = (address: Address): IAddressSchema => ({
   country: address.country,
 })
 
-const hookUrl = process.env.URL + '/notifications'
+const hookUrl = process.env.CONNECT_SERVICE_URL + '/notifications'
 
 class BriqpayService {
   private username: string
