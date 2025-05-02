@@ -38,8 +38,6 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
   private static _Setup = async (
     options: EnablerOptions
   ): Promise<{ baseOptions: BaseOptions }> => {
-    // Fetch SDK config from processor if needed, for example:
-
     const configResponse = await fetch(options.processorUrl + "/config", {
       method: "GET",
       headers: {

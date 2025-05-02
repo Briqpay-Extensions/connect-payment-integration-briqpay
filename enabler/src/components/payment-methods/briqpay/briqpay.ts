@@ -78,8 +78,6 @@ export class Briqpay extends BaseComponent {
       });
 
       window._briqpay.subscribe("make_decision", async (data) => {
-        console.log("Purchase decision activated", data);
-
         window._briqpay.v3.suspend();
 
         const promiseForResponse = new Promise((resolve) => {
@@ -137,7 +135,7 @@ export class Briqpay extends BaseComponent {
             rejectionType,
           }),
         };
-        console.log("making decision");
+
         await fetch(this.processorUrl + "/decision", {
           method: "POST",
           headers: {
@@ -148,13 +146,7 @@ export class Briqpay extends BaseComponent {
             sessionId: this.briqpaySessionId,
             ...request,
           }),
-        }).catch((error) => {
-          console.error("CATCH BLOCK");
-          console.error(error);
-          throw error;
-        });
-        console.log("resuming");
-        window._briqpay.v3.resumeDecision();
+        }).finally(() => window._briqpay.v3.resumeDecision());
       });
     };
 
@@ -184,6 +176,7 @@ export class Briqpay extends BaseComponent {
         body: JSON.stringify(request),
       });
       const data = await response.json();
+      // TODO: Fix this
       const isSuccess = PaymentOutcome.PENDING === PaymentOutcome.PENDING;
 
       this.onComplete &&

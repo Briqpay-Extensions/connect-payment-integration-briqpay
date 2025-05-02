@@ -48,3 +48,18 @@ export async function createBriqpayCustomType(): Promise<void> {
     throw error
   }
 }
+
+export async function storeProcessorUrl() {
+  return paymentSDK.ctAPI.client
+    .customObjects()
+    .post({
+      body: {
+        container: 'briqpay-config',
+        key: 'processor-url',
+        value: {
+          url: process.env.CONNECT_SERVICE_URL,
+        },
+      },
+    })
+    .execute()
+}

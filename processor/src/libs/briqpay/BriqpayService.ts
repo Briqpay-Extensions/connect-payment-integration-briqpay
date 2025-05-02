@@ -17,6 +17,7 @@ import {
 } from '../../services/types/briqpay-payment.type'
 import { Money } from '@commercetools/connect-payments-sdk'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
+import { paymentSDK } from '../../payment-sdk'
 
 const mapBriqpayProductType = (item: LineItem) => {
   // Check if it's a gift card
@@ -139,8 +140,6 @@ const mapBriqpayAddress = (address: Address): IAddressSchema => ({
   country: address.country,
 })
 
-const hookUrl = process.env.CONNECT_SERVICE_URL + '/notifications'
-
 class BriqpayService {
   private username: string
   private secret: string
@@ -152,7 +151,16 @@ class BriqpayService {
     this.baseUrl = baseUrl
   }
 
-  createSession(ctCart: Cart, amountPlanned: PaymentAmount) {
+  async createSession(ctCart: Cart, amountPlanned: PaymentAmount) {
+    const res = await paymentSDK.ctAPI.client
+      .customObjects()
+      .withContainerAndKey({ container: 'briqpay-config', key: 'processor-url' })
+      .get()
+      .execute()
+
+    const connectorUrl = res.body.value.url
+    const hookUrl = connectorUrl.endsWith('/') ? connectorUrl + 'notifications' : connectorUrl + '/notifications'
+
     const briqpayCreateSession: CreateSessionRequestBody = {
       product: {
         type: PAYMENT_TOOLS_PRODUCT.PAYMENT,
