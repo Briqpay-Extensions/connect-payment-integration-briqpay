@@ -1,5 +1,10 @@
-import { FakeSdk } from "../fake-sdk";
-import { ComponentOptions, PaymentComponent, PaymentMethod, PaymentResult } from "../payment-enabler/payment-enabler";
+import { BriqpaySdk } from "../briqpay-sdk";
+import {
+  ComponentOptions,
+  PaymentComponent,
+  PaymentMethod,
+  PaymentResult,
+} from "../payment-enabler/payment-enabler";
 import { BaseOptions } from "../payment-enabler/payment-enabler-briqpay";
 
 export type ElementOptions = {
@@ -11,14 +16,21 @@ export type ElementOptions = {
  */
 export abstract class BaseComponent implements PaymentComponent {
   protected paymentMethod: ElementOptions["paymentMethod"];
-  protected sdk: FakeSdk;
+  protected sdk: BriqpaySdk;
   protected processorUrl: BaseOptions["processorUrl"];
   protected sessionId: BaseOptions["sessionId"];
   protected environment: BaseOptions["environment"];
   protected onComplete: (result: PaymentResult) => void;
-  protected onError: (error: any, context?: { paymentReference?: string }) => void;
+  protected onError: (
+    error: any,
+    context?: { paymentReference?: string }
+  ) => void;
 
-  constructor(paymentMethod: PaymentMethod, baseOptions: BaseOptions, _componentOptions: ComponentOptions) {
+  constructor(
+    paymentMethod: PaymentMethod,
+    baseOptions: BaseOptions,
+    _componentOptions: ComponentOptions
+  ) {
     this.paymentMethod = paymentMethod;
     this.sdk = baseOptions.sdk;
     this.processorUrl = baseOptions.processorUrl;

@@ -1,5 +1,5 @@
 import { BriqpayBuilder } from "../components/payment-methods/briqpay/briqpay";
-import { FakeSdk } from "../fake-sdk";
+import { BriqpaySdk } from "../briqpay-sdk";
 import {
   DropinType,
   EnablerOptions,
@@ -17,7 +17,7 @@ declare global {
 }
 
 export type BaseOptions = {
-  sdk: FakeSdk;
+  sdk: BriqpaySdk;
   processorUrl: string;
   sessionId: string;
   environment: string;
@@ -51,13 +51,16 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
     const sdkOptions = {
       // environment: configJson.environment,
       ...configJson,
+      processorUrl: options.processorUrl,
+      sessionId: options.sessionId,
     };
+    console.log("sdkOptions", sdkOptions);
 
     return Promise.resolve({
       baseOptions: {
         snippet: configJson.snippet,
         briqpaySessionId: configJson.briqpaySessionId,
-        sdk: new FakeSdk(sdkOptions),
+        sdk: new BriqpaySdk(sdkOptions),
         processorUrl: options.processorUrl,
         sessionId: options.sessionId,
         environment: sdkOptions.environment,

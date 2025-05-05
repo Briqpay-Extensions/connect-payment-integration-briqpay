@@ -51,6 +51,7 @@ declare global {
       ) => void;
       v3: {
         suspend: () => void;
+        resume: () => void;
         resumeDecision: () => void;
       };
     };
@@ -158,8 +159,6 @@ export class Briqpay extends BaseComponent {
   }
 
   async submit() {
-    this.sdk.init({ environment: this.environment });
-
     try {
       const request: PaymentRequestSchemaDTO = {
         paymentMethod: {
