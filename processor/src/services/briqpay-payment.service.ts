@@ -259,10 +259,15 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     } = opts.data
     console.info('Processing notification', typeof opts.data, opts.data, briqpaySessionId)
     try {
-      const briqpaySession = await Briqpay.getSession(briqpaySessionId)
+      // Authenticate towards Briqpay and fetch the session using the API scope in the Briqpay API keys
+      const briqpaySession = await Briqpay.getSession(briqpaySessionId).catch(() => void 0)
+
+      if (briqpaySession?.sessionId !== briqpaySessionId) {
+        throw new Error('Briqpay session validation failed')
+      }
 
       const payment = await this.ctPaymentService.findPaymentsByInterfaceId({
-        interfaceId: briqpaySessionId as string,
+        interfaceId: briqpaySessionId,
       })
 
       // Helper function to update pending authorization to success

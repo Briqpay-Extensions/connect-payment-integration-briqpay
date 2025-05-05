@@ -74,7 +74,7 @@ export const paymentRoutes = async (fastify: FastifyInstance, opts: FastifyPlugi
   fastify.post<{ Body: NotificationRequestSchemaDTO }>(
     '/notifications',
     {
-      // preHandler: [opts.hmacAuthHook.authenticate()],
+      // Authentication will be done through Briqpay for hooks
       preHandler: [],
     },
     async (request, reply) => {
