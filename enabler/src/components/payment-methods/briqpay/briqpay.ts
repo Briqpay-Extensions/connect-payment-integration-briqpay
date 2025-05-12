@@ -71,10 +71,9 @@ export class Briqpay extends BaseComponent {
   mount(selector: string) {
     const briqpayScript = document.createElement("script");
     briqpayScript.type = "text/javascript";
-    briqpayScript.src = "https://dev-api.briqpay.com/briq.min.js";
+    briqpayScript.src = "https://api.briqpay.com/briq.min.js";
     briqpayScript.onload = () => {
-      window._briqpay.subscribe("session_complete", (data) => {
-        console.log("Payment complete", data);
+      window._briqpay.subscribe("session_complete", () => {
         this.submit();
       });
 
@@ -175,8 +174,8 @@ export class Briqpay extends BaseComponent {
         body: JSON.stringify(request),
       });
       const data = await response.json();
-      // TODO: Fix this
-      const isSuccess = PaymentOutcome.PENDING === PaymentOutcome.PENDING;
+      // If we get to this point without any exceptions, it is a success
+      const isSuccess = true;
 
       this.onComplete &&
         this.onComplete({ isSuccess, paymentReference: data.paymentReference });

@@ -1,6 +1,4 @@
-async function preUndeploy() {
-  // TODO: Implement pre undeploy scripts if any
-}
+async function preUndeploy() {}
 
 async function run() {
   try {
@@ -12,4 +10,5 @@ async function run() {
     process.exitCode = 1
   }
 }
-run()
+
+void run()

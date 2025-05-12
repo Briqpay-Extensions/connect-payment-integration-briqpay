@@ -48,6 +48,14 @@ deployAs:
         - key: BRIQPAY_CONFIRMATION_URL
           description: The URL to your order confirmation page
           required: true
+        - key: BRIQPAY_SESSION_CUSTOM_TYPE_KEY
+          description: Key of CustomType to store briqpay session inside cart
+          required: false
+          default: briqpay-session
+        - key: BRIQPAY_PROCESSOR_URL_CUSTOM_TYPE_KEY
+          description: Key of CustomType to store the processor url for Briqpay webhooks
+          required: false
+          default: briqpay-processor-url
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
           description: commercetools client secret

@@ -128,8 +128,6 @@ export enum ITEM_PRODUCT_TYPE {
   SURCHARGE = 'surcharge',
   ADJUSTMENT = 'adjustment',
   GIFT_CARD = 'gift_card',
-  PAY_ID_LEGACY = 'payID', // only supported for legacy reasons
-  DEPOSIT_UPPERCASE_LEGACY = 'Deposit',
 }
 
 export interface RegularCartItem {
@@ -142,12 +140,8 @@ export interface RegularCartItem {
     | ITEM_PRODUCT_TYPE.DISCOUNT
     | ITEM_PRODUCT_TYPE.DEPOSIT
     | ITEM_PRODUCT_TYPE.SURCHARGE
-    | ITEM_PRODUCT_TYPE.GIFT_CARD
-    | ITEM_PRODUCT_TYPE.PAY_ID_LEGACY
     | ITEM_PRODUCT_TYPE.ADJUSTMENT
     | ITEM_PRODUCT_TYPE.GIFT_CARD
-    | ITEM_PRODUCT_TYPE.PAY_ID_LEGACY
-    | ITEM_PRODUCT_TYPE.DEPOSIT_UPPERCASE_LEGACY
   reference: string | number
   name: string
   quantity: number

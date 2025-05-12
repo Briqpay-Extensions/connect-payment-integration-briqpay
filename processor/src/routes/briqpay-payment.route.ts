@@ -1,7 +1,6 @@
 import { SessionHeaderAuthenticationHook } from '@commercetools/connect-payments-sdk'
 import { FastifyInstance, FastifyPluginOptions } from 'fastify'
 import {
-  BRIQPAY_DECISION,
   ConfigResponseSchema,
   DecisionRequestSchema,
   DecisionRequestSchemaDTO,
@@ -19,8 +18,7 @@ type PaymentRoutesOptions = {
   sessionHeaderAuthHook: SessionHeaderAuthenticationHook
 }
 
-export const paymentRoutes = async (fastify: FastifyInstance, opts: FastifyPluginOptions & PaymentRoutesOptions) => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const paymentRoutes = (fastify: FastifyInstance, opts: FastifyPluginOptions & PaymentRoutesOptions) => {
   fastify.get<{ Reply: any }>(
     '/config',
     {
@@ -46,7 +44,7 @@ export const paymentRoutes = async (fastify: FastifyInstance, opts: FastifyPlugi
       },
     },
     async (request, reply) => {
-      await Briqpay.makeDecision(request.body.sessionId, { decision: BRIQPAY_DECISION.ALLOW })
+      await Briqpay.makeDecision(request.body.sessionId, { decision: request.body.decision })
       return reply.status(204).send()
     },
   )

@@ -54,7 +54,6 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
       processorUrl: options.processorUrl,
       sessionId: options.sessionId,
     };
-    console.log("sdkOptions", sdkOptions);
 
     return Promise.resolve({
       baseOptions: {

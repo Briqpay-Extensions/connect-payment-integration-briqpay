@@ -17,7 +17,7 @@ import {
 } from '../../services/types/briqpay-payment.type'
 import { Money } from '@commercetools/connect-payments-sdk'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
-import { paymentSDK } from '../../payment-sdk'
+import { appLogger, paymentSDK } from '../../payment-sdk'
 
 const mapBriqpayProductType = (item: LineItem) => {
   // Check if it's a gift card
@@ -40,37 +40,33 @@ const mapBriqpayProductType = (item: LineItem) => {
 }
 
 const mapBriqpayCartItem = (lineItems: LineItem[], locale: string | undefined): CartItem[] => {
-  console.log(
+  appLogger.info(
+    {
+      inputItems: lineItems.map((item) => ({
+        id: item.id,
+        name: item.name[locale || 'en-GB'],
+        quantity: item.quantity,
+        originalPrice: item.price.value.centAmount,
+        discountedPrice: item.price.discounted?.value.centAmount,
+        lineItemMode: item.lineItemMode,
+        priceMode: item.priceMode,
+        price: item.price,
+        taxedPrice: item.taxedPrice,
+        discountedPricePerQuantity: item.discountedPricePerQuantity,
+        // Add detailed logging for discounts
+        hasDiscountedPrice: !!item.price.discounted,
+        hasDiscountedPricePerQuantity: item.discountedPricePerQuantity?.length > 0,
+        hasTaxedPrice: !!item.taxedPrice,
+        taxedPriceDetails: item.taxedPrice
+          ? {
+              totalNet: item.taxedPrice.totalNet?.centAmount,
+              totalGross: item.taxedPrice.totalGross?.centAmount,
+              taxPortions: item.taxedPrice.taxPortions,
+            }
+          : undefined,
+      })),
+    },
     'Mapping cart items to Briqpay format:',
-    JSON.stringify(
-      {
-        inputItems: lineItems.map((item) => ({
-          id: item.id,
-          name: item.name[locale || 'en-GB'],
-          quantity: item.quantity,
-          originalPrice: item.price.value.centAmount,
-          discountedPrice: item.price.discounted?.value.centAmount,
-          lineItemMode: item.lineItemMode,
-          priceMode: item.priceMode,
-          price: item.price,
-          taxedPrice: item.taxedPrice,
-          discountedPricePerQuantity: item.discountedPricePerQuantity,
-          // Add detailed logging for discounts
-          hasDiscountedPrice: !!item.price.discounted,
-          hasDiscountedPricePerQuantity: item.discountedPricePerQuantity?.length > 0,
-          hasTaxedPrice: !!item.taxedPrice,
-          taxedPriceDetails: item.taxedPrice
-            ? {
-                totalNet: item.taxedPrice.totalNet?.centAmount,
-                totalGross: item.taxedPrice.totalGross?.centAmount,
-                taxPortions: item.taxedPrice.taxPortions,
-              }
-            : undefined,
-        })),
-      },
-      null,
-      2,
-    ),
   )
 
   const mappedItems = lineItems.flatMap((item) => {
@@ -86,7 +82,7 @@ const mapBriqpayCartItem = (lineItems: LineItem[], locale: string | undefined): 
         taxRate: (item.taxRate?.amount ?? 0) * 10000,
         discountPercentage: 0,
       }
-      console.log('Created discount line item:', JSON.stringify(discountItem, null, 2))
+      appLogger.info(discountItem, 'Created discount line item:')
       return [discountItem]
     }
 
@@ -104,25 +100,21 @@ const mapBriqpayCartItem = (lineItems: LineItem[], locale: string | undefined): 
       discountPercentage: 0,
     }
 
-    console.log(
+    appLogger.info(
+      {
+        ...regularItem,
+        originalPrice: item.price.value.centAmount,
+        taxedPrice: item.taxedPrice,
+        hasDiscountedPrice: !!item.price.discounted,
+        hasDiscountedPricePerQuantity: item.discountedPricePerQuantity?.length > 0,
+        hasTaxedPrice: !!item.taxedPrice,
+      },
       'Created regular line item:',
-      JSON.stringify(
-        {
-          ...regularItem,
-          originalPrice: item.price.value.centAmount,
-          taxedPrice: item.taxedPrice,
-          hasDiscountedPrice: !!item.price.discounted,
-          hasDiscountedPricePerQuantity: item.discountedPricePerQuantity?.length > 0,
-          hasTaxedPrice: !!item.taxedPrice,
-        },
-        null,
-        2,
-      ),
     )
     return [regularItem]
   })
 
-  console.log('Final mapped items:', JSON.stringify(mappedItems, null, 2))
+  appLogger.info(mappedItems, 'Final mapped items:')
   return mappedItems
 }
 
@@ -230,11 +222,14 @@ class BriqpayService {
         taxRate: 1900, // 19% VAT
         discountPercentage: 0,
       }
-      console.log('Adding total discount line item:', {
-        ...discountItem,
-        grossAmount: ctCart.discountOnTotalPrice.discountedGrossAmount?.centAmount,
-        netAmount: ctCart.discountOnTotalPrice.discountedNetAmount.centAmount,
-      })
+      appLogger.info(
+        {
+          ...discountItem,
+          grossAmount: ctCart.discountOnTotalPrice.discountedGrossAmount?.centAmount,
+          netAmount: ctCart.discountOnTotalPrice.discountedNetAmount.centAmount,
+        },
+        'Adding total discount line item:',
+      )
       briqpayCreateSession.data.order.cart.push(discountItem)
     }
 
@@ -257,27 +252,30 @@ class BriqpayService {
         return sum + itemTotal
       }, 0)
 
-      console.log('Final order amounts:', {
-        amountIncVat: briqpayCreateSession.data.order.amountIncVat,
-        amountExVat: briqpayCreateSession.data.order.amountExVat,
-        regularTotal,
-        discountTotal,
-        cartTotal: regularTotal + discountTotal,
-        regularItems: regularItems.map((item) => ({
-          name: item.name,
-          productType: item.productType,
-          unitPrice: item.unitPrice,
-          quantity: item.quantity,
-          total: item.unitPrice * (item.quantity || 1),
-        })),
-        discountItems: discountItems.map((item) => ({
-          name: item.name,
-          productType: item.productType,
-          unitPrice: item.unitPrice,
-          quantity: item.quantity,
-          total: item.unitPrice * (item.quantity || 1),
-        })),
-      })
+      appLogger.info(
+        {
+          amountIncVat: briqpayCreateSession.data.order.amountIncVat,
+          amountExVat: briqpayCreateSession.data.order.amountExVat,
+          regularTotal,
+          discountTotal,
+          cartTotal: regularTotal + discountTotal,
+          regularItems: regularItems.map((item) => ({
+            name: item.name,
+            productType: item.productType,
+            unitPrice: item.unitPrice,
+            quantity: item.quantity,
+            total: item.unitPrice * (item.quantity || 1),
+          })),
+          discountItems: discountItems.map((item) => ({
+            name: item.name,
+            productType: item.productType,
+            unitPrice: item.unitPrice,
+            quantity: item.quantity,
+            total: item.unitPrice * (item.quantity || 1),
+          })),
+        },
+        'Final order amounts:',
+      )
     }
 
     return fetch(`${this.baseUrl}/session`, {
@@ -378,10 +376,13 @@ class BriqpayService {
     }).then(async (response) => {
       if (!response.ok) {
         const errorText = await response.text()
-        console.error('Briqpay API error details:', {
-          status: response.status,
-          data: errorText,
-        })
+        appLogger.error(
+          {
+            status: response.status,
+            data: errorText,
+          },
+          'Briqpay API error details:',
+        )
         throw new Error(`Briqpay API error: ${errorText}`)
       }
       return response.json()
@@ -399,10 +400,13 @@ class BriqpayService {
 
     if (!response.ok) {
       const errorText = await response.text()
-      console.error('Briqpay cancel error details:', {
-        status: response.status,
-        data: errorText,
-      })
+      appLogger.error(
+        {
+          status: response.status,
+          data: errorText,
+        },
+        'Briqpay cancel error details:',
+      )
       throw new Error(`Briqpay cancel error: ${errorText}`)
     }
 
@@ -427,7 +431,7 @@ class BriqpayService {
         },
       }
 
-      console.log('Updating Briqpay session with data:', JSON.stringify(data, null, 2))
+      appLogger.info({}, 'Updating Briqpay session')
 
       const response = await fetch(`${this.baseUrl}/session/${sessionId}`, {
         method: 'PATCH',
@@ -442,25 +446,31 @@ class BriqpayService {
         let errorMessage = 'Unknown error'
         try {
           const errorData = await response.json()
-          console.error('Briqpay API error details:', {
-            status: response.status,
-            data: errorData,
-          })
+          appLogger.error(
+            {
+              status: response.status,
+              data: errorData,
+            },
+            'Briqpay API error details:',
+          )
           errorMessage = errorData?.error?.message || 'Unknown error'
         } catch {
           // If response is not JSON, try to get the text
           const text = await response.text()
-          console.error('Briqpay API error details:', {
-            status: response.status,
-            text,
-          })
+          appLogger.error(
+            {
+              status: response.status,
+              text,
+            },
+            'Briqpay API error details:',
+          )
           errorMessage = text || 'Unknown error'
         }
         throw new Error(`Briqpay API error: ${errorMessage}`)
       }
 
       const responseData = await response.json()
-      console.log('Briqpay update session response:', JSON.stringify(responseData, null, 2))
+      appLogger.info({}, 'Briqpay update session response:')
 
       if (!responseData || !responseData.sessionId) {
         throw new Error('Invalid session response: missing sessionId')
@@ -468,7 +478,7 @@ class BriqpayService {
 
       return responseData
     } catch (error) {
-      console.error('Error updating Briqpay session:', error)
+      appLogger.error({ error }, 'Error updating Briqpay session:')
       throw error
     }
   }

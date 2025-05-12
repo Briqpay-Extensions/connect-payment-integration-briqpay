@@ -1,4 +1,8 @@
-import { DropinComponent, DropinOptions, PaymentDropinBuilder } from "../payment-enabler/payment-enabler";
+import {
+  DropinComponent,
+  DropinOptions,
+  PaymentDropinBuilder,
+} from "../payment-enabler/payment-enabler";
 import { BaseOptions } from "../payment-enabler/payment-enabler-briqpay";
 
 export class DropinEmbeddedBuilder implements PaymentDropinBuilder {
@@ -28,7 +32,9 @@ export class DropinComponents implements DropinComponent {
   }
 
   mount(selector: string) {
-    document.querySelector(selector).insertAdjacentHTML("afterbegin", "Dropin Embedded");
+    document
+      .querySelector(selector)
+      .insertAdjacentHTML("afterbegin", "Dropin Embedded");
   }
 
   submit(): void {

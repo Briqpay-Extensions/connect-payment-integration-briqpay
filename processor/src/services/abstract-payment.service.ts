@@ -129,24 +129,24 @@ export abstract class AbstractPaymentService {
 
     switch (request.action) {
       case 'cancelPayment': {
-        return await this.cancelPayment({ payment: ctPayment, merchantReference: request.merchantReference })
+        return this.cancelPayment({ payment: ctPayment, merchantReference: request.merchantReference })
       }
       case 'capturePayment': {
-        return await this.capturePayment({
+        return this.capturePayment({
           payment: ctPayment,
           merchantReference: request.merchantReference,
           amount: request.amount,
         })
       }
       case 'refundPayment': {
-        return await this.refundPayment({
+        return this.refundPayment({
           amount: request.amount,
           payment: ctPayment,
           merchantReference: request.merchantReference,
         })
       }
       case 'reversePayment': {
-        return await this.reversePayment({
+        return this.reversePayment({
           payment: ctPayment,
           merchantReference: request.merchantReference,
         })

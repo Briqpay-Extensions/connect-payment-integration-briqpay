@@ -1,12 +1,12 @@
 import {
-  statusHandler,
-  healthCheckCommercetoolsPermissions,
-  TransactionType,
-  TransactionState,
-  ErrorInvalidOperation,
-  Payment,
-  Errorx,
   Cart,
+  ErrorInvalidOperation,
+  Errorx,
+  healthCheckCommercetoolsPermissions,
+  Payment,
+  statusHandler,
+  TransactionState,
+  TransactionType,
 } from '@commercetools/connect-payments-sdk'
 import {
   CancelPaymentRequest,
@@ -26,10 +26,10 @@ import { AbstractPaymentService } from './abstract-payment.service'
 import { getConfig } from '../config/config'
 import { appLogger, paymentSDK } from '../payment-sdk'
 import {
-  CreatePaymentRequest,
   BriqpayPaymentServiceOptions,
-  MediumBriqpayResponse,
   CartItem,
+  CreatePaymentRequest,
+  MediumBriqpayResponse,
 } from './types/briqpay-payment.type'
 import {
   BRIQPAY_WEBHOOK_EVENT,
@@ -73,67 +73,69 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     }
 
     try {
-      const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart })
-      console.log('Cart amount details:', {
-        totalPrice: ctCart.totalPrice,
-        taxedPrice: ctCart.taxedPrice,
-        discountOnTotalPrice: ctCart.discountOnTotalPrice,
-        taxedShippingPrice: ctCart.taxedShippingPrice,
-        version: ctCart.version,
-      })
+      const amountPlanned = await this.ctCartService.getPlannedPaymentAmount({ cart: ctCart })
+      appLogger.info(
+        {
+          totalPrice: ctCart.totalPrice,
+          taxedPrice: ctCart.taxedPrice,
+          discountOnTotalPrice: ctCart.discountOnTotalPrice,
+          taxedShippingPrice: ctCart.taxedShippingPrice,
+          version: ctCart.version,
+        },
+        'Cart amount details:',
+      )
 
       // Check if a briqpay session id exists on the cart and handle session creation/retrieval
       let briqpaySession
-      const existingSessionId = ctCart.custom?.fields?.[briqpaySessionIdCustomType.briqpaySessionId]
-      console.log('Existing session ID:', existingSessionId)
+      const existingSessionId = ctCart.custom?.fields?.[briqpaySessionIdCustomType.name] as string
+      appLogger.info({ existingSessionId }, 'Existing session ID:')
 
       try {
         if (existingSessionId) {
-          console.log('Retrieving existing session:', existingSessionId)
           briqpaySession = await Briqpay.getSession(existingSessionId)
-          console.log('Retrieved session:', JSON.stringify(briqpaySession, null, 2))
+          appLogger.info({ existingSessionId }, 'Retrieved Briqpay session:')
 
           // Compare cart with session data
           const isCartMatching = await this.compareCartWithSession(ctCart, briqpaySession)
-          console.log('Cart matching result:', isCartMatching)
+          appLogger.info({ isCartMatching }, 'Cart matching result:')
 
           if (!isCartMatching) {
             // If cart doesn't match session, update the existing session
             try {
-              console.log('Updating session with new cart data')
+              appLogger.info({}, 'Updating session with new cart data')
               briqpaySession = await Briqpay.updateSession(ctCart, amountPlanned, existingSessionId)
-              console.log('Updated session:', JSON.stringify(briqpaySession, null, 2))
+              appLogger.info({}, 'Updated session:')
             } catch (updateError) {
-              console.error('Failed to update Briqpay session, creating new one:', updateError)
+              appLogger.error({ updateError }, 'Failed to update Briqpay session, creating new one:')
               briqpaySession = await Briqpay.createSession(ctCart, amountPlanned)
-              console.log('Created new session after update failed:', JSON.stringify(briqpaySession, null, 2))
+              appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session after update failed:')
             }
           }
         } else {
-          console.log('Creating new session')
+          appLogger.info({}, 'Creating new session')
           briqpaySession = await Briqpay.createSession(ctCart, amountPlanned)
-          console.log('Created new session:', JSON.stringify(briqpaySession, null, 2))
+          appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session:')
         }
       } catch (error) {
         // If session retrieval fails or no session exists, create a new one
-        console.error('Session operation failed, creating new session:', error)
+        appLogger.error({ error }, 'Session operation failed, creating new session:')
         try {
           briqpaySession = await Briqpay.createSession(ctCart, amountPlanned)
-          console.log('Created new session after error:', JSON.stringify(briqpaySession, null, 2))
+          appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session after error:')
         } catch (error) {
-          console.error('Failed to create Briqpay session:', error)
+          appLogger.error({ error }, 'Failed to create Briqpay session:')
           throw new Error('Failed to create Briqpay payment session')
         }
       }
 
       // Ensure we have a valid session ID before updating the cart
       if (!briqpaySession?.sessionId) {
-        console.error('Invalid session response:', JSON.stringify(briqpaySession, null, 2))
+        appLogger.error(briqpaySession, 'Invalid session response:')
         throw new Error('Invalid Briqpay session response: missing sessionId')
       }
 
       // Set the custom type and field in a single request
-      console.log('Updating cart with session ID:', briqpaySession.sessionId)
+      appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Updating cart with session ID:')
       await paymentSDK.ctAPI.client
         .carts()
         .withId({ ID: ctCart.id })
@@ -144,11 +146,11 @@ export class BriqpayPaymentService extends AbstractPaymentService {
               {
                 action: 'setCustomType',
                 type: {
-                  key: briqpaySessionIdCustomType.key,
+                  key: process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id',
                   typeId: 'type',
                 },
                 fields: {
-                  [briqpaySessionIdCustomType.briqpaySessionId]: briqpaySession.sessionId,
+                  [briqpaySessionIdCustomType.name]: briqpaySession.sessionId,
                 },
               },
             ],
@@ -163,7 +165,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
         briqpaySessionId: briqpaySession.sessionId,
       }
     } catch (error) {
-      console.error('Error in config:', error)
+      appLogger.error({ error }, 'Error in config:')
       return {
         error,
       }
@@ -199,32 +201,32 @@ export class BriqpayPaymentService extends AbstractPaymentService {
         async () => {
           try {
             const paymentMethods = 'briqpay'
-            return {
+            return Promise.resolve({
               name: 'Briqpay Payment API',
               status: 'UP',
               message: 'Briqpay api is working',
               details: {
                 paymentMethods,
               },
-            }
+            })
           } catch (e) {
-            return {
+            return Promise.resolve({
               name: 'Briqpay Payment API',
               status: 'DOWN',
               message: 'The Briqpay paymentAPI is down for some reason. Please check the logs for more details.',
               details: {
-                // TODO do not expose the error
                 error: e,
               },
-            }
+            })
           }
         },
       ],
-      metadataFn: async () => ({
-        name: packageJSON.name,
-        description: packageJSON.description,
-        '@commercetools/connect-payments-sdk': packageJSON.dependencies['@commercetools/connect-payments-sdk'],
-      }),
+      metadataFn: async () =>
+        Promise.resolve({
+          name: packageJSON.name,
+          description: packageJSON.description,
+          '@commercetools/connect-payments-sdk': packageJSON.dependencies['@commercetools/connect-payments-sdk'],
+        }),
     })()
 
     return handler.body
@@ -239,14 +241,337 @@ export class BriqpayPaymentService extends AbstractPaymentService {
    * @returns Promise with mocking data containing a list of supported payment components
    */
   public async getSupportedPaymentComponents(): Promise<SupportedPaymentComponentsSchemaDTO> {
-    return {
+    return Promise.resolve({
       dropins: [],
       components: [
         {
           type: PaymentMethodType.BRIQPAY,
         },
       ],
+    })
+  }
+
+  // Helper function to update pending authorization to success
+  private updatePendingAuthorization = async (payment: Payment[], briqpaySessionId: string) => {
+    const pendingAuthorization = payment[0].transactions.find(
+      (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Pending',
+    )
+
+    if (pendingAuthorization) {
+      await this.ctPaymentService.updatePayment({
+        id: payment[0].id,
+        transaction: {
+          type: 'Authorization',
+          interactionId: briqpaySessionId,
+          amount: pendingAuthorization.amount,
+          state: 'Success',
+        },
+      })
+      appLogger.info({ briqpaySessionId }, 'Updated pending authorization to success')
     }
+  }
+
+  private handleOrderPending = async (
+    payment: Payment[],
+    briqpaySession: MediumBriqpayResponse,
+    status: BRIQPAY_WEBHOOK_STATUS,
+  ) => {
+    const briqpaySessionId = briqpaySession.sessionId
+    const alreadyAuthorized = payment[0].transactions.some(
+      (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Success',
+    )
+
+    if (alreadyAuthorized) {
+      appLogger.info({ briqpaySessionId }, 'Authorization transaction already exists, skipping update.')
+      return
+    }
+
+    // If no authorization exist but a hook is sent, create a payment
+    if (!payment.length) {
+      await this.createPayment({
+        data: {
+          paymentMethod: PaymentMethodType.BRIQPAY as unknown as PaymentRequestSchemaDTO['paymentMethod'],
+          briqpaySessionId,
+          paymentOutcome: this.convertPaymentResultCode(
+            status as unknown as PaymentOutcome,
+          ) as unknown as PaymentOutcome,
+        },
+      })
+      return
+    }
+
+    const updatedPayment = await this.ctPaymentService.updatePayment({
+      id: payment[0].id,
+      transaction: {
+        type: 'Authorization',
+        interactionId: briqpaySessionId,
+        amount: {
+          centAmount: briqpaySession.data!.order!.amountIncVat,
+          currencyCode: briqpaySession.data!.order!.currency,
+        },
+        state: this.convertNotificationStatus(status),
+      },
+    })
+
+    appLogger.info(
+      {
+        updatedPayment,
+      },
+      'Payment updated after processing the notification',
+    )
+  }
+
+  private handleOrderApproved = async (
+    payment: Payment[],
+    briqpaySession: MediumBriqpayResponse,
+    status: BRIQPAY_WEBHOOK_STATUS,
+  ) => {
+    const briqpaySessionId = briqpaySession.sessionId
+    const alreadyAuthorized = payment[0].transactions.some(
+      (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Success',
+    )
+
+    if (alreadyAuthorized) {
+      appLogger.info({ briqpaySessionId }, 'Authorization transaction already exists, skipping update.')
+      return
+    }
+
+    // If no authorization exist but a hook is sent, create a payment
+    if (!payment.length) {
+      await this.createPayment({
+        data: {
+          paymentMethod: PaymentMethodType.BRIQPAY as unknown as PaymentRequestSchemaDTO['paymentMethod'],
+          briqpaySessionId,
+          paymentOutcome: this.convertPaymentResultCode(
+            status as unknown as PaymentOutcome,
+          ) as unknown as PaymentOutcome,
+        },
+      })
+      return
+    }
+
+    const updatedPayment = await this.ctPaymentService.updatePayment({
+      id: payment[0].id,
+      transaction: {
+        type: 'Authorization',
+        interactionId: briqpaySessionId,
+        amount: {
+          centAmount: briqpaySession.data!.order!.amountIncVat,
+          currencyCode: briqpaySession.data!.order!.currency,
+        },
+        state: this.convertNotificationStatus(status),
+      },
+    })
+
+    appLogger.info(
+      {
+        updatedPayment,
+      },
+      'Payment updated after processing the notification',
+    )
+  }
+
+  private handleCapturePending = async (
+    payment: Payment[],
+    briqpaySession: MediumBriqpayResponse,
+    briqpayCaptureId: string,
+    status: BRIQPAY_WEBHOOK_STATUS,
+  ) => {
+    const briqpaySessionId = briqpaySession.sessionId
+    const alreadyCharged = payment[0].transactions.some(
+      (tx) =>
+        tx.type === 'Charge' && tx.interactionId === briqpayCaptureId && ['Success', 'Pending'].includes(tx.state),
+    )
+
+    if (alreadyCharged) {
+      appLogger.info({ briqpaySessionId }, 'Charge transaction already exists, skipping update.')
+      return
+    }
+
+    // Update pending authorization to success
+    await this.updatePendingAuthorization(payment, briqpaySessionId)
+
+    // Need to store briqpayCaptureId somehwere
+    const updatedPayment = await this.ctPaymentService.updatePayment({
+      id: payment[0].id,
+      transaction: {
+        type: 'Charge',
+        interactionId: briqpayCaptureId,
+        amount: {
+          centAmount: briqpaySession.data!.order!.amountIncVat,
+          currencyCode: briqpaySession.data!.order!.currency,
+        },
+        state: this.convertNotificationStatus(status),
+      },
+    })
+
+    appLogger.info(
+      {
+        updatedPayment,
+        briqpayCaptureId,
+      },
+      'Payment updated after processing the notification',
+    )
+  }
+
+  private handleCaptureApproved = async (
+    payment: Payment[],
+    briqpaySession: MediumBriqpayResponse,
+    briqpayCaptureId: string,
+    status: BRIQPAY_WEBHOOK_STATUS,
+  ) => {
+    const briqpaySessionId = briqpaySession.sessionId
+    // Update pending authorization to success
+    await this.updatePendingAuthorization(payment, briqpaySessionId)
+
+    const updatedPayment = await this.ctPaymentService.updatePayment({
+      id: payment[0].id,
+      transaction: {
+        type: 'Charge',
+        interactionId: briqpayCaptureId,
+        amount: {
+          centAmount: briqpaySession.data!.order!.amountIncVat,
+          currencyCode: briqpaySession.data!.order!.currency,
+        },
+        state: this.convertNotificationStatus(status),
+      },
+    })
+
+    appLogger.info(
+      {
+        updatedPayment,
+      },
+      'Payment updated after processing the notification',
+    )
+  }
+
+  private handleCaptureRejected = async (
+    payment: Payment[],
+    briqpaySession: MediumBriqpayResponse,
+    briqpayCaptureId: string,
+    status: BRIQPAY_WEBHOOK_STATUS,
+  ) => {
+    const updatedPayment = await this.ctPaymentService.updatePayment({
+      id: payment[0].id,
+      transaction: {
+        type: 'Charge',
+        interactionId: briqpayCaptureId,
+        amount: {
+          centAmount: briqpaySession.data!.order!.amountIncVat,
+          currencyCode: briqpaySession.data!.order!.currency,
+        },
+        state: this.convertNotificationStatus(status),
+      },
+    })
+
+    appLogger.info(
+      {
+        updatedPayment,
+      },
+      'Payment updated after processing the notification',
+    )
+  }
+
+  private handleRefundPending = async (
+    payment: Payment[],
+    briqpaySession: MediumBriqpayResponse,
+    briqpayRefundId: string,
+    status: BRIQPAY_WEBHOOK_STATUS,
+  ) => {
+    const briqpaySessionId = briqpaySession.sessionId
+
+    const alreadyRefunded = payment[0].transactions.some(
+      (tx) => tx.type === 'Refund' && tx.interactionId === briqpayRefundId && ['Success', 'Pending'].includes(tx.state),
+    )
+
+    if (alreadyRefunded) {
+      appLogger.info({ briqpaySessionId }, 'Refund transaction already exists, skipping update.')
+      return
+    }
+
+    // Update pending authorization to success
+    await this.updatePendingAuthorization(payment, briqpaySessionId)
+
+    // Need to store briqpayCaptureId somehwere
+    const updatedPayment = await this.ctPaymentService.updatePayment({
+      id: payment[0].id,
+      transaction: {
+        type: 'Refund',
+        interactionId: briqpayRefundId,
+        amount: {
+          centAmount: briqpaySession.data!.order!.amountIncVat,
+          currencyCode: briqpaySession.data!.order!.currency,
+        },
+        state: this.convertNotificationStatus(status),
+      },
+    })
+
+    appLogger.info(
+      {
+        updatedPayment,
+        briqpayRefundId,
+      },
+      'Payment updated after processing the notification',
+    )
+  }
+
+  private handleRefundApproved = async (
+    payment: Payment[],
+    briqpaySession: MediumBriqpayResponse,
+    briqpayRefundId: string,
+    status: BRIQPAY_WEBHOOK_STATUS,
+  ) => {
+    const briqpaySessionId = briqpaySession.sessionId
+
+    // Update pending authorization to success
+    await this.updatePendingAuthorization(payment, briqpaySessionId)
+
+    const updatedPayment = await this.ctPaymentService.updatePayment({
+      id: payment[0].id,
+      transaction: {
+        type: 'Refund',
+        interactionId: briqpayRefundId,
+        amount: {
+          centAmount: briqpaySession.data!.order!.amountIncVat,
+          currencyCode: briqpaySession.data!.order!.currency,
+        },
+        state: this.convertNotificationStatus(status),
+      },
+    })
+
+    appLogger.info(
+      {
+        updatedPayment,
+      },
+      'Payment updated after processing the notification',
+    )
+  }
+
+  private handleRefundRejected = async (
+    payment: Payment[],
+    briqpaySession: MediumBriqpayResponse,
+    briqpayRefundId: string,
+    status: BRIQPAY_WEBHOOK_STATUS,
+  ) => {
+    const updatedPayment = await this.ctPaymentService.updatePayment({
+      id: payment[0].id,
+      transaction: {
+        type: 'Refund',
+        interactionId: briqpayRefundId,
+        amount: {
+          centAmount: briqpaySession.data!.order!.amountIncVat,
+          currencyCode: briqpaySession.data!.order!.currency,
+        },
+        state: this.convertNotificationStatus(status),
+      },
+    })
+
+    appLogger.info(
+      {
+        updatedPayment,
+      },
+      'Payment updated after processing the notification',
+    )
   }
 
   public async processNotification(opts: { data: NotificationRequestSchemaDTO }): Promise<void> {
@@ -257,7 +582,9 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       captureId: briqpayCaptureId,
       refundId: briqpayRefundId,
     } = opts.data
-    console.info('Processing notification', typeof opts.data, opts.data, briqpaySessionId)
+
+    appLogger.info({ ...opts.data }, 'Processing notification')
+
     try {
       // Authenticate towards Briqpay and fetch the session using the API scope in the Briqpay API keys
       const briqpaySession = await Briqpay.getSession(briqpaySessionId).catch(() => void 0)
@@ -270,111 +597,15 @@ export class BriqpayPaymentService extends AbstractPaymentService {
         interfaceId: briqpaySessionId,
       })
 
-      // Helper function to update pending authorization to success
-      const updatePendingAuthorization = async () => {
-        const pendingAuthorization = payment[0].transactions.find(
-          (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Pending',
-        )
-
-        if (pendingAuthorization) {
-          await this.ctPaymentService.updatePayment({
-            id: payment[0].id,
-            transaction: {
-              type: 'Authorization',
-              interactionId: briqpaySessionId,
-              amount: pendingAuthorization.amount,
-              state: 'Success',
-            },
-          })
-          console.info('Updated pending authorization to success')
-        }
-      }
-
       switch (event) {
         case BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS: {
           switch (status) {
             case BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING: {
-              const alreadyAuthorized = payment[0].transactions.some(
-                (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Success',
-              )
-
-              if (alreadyAuthorized) {
-                console.info('Authorization transaction already exists, skipping update.')
-                return
-              }
-
-              // If no authorization exist but a hook is sent, create a payment
-              if (!payment.length) {
-                await this.createPayment({
-                  data: {
-                    paymentMethod: PaymentMethodType.BRIQPAY as unknown as PaymentRequestSchemaDTO['paymentMethod'],
-                    briqpaySessionId,
-                    paymentOutcome: this.convertPaymentResultCode(
-                      status as unknown as PaymentOutcome,
-                    ) as unknown as PaymentOutcome,
-                  },
-                })
-                return
-              }
-
-              const updatedPayment = await this.ctPaymentService.updatePayment({
-                id: payment[0].id,
-                transaction: {
-                  type: 'Authorization',
-                  interactionId: briqpaySessionId,
-                  amount: {
-                    centAmount: briqpaySession.data!.order!.amountIncVat,
-                    currencyCode: briqpaySession.data!.order!.currency,
-                  },
-                  state: this.convertNotificationStatus(status),
-                },
-              })
-
-              console.info('Payment updated after processing the notification', {
-                updatedPayment,
-              })
+              await this.handleOrderPending(payment, briqpaySession, status)
               break
             }
             case BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED: {
-              const alreadyAuthorized = payment[0].transactions.some(
-                (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Success',
-              )
-
-              if (alreadyAuthorized) {
-                console.info('Authorization transaction already exists, skipping update.')
-                return
-              }
-
-              // If no authorization exist but a hook is sent, create a payment
-              if (!payment.length) {
-                await this.createPayment({
-                  data: {
-                    paymentMethod: PaymentMethodType.BRIQPAY as unknown as PaymentRequestSchemaDTO['paymentMethod'],
-                    briqpaySessionId,
-                    paymentOutcome: this.convertPaymentResultCode(
-                      status as unknown as PaymentOutcome,
-                    ) as unknown as PaymentOutcome,
-                  },
-                })
-                return
-              }
-
-              const updatedPayment = await this.ctPaymentService.updatePayment({
-                id: payment[0].id,
-                transaction: {
-                  type: 'Authorization',
-                  interactionId: briqpaySessionId,
-                  amount: {
-                    centAmount: briqpaySession.data!.order!.amountIncVat,
-                    currencyCode: briqpaySession.data!.order!.currency,
-                  },
-                  state: this.convertNotificationStatus(status),
-                },
-              })
-
-              console.info('Payment updated after processing the notification', {
-                updatedPayment,
-              })
+              await this.handleOrderApproved(payment, briqpaySession, status)
               break
             }
           }
@@ -384,82 +615,17 @@ export class BriqpayPaymentService extends AbstractPaymentService {
         case BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS: {
           switch (status) {
             case BRIQPAY_WEBHOOK_STATUS.PENDING: {
-              const alreadyCharged = payment[0].transactions.some(
-                (tx) =>
-                  tx.type === 'Charge' &&
-                  tx.interactionId === briqpayCaptureId &&
-                  ['Success', 'Pending'].includes(tx.state),
-              )
-
-              if (alreadyCharged) {
-                console.info('Charge transaction already exists, skipping update.')
-                return
-              }
-
-              // Update pending authorization to success
-              await updatePendingAuthorization()
-
-              // Need to store briqpayCaptureId somehwere
-              const updatedPayment = await this.ctPaymentService.updatePayment({
-                id: payment[0].id,
-                transaction: {
-                  type: 'Charge',
-                  interactionId: briqpayCaptureId,
-                  amount: {
-                    centAmount: briqpaySession.data!.order!.amountIncVat,
-                    currencyCode: briqpaySession.data!.order!.currency,
-                  },
-                  state: this.convertNotificationStatus(status),
-                },
-              })
-
-              console.info('Payment updated after processing the notification', {
-                updatedPayment,
-                briqpayCaptureId,
-              })
+              await this.handleCapturePending(payment, briqpaySession, briqpayCaptureId!, status)
               break
             }
 
             case BRIQPAY_WEBHOOK_STATUS.APPROVED: {
-              // Update pending authorization to success
-              await updatePendingAuthorization()
-
-              const updatedPayment = await this.ctPaymentService.updatePayment({
-                id: payment[0].id,
-                transaction: {
-                  type: 'Charge',
-                  interactionId: briqpayCaptureId,
-                  amount: {
-                    centAmount: briqpaySession.data!.order!.amountIncVat,
-                    currencyCode: briqpaySession.data!.order!.currency,
-                  },
-                  state: this.convertNotificationStatus(status),
-                },
-              })
-
-              console.info('Payment updated after processing the notification', {
-                updatedPayment,
-              })
+              await this.handleCaptureApproved(payment, briqpaySession, briqpayCaptureId!, status)
               break
             }
 
             case BRIQPAY_WEBHOOK_STATUS.REJECTED: {
-              const updatedPayment = await this.ctPaymentService.updatePayment({
-                id: payment[0].id,
-                transaction: {
-                  type: 'Charge',
-                  interactionId: briqpayCaptureId,
-                  amount: {
-                    centAmount: briqpaySession.data!.order!.amountIncVat,
-                    currencyCode: briqpaySession.data!.order!.currency,
-                  },
-                  state: this.convertNotificationStatus(status),
-                },
-              })
-
-              console.info('Payment updated after processing the notification', {
-                updatedPayment,
-              })
+              await this.handleCaptureRejected(payment, briqpaySession, briqpayCaptureId!, status)
               break
             }
           }
@@ -469,82 +635,17 @@ export class BriqpayPaymentService extends AbstractPaymentService {
         case BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS: {
           switch (status) {
             case BRIQPAY_WEBHOOK_STATUS.PENDING: {
-              const alreadyRefunded = payment[0].transactions.some(
-                (tx) =>
-                  tx.type === 'Refund' &&
-                  tx.interactionId === briqpayRefundId &&
-                  ['Success', 'Pending'].includes(tx.state),
-              )
-
-              if (alreadyRefunded) {
-                console.info('Refund transaction already exists, skipping update.')
-                return
-              }
-
-              // Update pending authorization to success
-              await updatePendingAuthorization()
-
-              // Need to store briqpayCaptureId somehwere
-              const updatedPayment = await this.ctPaymentService.updatePayment({
-                id: payment[0].id,
-                transaction: {
-                  type: 'Refund',
-                  interactionId: briqpayRefundId,
-                  amount: {
-                    centAmount: briqpaySession.data!.order!.amountIncVat,
-                    currencyCode: briqpaySession.data!.order!.currency,
-                  },
-                  state: this.convertNotificationStatus(status),
-                },
-              })
-
-              console.info('Payment updated after processing the notification', {
-                updatedPayment,
-                briqpayCaptureId,
-              })
+              await this.handleRefundPending(payment, briqpaySession, briqpayRefundId!, status)
               break
             }
 
             case BRIQPAY_WEBHOOK_STATUS.APPROVED: {
-              // Update pending authorization to success
-              await updatePendingAuthorization()
-
-              const updatedPayment = await this.ctPaymentService.updatePayment({
-                id: payment[0].id,
-                transaction: {
-                  type: 'Refund',
-                  interactionId: briqpayRefundId,
-                  amount: {
-                    centAmount: briqpaySession.data!.order!.amountIncVat,
-                    currencyCode: briqpaySession.data!.order!.currency,
-                  },
-                  state: this.convertNotificationStatus(status),
-                },
-              })
-
-              console.info('Payment updated after processing the notification', {
-                updatedPayment,
-              })
+              await this.handleRefundApproved(payment, briqpaySession, briqpayRefundId!, status)
               break
             }
 
             case BRIQPAY_WEBHOOK_STATUS.REJECTED: {
-              const updatedPayment = await this.ctPaymentService.updatePayment({
-                id: payment[0].id,
-                transaction: {
-                  type: 'Refund',
-                  interactionId: briqpayRefundId,
-                  amount: {
-                    centAmount: briqpaySession.data!.order!.amountIncVat,
-                    currencyCode: briqpaySession.data!.order!.currency,
-                  },
-                  state: this.convertNotificationStatus(status),
-                },
-              })
-
-              console.info('Payment updated after processing the notification', {
-                updatedPayment,
-              })
+              await this.handleRefundRejected(payment, briqpaySession, briqpayRefundId!, status)
               break
             }
           }
@@ -552,11 +653,16 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       }
     } catch (e) {
       if (e instanceof Errorx && e.code === 'ResourceNotFound') {
-        console.info('Payment not found hence accepting the notification', { notification: JSON.stringify(opts.data) })
+        appLogger.info(
+          {
+            notification: JSON.stringify(opts.data),
+          },
+          'Payment not found hence accepting the notification',
+        )
         return
       }
 
-      console.error('Error processing notification', { error: e })
+      appLogger.error({ error: e }, 'Error processing notification')
       throw e
     }
   }
@@ -665,7 +771,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
         pspReference: request.payment.interfaceId as string,
       }
     } catch (error) {
-      console.error('Failed to cancel Briqpay payment:', error)
+      appLogger.error({ error }, 'Failed to cancel Briqpay payment:')
       throw error
     }
   }
@@ -836,7 +942,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       paymentId: ctPayment.id,
     })
 
-    const pspReference = ctCart.custom?.fields?.[briqpaySessionIdCustomType.briqpaySessionId]
+    const pspReference = ctCart.custom?.fields?.[briqpaySessionIdCustomType.name]
 
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: ctPayment.id,
@@ -968,49 +1074,19 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     }
   }
 
-  /**
-   * Retrieves a payment instance from the notification data
-   * First, it tries to find the payment by the interfaceId (PSP reference)
-   * As a fallback, it tries to find the payment by the merchantReference which unless the merchant overrides it, it's the payment ID
-   * @param data
-   * @returns A payment instance
-   */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async getPaymentFromNotification(data: any): Promise<Payment> {
-    const interfaceId = data.pspReference
-    let payment!: Payment
-
-    if (interfaceId) {
-      const results = await this.ctPaymentService.findPaymentsByInterfaceId({
-        interfaceId,
-      })
-
-      if (results.length > 0) {
-        payment = results[0]
-      }
-    }
-
-    if (!payment) {
-      return await this.ctPaymentService.getPayment({
-        id: data.merchantReference,
-      })
-    }
-
-    return payment
-  }
-
   private async compareCartWithSession(ctCart: Cart, briqpaySession: MediumBriqpayResponse): Promise<boolean> {
     const sessionAmount = briqpaySession.data?.order?.amountIncVat
     const cartAmount = await this.ctCartService.getPaymentAmount({ cart: ctCart })
 
-    console.log('Comparing amounts:', {
-      sessionAmount,
-      cartAmount: cartAmount.centAmount,
-    })
-
     // Compare amounts
     if (sessionAmount !== cartAmount.centAmount) {
-      console.log('Amounts do not match')
+      appLogger.info(
+        {
+          sessionAmount,
+          cartAmount: cartAmount.centAmount,
+        },
+        'Amounts do not match',
+      )
       return false
     }
 
@@ -1019,29 +1095,15 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     const cartItems = ctCart.lineItems
 
     if (sessionItems.length !== cartItems.length) {
-      console.log('Number of items does not match')
+      appLogger.info(
+        { briqpayCartLength: sessionItems.length, ctCartLength: cartItems.length },
+        'Number of items does not match',
+      )
       return false
     }
 
     // Get the locale to use, with fallbacks
     const locale = ctCart.locale || Object.keys(cartItems[0]?.name || {})[0] || 'en'
-
-    console.log('Comparing line items:', {
-      sessionItemCount: sessionItems.length,
-      cartItemCount: cartItems.length,
-      sessionItems: JSON.stringify(sessionItems, null, 2),
-      cartItems: JSON.stringify(
-        cartItems.map((item) => ({
-          id: item.id,
-          name: item.name[locale],
-          quantity: item.quantity,
-          unitPrice: Math.round((item.taxedPrice?.totalNet?.centAmount ?? item.price.value.centAmount) / item.quantity),
-          taxRate: item.taxRate?.amount,
-        })),
-        null,
-        2,
-      ),
-    })
 
     // Compare each cart item with session items
     for (const cartItem of cartItems) {
@@ -1075,31 +1137,8 @@ export class BriqpayPaymentService extends AbstractPaymentService {
         )
       })
 
-      console.log('Comparing item:', {
-        cartItem: {
-          id: cartItemId,
-          name: cartItemName,
-          quantity: cartItem.quantity,
-          unitPrice: Math.round(
-            (cartItem.taxedPrice?.totalNet?.centAmount ?? cartItem.price.value.centAmount) / cartItem.quantity,
-          ),
-          taxRate: cartItem.taxRate?.amount,
-        },
-        matchingSessionItem: matchingSessionItem
-          ? {
-              name: matchingSessionItem.name,
-              quantity: matchingSessionItem.productType === 'sales_tax' ? undefined : matchingSessionItem.quantity,
-              unitPrice: matchingSessionItem.productType === 'sales_tax' ? undefined : matchingSessionItem.unitPrice,
-              taxRate: matchingSessionItem.productType === 'sales_tax' ? undefined : matchingSessionItem.taxRate,
-              totalTaxAmount:
-                matchingSessionItem.productType === 'sales_tax' ? matchingSessionItem.totalTaxAmount : undefined,
-              reference: matchingSessionItem.reference,
-            }
-          : 'not found',
-      })
-
       if (!matchingSessionItem) {
-        console.log('No matching session item found for cart item')
+        appLogger.info({}, 'No matching session item found for cart item')
         return false
       }
     }

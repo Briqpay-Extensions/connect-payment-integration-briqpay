@@ -1,16 +1,12 @@
 import { Static, Type } from '@sinclair/typebox'
-
-const DropinType = Type.Enum({
-  EMBEDDED: 'embedded',
-  HPP: 'hpp',
-})
+import { PaymentMethodType } from '../briqpay-payment.dto'
 
 export const SupportedPaymentDropinsData = Type.Object({
-  type: DropinType,
+  type: Type.String(Type.Enum(PaymentMethodType)),
 })
 
 export const SupportedPaymentComponentsData = Type.Object({
-  type: Type.String(),
+  type: Type.String(Type.Enum(PaymentMethodType)),
   subtypes: Type.Optional(Type.Array(Type.String())),
 })
 

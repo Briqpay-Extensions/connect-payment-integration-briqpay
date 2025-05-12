@@ -31,7 +31,7 @@ type OperationRouteOptions = {
   paymentService: AbstractPaymentService
 }
 
-export const operationsRoute = async (fastify: FastifyInstance, opts: FastifyPluginOptions & OperationRouteOptions) => {
+export const operationsRoute = (fastify: FastifyInstance, opts: FastifyPluginOptions & OperationRouteOptions) => {
   fastify.get<{ Reply: ConfigResponseSchemaDTO }>(
     '/config',
     {
