@@ -69,89 +69,104 @@ export class Briqpay extends BaseComponent {
   }
 
   mount(selector: string) {
+    this.loadBriqpayScript();
+    this.addToDocument(selector);
+  }
+
+  private loadBriqpayScript() {
     const briqpayScript = document.createElement("script");
     briqpayScript.type = "text/javascript";
     briqpayScript.src = "https://api.briqpay.com/briq.min.js";
-    briqpayScript.onload = () => {
-      window._briqpay.subscribe("session_complete", () => {
-        this.submit();
-      });
+    briqpayScript.onload = this.onBriqpayScriptLoad.bind(this);
+    document.querySelector("head").appendChild(briqpayScript);
+  }
 
-      window._briqpay.subscribe("make_decision", async (data) => {
-        window._briqpay.v3.suspend();
+  private onBriqpayScriptLoad() {
+    this.subscribeToEvents();
+  }
 
-        const promiseForResponse = new Promise((resolve) => {
-          document.addEventListener(
-            "briqpayDecisionResponse",
-            function (e: CustomEvent) {
-              resolve(e.detail); // Resolve with the event detail
-            },
-            { once: true }
-          );
-        });
+  private subscribeToEvents() {
+    window._briqpay.subscribe("session_complete", () => {
+      this.submit();
+    });
 
-        const event = new CustomEvent("briqpayDecision", {
-          detail: { data },
-        });
-        document.dispatchEvent(event);
+    window._briqpay.subscribe("make_decision", this.handleDecision.bind(this));
+  }
 
-        const customDecisionResponse: unknown = await Promise.race([
-          promiseForResponse,
-          new Promise((resolve) =>
-            setTimeout(async () => {
-              resolve({ decision: true });
-            }, 10000)
-          ),
-        ]);
+  public async handleDecision(data: any) {
+    window._briqpay.v3.suspend();
+    const customDecisionResponse = await this.getCustomDecisionResponse(data);
 
-        // Check if response is an object that doesn't have the decision prop
-        if (
-          !customDecisionResponse ||
-          (typeof customDecisionResponse === "object" &&
-            customDecisionResponse !== null &&
-            !("decision" in customDecisionResponse))
-        ) {
-          window._briqpay.v3.resumeDecision();
-          return; // Exit early
-        }
+    if (!this.isValidDecision(customDecisionResponse)) {
+      window._briqpay.v3.resumeDecision();
+      return;
+    }
 
-        const { decision, softErrors, hardError, rejectionType } =
-          customDecisionResponse as BriqpayDecisionRequest;
+    await this.sendDecision(customDecisionResponse as BriqpayDecisionRequest);
+    window._briqpay.v3.resumeDecision();
+  }
 
-        // Somehow tell the merchant frontend to give a thumbs up or thumbs down
-        // for the order to continue, they may check stock balance of the cart items
-        // The merchant frontend should probably call this endpoint instead of us?
-        const request: BriqpayDecisionRequest = {
-          decision:
-            (decision?.toLowerCase?.() as BRIQPAY_DECISION | undefined) ||
-            BRIQPAY_DECISION.ALLOW,
-          ...(softErrors && {
-            softErrors,
-          }),
-          ...(hardError && {
-            hardError,
-          }),
-          ...(rejectionType && {
-            rejectionType,
-          }),
-        };
+  private async getCustomDecisionResponse(data: any) {
+    const promiseForResponse = new Promise((resolve) => {
+      document.addEventListener(
+        "briqpayDecisionResponse",
+        function (e: CustomEvent) {
+          resolve(e.detail);
+        },
+        { once: true }
+      );
+    });
 
-        await fetch(this.processorUrl + "/decision", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Session-Id": this.sessionId,
-          },
-          body: JSON.stringify({
-            sessionId: this.briqpaySessionId,
-            ...request,
-          }),
-        }).finally(() => window._briqpay.v3.resumeDecision());
-      });
+    const event = new CustomEvent("briqpayDecision", {
+      detail: { data },
+    });
+    document.dispatchEvent(event);
+
+    return Promise.race([
+      promiseForResponse,
+      new Promise((resolve) =>
+        setTimeout(async () => {
+          resolve({ decision: true });
+        }, 10000)
+      ),
+    ]);
+  }
+
+  private isValidDecision(customDecisionResponse: any) {
+    return (
+      customDecisionResponse &&
+      typeof customDecisionResponse === "object" &&
+      customDecisionResponse !== null &&
+      "decision" in customDecisionResponse
+    );
+  }
+
+  private async sendDecision(customDecisionResponse: BriqpayDecisionRequest) {
+    const { decision, softErrors, hardError, rejectionType } =
+      customDecisionResponse;
+
+    const request: BriqpayDecisionRequest = {
+      decision:
+        (decision?.toLowerCase() as BRIQPAY_DECISION) || BRIQPAY_DECISION.ALLOW,
+      ...(softErrors && { softErrors }),
+      ...(hardError && { hardError }),
+      ...(rejectionType && { rejectionType }),
     };
 
-    document.querySelector("head").appendChild(briqpayScript);
+    await fetch(this.processorUrl + "/decision", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Session-Id": this.sessionId,
+      },
+      body: JSON.stringify({
+        sessionId: this.briqpaySessionId,
+        ...request,
+      }),
+    });
+  }
 
+  private addToDocument(selector: string) {
     document
       .querySelector(selector)
       .insertAdjacentHTML("afterbegin", this._getTemplate());
