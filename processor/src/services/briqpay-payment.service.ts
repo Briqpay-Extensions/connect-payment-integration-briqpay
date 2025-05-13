@@ -277,7 +277,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     status: BRIQPAY_WEBHOOK_STATUS,
   ) => {
     const briqpaySessionId = briqpaySession.sessionId
-    const alreadyAuthorized = payment[0].transactions.some(
+    const alreadyAuthorized = payment?.[0]?.transactions.some(
       (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Success',
     )
 
@@ -327,7 +327,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     status: BRIQPAY_WEBHOOK_STATUS,
   ) => {
     const briqpaySessionId = briqpaySession.sessionId
-    const alreadyAuthorized = payment[0].transactions.some(
+    const alreadyAuthorized = payment?.[0]?.transactions.some(
       (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Success',
     )
 
@@ -378,7 +378,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     status: BRIQPAY_WEBHOOK_STATUS,
   ) => {
     const briqpaySessionId = briqpaySession.sessionId
-    const alreadyCharged = payment[0].transactions.some(
+    const alreadyCharged = payment?.[0]?.transactions.some(
       (tx) =>
         tx.type === 'Charge' && tx.interactionId === briqpayCaptureId && ['Success', 'Pending'].includes(tx.state),
     )
@@ -480,7 +480,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
   ) => {
     const briqpaySessionId = briqpaySession.sessionId
 
-    const alreadyRefunded = payment[0].transactions.some(
+    const alreadyRefunded = payment?.[0]?.transactions.some(
       (tx) => tx.type === 'Refund' && tx.interactionId === briqpayRefundId && ['Success', 'Pending'].includes(tx.state),
     )
 

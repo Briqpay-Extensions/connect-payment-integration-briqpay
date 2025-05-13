@@ -20,12 +20,6 @@ import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commerce
 import { appLogger, paymentSDK } from '../../payment-sdk'
 
 const mapBriqpayProductType = (item: LineItem) => {
-  // Check if it's a gift card
-  if (item.lineItemMode === 'GiftCard') return ITEM_PRODUCT_TYPE.GIFT_CARD
-
-  // Check if it's a discount
-  if (item.priceMode === 'Discounted') return ITEM_PRODUCT_TYPE.DISCOUNT
-
   // Check if the product has a digital-related attribute
   if (item.variant.attributes) {
     const isDigitalAttr = item.variant.attributes.find((attr) => attr.name === 'isDigital')
@@ -146,7 +140,10 @@ class BriqpayService {
   async createSession(ctCart: Cart, amountPlanned: PaymentAmount) {
     const res = await paymentSDK.ctAPI.client
       .customObjects()
-      .withContainerAndKey({ container: 'briqpay-config', key: 'processor-url' })
+      .withContainerAndKey({
+        container: 'briqpay-config',
+        key: process.env.BRIQPAY_PROCESSOR_URL_CUSTOM_TYPE_KEY as string,
+      })
       .get()
       .execute()
 
