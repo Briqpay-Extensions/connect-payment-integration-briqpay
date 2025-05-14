@@ -2278,6 +2278,9 @@ describe('briqpay-payment.service', () => {
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
 
     await briqpayPaymentService.refundPayment({
+      amount: {
+        centAmount: 123123,
+      },
       payment: {
         transactions: [
           {

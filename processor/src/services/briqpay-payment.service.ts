@@ -678,12 +678,11 @@ export class BriqpayPaymentService extends AbstractPaymentService {
    */
   public async capturePayment(request: CapturePaymentRequest): Promise<PaymentProviderModificationResponse> {
     const briqpaySessionId = request.payment.transactions.find((tx) => tx.type === 'Authorization')?.interactionId
-
     if (!briqpaySessionId) {
       throw new Error('Cannot find briqpay session')
     }
 
-    const captureExists = request.payment.transactions.some((tx) => tx.type === 'Charge')
+    const captureExists = request.payment.transactions.some((tx) => tx.type === 'Charge' && tx.state !== 'Failure')
     if (captureExists) {
       throw new Error('Already captured')
     }
@@ -692,10 +691,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       paymentId: request.payment.id,
     })
 
-    if (
-      request.payment.amountPlanned.centAmount !==
-      (ctCart.taxedPrice?.totalGross?.centAmount ?? ctCart.totalPrice.centAmount)
-    ) {
+    if (request.amount?.centAmount !== (ctCart.taxedPrice?.totalGross?.centAmount ?? ctCart.totalPrice.centAmount)) {
       throw new Error('Commerce Tools does not support partial captures towards all payment providers')
     }
 
@@ -727,6 +723,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
         interactionId: briqpayCapture.captureId,
       },
     })
+
     return {
       outcome: this.convertPaymentModificationStatusCode(briqpayCapture.status),
       pspReference: request.payment.interfaceId as string,
@@ -796,7 +793,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       throw new Error('Must have a successful capture first')
     }
 
-    const refundExists = request.payment.transactions.some((tx) => tx.type === 'Refund')
+    const refundExists = request.payment.transactions.some((tx) => tx.type === 'Refund' && tx.state !== 'Failure')
     if (refundExists) {
       throw new Error('Already refunded')
     }
@@ -805,10 +802,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       paymentId: request.payment.id,
     })
 
-    if (
-      request.payment.amountPlanned.centAmount !==
-      (ctCart.taxedPrice?.totalGross?.centAmount ?? ctCart.totalPrice.centAmount)
-    ) {
+    if (request.amount?.centAmount !== (ctCart.taxedPrice?.totalGross?.centAmount ?? ctCart.totalPrice.centAmount)) {
       throw new Error('Commerce Tools does not support partial refunds towards all payment providers')
     }
 
