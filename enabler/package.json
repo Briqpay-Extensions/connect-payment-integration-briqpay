@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --port 3000",
     "start": "serve public -l 8080 --cors",
+    "lint": "eslint src --ext .ts,.js",
     "test": "jest --detectOpenHandles",
     "test:coverage": "jest --detectOpenHandles --coverage --collectCoverageFrom='src/**/*.{ts,jsx,tsx,js}' --coverageDirectory='./coverage'",
     "build": "tsc && vite build",
@@ -16,8 +17,12 @@
     "serve": "14.2.4"
   },
   "devDependencies": {
+    "@eslint/js": "^9.27.0",
     "@types/jest": "29.5.14",
     "@types/node": "22.15.17",
+    "eslint": "^9.27.0",
+    "eslint-plugin-sonarjs": "^3.0.2",
+    "globals": "^16.1.0",
     "jest": "29.7.0",
     "jest-environment-jsdom": "^29.7.0",
     "jest-environment-node": "29.7.0",
@@ -25,6 +30,7 @@
     "ts-jest": "^29.3.2",
     "ts-node": "^10.9.2",
     "typescript": "5.8.3",
+    "typescript-eslint": "^8.32.1",
     "vite": "6.3.5",
     "vite-plugin-css-injected-by-js": "3.5.2"
   }

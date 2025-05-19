@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 import {
   Briqpay,
@@ -54,7 +55,7 @@ describe("Briqpay", () => {
     >;
 
     // Mock document.addEventListener
-    document.addEventListener = jest.fn((event, listener, options) => {
+    document.addEventListener = jest.fn((event, listener) => {
       // Simulate calling the listener immediately with a mock event
       if (event === "briqpayDecisionResponse") {
         (listener as EventListener)({
@@ -70,7 +71,6 @@ describe("Briqpay", () => {
       (data: Record<string, unknown>) => void
     > = {};
 
-    // @ts-ignore - Add _briqpay to window
     window._briqpay = {
       v3: {
         suspend: jest.fn(),
@@ -86,7 +86,7 @@ describe("Briqpay", () => {
 
     // Create the component instance
     const builder = new BriqpayBuilder(baseOptions);
-    component = builder.build({});
+    component = builder.build();
 
     // Store callbacks for easy access in tests
     sessionCompleteCallback = subscribeCallbacks["session_complete"];
@@ -115,7 +115,7 @@ describe("Briqpay", () => {
     const sessionCompleteSpy = jest.fn();
     const makeDecisionSpy = jest.fn();
 
-    const mockComponent = new Briqpay(baseOptions, { method: "briqpay" });
+    const mockComponent = new Briqpay(baseOptions);
 
     // Mock the subscribe method to capture the callbacks
     mockComponent.mount("#container");
@@ -242,7 +242,7 @@ describe("Briqpay", () => {
     await component.submit();
 
     expect(baseOptions.onError).toHaveBeenCalledWith(
-      "Some error occurred. Please try again."
+      "An error occurred. Please try again."
     );
   });
 

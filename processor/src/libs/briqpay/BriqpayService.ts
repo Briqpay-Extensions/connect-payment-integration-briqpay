@@ -17,7 +17,7 @@ import {
 } from '../../services/types/briqpay-payment.type'
 import { Money } from '@commercetools/connect-payments-sdk'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
-import { appLogger, paymentSDK } from '../../payment-sdk'
+import { appLogger } from '../../payment-sdk'
 
 const mapBriqpayProductType = (item: LineItem) => {
   // Check if the product has a digital-related attribute
@@ -137,20 +137,20 @@ class BriqpayService {
     this.baseUrl = baseUrl
   }
 
-  async createSession(ctCart: Cart, amountPlanned: PaymentAmount) {
-    const res = await paymentSDK.ctAPI.client
-      .customObjects()
-      .withContainerAndKey({
-        container: 'briqpay-config',
-        key: process.env.BRIQPAY_PROCESSOR_URL_CUSTOM_TYPE_KEY as string,
-      })
-      .get()
-      .execute()
+  async healthCheck() {
+    const response = await fetch(new URL(this.baseUrl).origin)
+    if (!response.ok) {
+      throw new Error(`Health check failed with status ${response.status}`)
+    }
+    return response
+  }
 
-    const connectorUrl = res.body.value.url
-    const hookUrl = connectorUrl.endsWith('/') ? connectorUrl + 'notifications' : connectorUrl + '/notifications'
-
-    const briqpayCreateSession: CreateSessionRequestBody = {
+  private generateSessionRequestBody(
+    ctCart: Cart,
+    amountPlanned: PaymentAmount,
+    hookUrl: string,
+  ): CreateSessionRequestBody {
+    return {
       product: {
         type: PAYMENT_TOOLS_PRODUCT.PAYMENT,
         intent: SESSION_INTENT.PAYMENT_ONE_TIME,
@@ -206,6 +206,14 @@ class BriqpayService {
         loadModules: [MODULE_TYPE.PAYMENT],
       },
     }
+  }
+
+  async createSession(ctCart: Cart, amountPlanned: PaymentAmount, hostname: string) {
+    // Always try https on the default port by default, can always fix the URL from Briqpay if necessary
+    const connectorUrl = 'https://' + hostname
+    const hookUrl = connectorUrl.endsWith('/') ? connectorUrl + 'notifications' : connectorUrl + '/notifications'
+
+    const briqpayCreateSession = this.generateSessionRequestBody(ctCart, amountPlanned, hookUrl)
 
     // Add discount from discountOnTotalPrice if it exists
     if (ctCart.discountOnTotalPrice?.discountedNetAmount && briqpayCreateSession.data?.order?.cart) {
@@ -315,7 +323,10 @@ class BriqpayService {
         'content-type': 'application/json',
       },
       body: JSON.stringify(briqpayCaptureRequest),
-    }).then((res) => res.json())
+    }).then((res) => {
+      // Throw if not ok?
+      return res.json()
+    })
   }
 
   refund(

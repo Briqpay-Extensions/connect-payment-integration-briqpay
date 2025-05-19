@@ -42,8 +42,8 @@ export const operationsRoute = (fastify: FastifyInstance, opts: FastifyPluginOpt
         },
       },
     },
-    async (_, reply) => {
-      const config = await opts.paymentService.config()
+    async (request, reply) => {
+      const config = await opts.paymentService.config(request.hostname)
       reply.code(200).send(config)
     },
   )

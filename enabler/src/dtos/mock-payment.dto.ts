@@ -12,6 +12,7 @@ export const PaymentRequestSchema = Type.Object({
   paymentMethod: Type.Object({
     type: Type.String(),
   }),
+  briqpaySessionId: Type.Optional(Type.String()),
   paymentOutcome: PaymentOutcomeSchema,
 });
 

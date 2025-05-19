@@ -45,10 +45,119 @@ import { randomUUID } from 'crypto'
 import { TransactionDraftDTO, TransactionResponseDTO } from '../dtos/operations/transaction.dto'
 import Briqpay from '../libs/briqpay/BriqpayService'
 import { briqpaySessionIdCustomType } from '../custom-types/custom-types'
+import BriqpayService from '../libs/briqpay/BriqpayService'
+import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
 
 export class BriqpayPaymentService extends AbstractPaymentService {
   constructor(opts: BriqpayPaymentServiceOptions) {
     super(opts.ctCartService, opts.ctPaymentService)
+  }
+
+  /**
+   * Updates the cart with Briqpay session id
+   *
+   * @param ctCart - The cart to attach the briqpay session id to
+   * @param briqpaySessionId - Briqpay session id
+   */
+  private async updateCartWithBriqpaySessionId(ctCart: Cart, briqpaySessionId: string): Promise<void> {
+    const briqpaySessionIdCustomFieldKey = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
+    const existingBriqpaySessionId = ctCart.custom?.fields?.[briqpaySessionIdCustomFieldKey]
+
+    let updatedCart = ctCart
+    if (!ctCart.custom) {
+      appLogger.info({ briqpaySessionId }, 'Setting custom type for: ')
+      const cartResponse = await paymentSDK.ctAPI.client
+        .carts()
+        .withId({ ID: ctCart.id })
+        .post({
+          body: {
+            version: ctCart.version,
+            actions: [
+              {
+                action: 'setCustomType',
+                type: {
+                  key: briqpaySessionIdCustomFieldKey,
+                  typeId: 'type',
+                },
+              },
+            ],
+          },
+        })
+        .execute()
+      // In order to get the correct version for the next call
+      updatedCart = cartResponse.body
+    }
+
+    // Only update it if we have a new session
+    if (existingBriqpaySessionId !== briqpaySessionId) {
+      appLogger.info({ briqpaySessionId }, 'Updating custom type field for: ')
+      await paymentSDK.ctAPI.client
+        .carts()
+        .withId({ ID: ctCart.id })
+        .post({
+          body: {
+            version: updatedCart.version,
+            actions: [
+              {
+                action: 'setCustomField',
+                name: briqpaySessionIdCustomType.name,
+                value: briqpaySessionId,
+              },
+            ],
+          },
+        })
+        .execute()
+    }
+  }
+
+  private async createOrUpdateBriqpaySession(
+    ctCart: Cart,
+    amountPlanned: PaymentAmount,
+    hostname: string,
+  ): Promise<MediumBriqpayResponse> {
+    let briqpaySession
+    const existingSessionId = ctCart.custom?.fields?.[briqpaySessionIdCustomType.name] as string
+    appLogger.info({ existingSessionId }, 'Existing session ID:')
+
+    try {
+      if (existingSessionId) {
+        briqpaySession = await Briqpay.getSession(existingSessionId)
+        appLogger.info({ existingSessionId }, 'Retrieved Briqpay session:')
+
+        // Compare cart with session data
+        const isCartMatching = await this.compareCartWithSession(ctCart, briqpaySession)
+        appLogger.info({ isCartMatching }, 'Cart matching result:')
+
+        if (!isCartMatching) {
+          // If cart doesn't match session, update the existing session
+          try {
+            appLogger.info({}, 'Updating session with new cart data')
+            briqpaySession = await Briqpay.updateSession(ctCart, amountPlanned, existingSessionId)
+            appLogger.info({}, 'Updated session:')
+          } catch (updateError) {
+            appLogger.error({ updateError }, 'Failed to update Briqpay session, creating new one:')
+            briqpaySession = await Briqpay.createSession(ctCart, amountPlanned, hostname)
+            appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session after update failed:')
+          }
+        }
+      } else {
+        appLogger.info({}, 'Creating new session')
+        briqpaySession = await Briqpay.createSession(ctCart, amountPlanned, hostname)
+        appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session:')
+      }
+    } catch (error) {
+      // If session retrieval fails or no session exists, create a new one
+      appLogger.error({ error }, 'Session operation failed, creating new session:')
+      try {
+        briqpaySession = await Briqpay.createSession(ctCart, amountPlanned, hostname)
+        appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session after error:')
+      } catch (error) {
+        appLogger.error({ error }, 'Failed to create Briqpay session:')
+        throw new Error('Failed to create Briqpay payment session')
+      }
+    }
+
+    return briqpaySession
   }
 
   /**
@@ -59,7 +168,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
    *
    * @returns Promise with mocking object containing configuration information
    */
-  public async config(): Promise<ConfigResponse> {
+  public async config(hostname: string): Promise<ConfigResponse> {
     const config = getConfig()
     const ctCart = await this.ctCartService.getCart({
       id: getCartIdFromContext(),
@@ -86,47 +195,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       )
 
       // Check if a briqpay session id exists on the cart and handle session creation/retrieval
-      let briqpaySession
-      const existingSessionId = ctCart.custom?.fields?.[briqpaySessionIdCustomType.name] as string
-      appLogger.info({ existingSessionId }, 'Existing session ID:')
-
-      try {
-        if (existingSessionId) {
-          briqpaySession = await Briqpay.getSession(existingSessionId)
-          appLogger.info({ existingSessionId }, 'Retrieved Briqpay session:')
-
-          // Compare cart with session data
-          const isCartMatching = await this.compareCartWithSession(ctCart, briqpaySession)
-          appLogger.info({ isCartMatching }, 'Cart matching result:')
-
-          if (!isCartMatching) {
-            // If cart doesn't match session, update the existing session
-            try {
-              appLogger.info({}, 'Updating session with new cart data')
-              briqpaySession = await Briqpay.updateSession(ctCart, amountPlanned, existingSessionId)
-              appLogger.info({}, 'Updated session:')
-            } catch (updateError) {
-              appLogger.error({ updateError }, 'Failed to update Briqpay session, creating new one:')
-              briqpaySession = await Briqpay.createSession(ctCart, amountPlanned)
-              appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session after update failed:')
-            }
-          }
-        } else {
-          appLogger.info({}, 'Creating new session')
-          briqpaySession = await Briqpay.createSession(ctCart, amountPlanned)
-          appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session:')
-        }
-      } catch (error) {
-        // If session retrieval fails or no session exists, create a new one
-        appLogger.error({ error }, 'Session operation failed, creating new session:')
-        try {
-          briqpaySession = await Briqpay.createSession(ctCart, amountPlanned)
-          appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session after error:')
-        } catch (error) {
-          appLogger.error({ error }, 'Failed to create Briqpay session:')
-          throw new Error('Failed to create Briqpay payment session')
-        }
-      }
+      const briqpaySession = await this.createOrUpdateBriqpaySession(ctCart, amountPlanned, hostname)
 
       // Ensure we have a valid session ID before updating the cart
       if (!briqpaySession?.sessionId) {
@@ -134,29 +203,8 @@ export class BriqpayPaymentService extends AbstractPaymentService {
         throw new Error('Invalid Briqpay session response: missing sessionId')
       }
 
-      // Set the custom type and field in a single request
-      appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Updating cart with session ID:')
-      await paymentSDK.ctAPI.client
-        .carts()
-        .withId({ ID: ctCart.id })
-        .post({
-          body: {
-            version: ctCart.version,
-            actions: [
-              {
-                action: 'setCustomType',
-                type: {
-                  key: process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id',
-                  typeId: 'type',
-                },
-                fields: {
-                  [briqpaySessionIdCustomType.name]: briqpaySession.sessionId,
-                },
-              },
-            ],
-          },
-        })
-        .execute()
+      // Update the cart custom field if necessary
+      await this.updateCartWithBriqpaySessionId(ctCart, briqpaySession.sessionId)
 
       return {
         clientKey: config.mockClientKey,
@@ -201,23 +249,27 @@ export class BriqpayPaymentService extends AbstractPaymentService {
         async () => {
           try {
             const paymentMethods = 'briqpay'
-            return Promise.resolve({
+
+            // Throws an exception if the API isn't healthy
+            await BriqpayService.healthCheck()
+
+            return {
               name: 'Briqpay Payment API',
               status: 'UP',
               message: 'Briqpay api is working',
               details: {
                 paymentMethods,
               },
-            })
+            }
           } catch (e) {
-            return Promise.resolve({
+            return {
               name: 'Briqpay Payment API',
               status: 'DOWN',
               message: 'The Briqpay paymentAPI is down for some reason. Please check the logs for more details.',
               details: {
                 error: e,
               },
-            })
+            }
           }
         },
       ],
@@ -242,12 +294,12 @@ export class BriqpayPaymentService extends AbstractPaymentService {
    */
   public async getSupportedPaymentComponents(): Promise<SupportedPaymentComponentsSchemaDTO> {
     return Promise.resolve({
-      dropins: [],
-      components: [
+      dropins: [
         {
           type: PaymentMethodType.BRIQPAY,
         },
       ],
+      components: [],
     })
   }
 
@@ -451,6 +503,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     briqpayCaptureId: string,
     status: BRIQPAY_WEBHOOK_STATUS,
   ) => {
+    // TODO: Too quick capture resulted in no captureId/interactionId, so a failed captures gets its own row, need to tie them together
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: payment[0].id,
       transaction: {

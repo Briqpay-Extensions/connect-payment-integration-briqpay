@@ -3,7 +3,9 @@ import { setupFastify } from './server/server'
 import { createBriqpayCustomType } from './connectors/actions'
 
 void (async () => {
-  // Initialize Briqpay custom type
+  // // This may be needed for local development in case the type does not exist on your account,
+  // // will be taken care of by postDeploy if deployed to Commerce Tools
+  // // Initialize Briqpay custom type
   await createBriqpayCustomType(process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY as string)
 
   const server = await setupFastify()

@@ -1,3 +1,5 @@
+import { BriqpaySdk } from "../briqpay-sdk";
+
 /**
  * Represents the payment enabler. The payment enabler is the entry point for creating the components.
  *
@@ -108,7 +110,7 @@ export interface PaymentComponentBuilder {
    * @param config - The configuration options for the payment component.
    * @returns The built payment component.
    */
-  build(config: ComponentOptions): PaymentComponent;
+  build(): PaymentComponent;
 }
 
 /**
@@ -147,7 +149,7 @@ export type EnablerOptions = {
    * @param error - The error that occurred.
    * @param paymentReference - The payment reference.
    */
-  onError?: (error: any, context?: { paymentReference?: string }) => void;
+  onError?: (error: unknown, context?: { paymentReference?: string }) => void;
 };
 
 /**
@@ -184,11 +186,6 @@ export type PaymentResult =
        */
       paymentReference?: string;
     };
-
-/**
- * Represents the options for a payment component.
- */
-export type ComponentOptions = {};
 
 /**
  * Represents the payment drop-in types.
@@ -234,7 +231,7 @@ export type DropinOptions = {
    * A callback function that is called when the pay button is clicked.
    * @returns A Promise indicating whether the payment should proceed.
    */
-  onPayButtonClick?: () => Promise<void>;
+  onPayButtonClick?: (sdk: BriqpaySdk) => Promise<void>;
 };
 
 /**

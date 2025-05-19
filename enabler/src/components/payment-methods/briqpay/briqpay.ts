@@ -1,5 +1,4 @@
 import {
-  ComponentOptions,
   PaymentComponent,
   PaymentComponentBuilder,
   PaymentMethod,
@@ -37,8 +36,8 @@ export class BriqpayBuilder implements PaymentComponentBuilder {
 
   constructor(private baseOptions: BaseOptions) {}
 
-  build(config: ComponentOptions): PaymentComponent {
-    return new Briqpay(this.baseOptions, config);
+  build(): PaymentComponent {
+    return new Briqpay(this.baseOptions);
   }
 }
 
@@ -62,8 +61,8 @@ export class Briqpay extends BaseComponent {
   private snippet: string;
   private briqpaySessionId: string;
 
-  constructor(baseOptions: BaseOptions, componentOptions: ComponentOptions) {
-    super(PaymentMethod.briqpay, baseOptions, componentOptions);
+  constructor(baseOptions: BaseOptions) {
+    super(PaymentMethod.briqpay, baseOptions);
     this.snippet = baseOptions.snippet;
     this.briqpaySessionId = baseOptions.briqpaySessionId;
   }
@@ -93,7 +92,7 @@ export class Briqpay extends BaseComponent {
     window._briqpay.subscribe("make_decision", this.handleDecision.bind(this));
   }
 
-  public async handleDecision(data: any) {
+  public async handleDecision(data: unknown) {
     window._briqpay.v3.suspend();
     const customDecisionResponse = await this.getCustomDecisionResponse(data);
 
@@ -106,7 +105,7 @@ export class Briqpay extends BaseComponent {
     window._briqpay.v3.resumeDecision();
   }
 
-  private async getCustomDecisionResponse(data: any) {
+  private async getCustomDecisionResponse(data: unknown) {
     const promiseForResponse = new Promise((resolve) => {
       document.addEventListener(
         "briqpayDecisionResponse",
@@ -132,7 +131,7 @@ export class Briqpay extends BaseComponent {
     ]);
   }
 
-  private isValidDecision(customDecisionResponse: any) {
+  private isValidDecision(customDecisionResponse: unknown) {
     return (
       customDecisionResponse &&
       typeof customDecisionResponse === "object" &&
@@ -192,10 +191,11 @@ export class Briqpay extends BaseComponent {
       // If we get to this point without any exceptions, it is a success
       const isSuccess = true;
 
-      this.onComplete &&
+      if (this.onComplete) {
         this.onComplete({ isSuccess, paymentReference: data.paymentReference });
-    } catch (e) {
-      this.onError("Some error occurred. Please try again.");
+      }
+    } catch {
+      this.onError("An error occurred. Please try again.");
     }
   }
 
@@ -208,6 +208,6 @@ export class Briqpay extends BaseComponent {
   }
 
   isAvailable() {
-    return Promise.resolve(true);
+    return Promise.resolve(false);
   }
 }

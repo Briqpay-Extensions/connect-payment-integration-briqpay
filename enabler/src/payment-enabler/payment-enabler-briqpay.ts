@@ -1,4 +1,3 @@
-import { BriqpayBuilder } from "../components/payment-methods/briqpay/briqpay";
 import { BriqpaySdk } from "../briqpay-sdk";
 import {
   DropinType,
@@ -12,7 +11,7 @@ import { DropinEmbeddedBuilder } from "../dropin/dropin-embedded";
 
 declare global {
   interface ImportMeta {
-    env: any;
+    env: unknown;
   }
 }
 
@@ -25,7 +24,7 @@ export type BaseOptions = {
   snippet: string;
   briqpaySessionId: string;
   onComplete: (result: PaymentResult) => void;
-  onError: (error: any, context?: { paymentReference?: string }) => void;
+  onError: (error: unknown, context?: { paymentReference?: string }) => void;
 };
 
 export class BriqpayPaymentEnabler implements PaymentEnabler {
@@ -74,9 +73,7 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
   ): Promise<PaymentComponentBuilder | never> {
     const { baseOptions } = await this.setupData;
 
-    const supportedMethods = {
-      briqpay: BriqpayBuilder,
-    };
+    const supportedMethods = {};
 
     if (!Object.keys(supportedMethods).includes(type)) {
       throw new Error(
@@ -96,7 +93,6 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
 
     const supportedMethods = {
       embedded: DropinEmbeddedBuilder,
-      // hpp: DropinHppBuilder,
     };
 
     if (!Object.keys(supportedMethods).includes(type)) {

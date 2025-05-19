@@ -35,7 +35,7 @@ export abstract class AbstractPaymentService {
    *
    * @returns Promise with object containing configuration information
    */
-  abstract config(): Promise<ConfigResponse>
+  abstract config(hostname: string): Promise<ConfigResponse>
 
   /**
    * Get status

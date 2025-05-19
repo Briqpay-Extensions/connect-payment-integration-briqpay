@@ -88,7 +88,7 @@ export default [
       '@typescript-eslint/require-await': 'error',
       '@typescript-eslint/no-floating-promises': 'error',
 
-      'sonarjs/cognitive-complexity': ['error', 15],
+      'sonarjs/cognitive-complexity': ['error', 13],
 
       '@typescript-eslint/no-unused-vars': [
         'error',

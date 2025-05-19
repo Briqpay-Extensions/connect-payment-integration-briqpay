@@ -33,11 +33,11 @@ jest.mock('@commercetools/sdk-client-v2', () => ({
     withProjectKey: jest.fn().mockReturnThis(),
     withHttpMiddleware: jest.fn().mockReturnThis(),
     build: jest.fn().mockReturnValue({
-      execute: jest.fn().mockResolvedValue({ body: {} } as unknown as never),
+      execute: jest.fn().mockResolvedValue({ body: { version: 1 } } as unknown as never),
     }),
   })),
   ClientResponse: jest.fn().mockImplementation(() => ({
-    body: {} as unknown,
+    body: { version: 1 } as unknown,
   })),
 }))
 
@@ -64,7 +64,7 @@ jest.mock('../src/payment-sdk', () => ({
         carts: jest.fn().mockReturnValue({
           withId: jest.fn().mockReturnValue({
             post: jest.fn().mockReturnValue({
-              execute: jest.fn(),
+              execute: jest.fn().mockResolvedValue({ body: { version: 1 } } as unknown as never),
             }),
           }),
         }),
@@ -148,13 +148,13 @@ describe('briqpay-payment.service', () => {
     jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue(mockUpdatePaymentResult)
     jest
       .spyOn(paymentSDK.ctAPI.client, 'execute' as keyof typeof paymentSDK.ctAPI.client)
-      .mockResolvedValue({ body: {} } as unknown as never)
+      .mockResolvedValue({ body: { version: 1 } } as unknown as never)
 
     // Mock the carts API
     paymentSDK.ctAPI.client.carts = jest.fn().mockReturnValue({
       withId: jest.fn().mockReturnValue({
         post: jest.fn().mockReturnValue({
-          execute: jest.fn(),
+          execute: jest.fn().mockResolvedValue({ body: { version: 1 } } as unknown as never),
         }),
       }),
     }) as unknown as () => ByProjectKeyCartsRequestBuilder
@@ -173,9 +173,7 @@ describe('briqpay-payment.service', () => {
       }),
     )
 
-    const result: ConfigResponse = await paymentService.config()
-
-    console.log('this is result', result)
+    const result: ConfigResponse = await paymentService.config('localhost')
 
     // Assertions can remain the same or be adapted based on the abstracted access
     expect(result?.briqpaySessionId).toStrictEqual('abc123')
@@ -200,7 +198,7 @@ describe('briqpay-payment.service', () => {
       }),
     )
 
-    const result: ConfigResponse = await paymentService.config()
+    const result: ConfigResponse = await paymentService.config('localhost')
 
     // Assertions can remain the same or be adapted based on the abstracted access
     expect(result?.briqpaySessionId).toStrictEqual('abc123')
@@ -219,7 +217,7 @@ describe('briqpay-payment.service', () => {
       }),
     )
 
-    await expect(paymentService.config()).rejects.toThrow(
+    await expect(paymentService.config('localhost')).rejects.toThrow(
       'Cart is missing a billing address. Taxes cannot be calculated.',
     )
   })
@@ -237,7 +235,7 @@ describe('briqpay-payment.service', () => {
       }),
     )
 
-    await expect(paymentService.config()).rejects.toThrow(
+    await expect(paymentService.config('localhost')).rejects.toThrow(
       'Cart is missing a shipping address. Taxes cannot be calculated.',
     )
   })
@@ -258,7 +256,7 @@ describe('briqpay-payment.service', () => {
     // Simulate getSession throwing an error
     jest.spyOn(Briqpay, 'getSession').mockRejectedValueOnce(new Error('Failed to retrieve session'))
 
-    const result = await paymentService.config()
+    const result = await paymentService.config('localhost')
 
     expect(result).toStrictEqual({
       briqpaySessionId: 'abc123',
@@ -297,7 +295,7 @@ describe('briqpay-payment.service', () => {
 
     setupMockConfig({ mockClientKey: '', mockEnvironment: 'test' })
 
-    const result = await paymentService.config()
+    const result = await paymentService.config('localhost')
 
     // Assertions
     expect(result).toStrictEqual({
@@ -401,7 +399,7 @@ describe('briqpay-payment.service', () => {
       htmlSnippet: '<div id="briqpay"></div>',
     })
 
-    const result = await paymentService.config()
+    const result = await paymentService.config('localhost')
 
     expect(result).toStrictEqual({
       briqpaySessionId: sessionId,
@@ -413,9 +411,9 @@ describe('briqpay-payment.service', () => {
 
   test('getSupportedPaymentComponents', async () => {
     const result: ConfigResponse = await paymentService.getSupportedPaymentComponents()
-    expect(result?.components).toHaveLength(1)
-    expect(result?.components[0]?.type).toStrictEqual('briqpay')
-    expect(result?.dropins).toHaveLength(0)
+    expect(result?.dropins).toHaveLength(1)
+    expect(result?.dropins[0]?.type).toStrictEqual('briqpay')
+    expect(result?.components).toHaveLength(0)
   })
 
   test('getStatus', async () => {

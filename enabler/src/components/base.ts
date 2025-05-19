@@ -1,6 +1,5 @@
 import { BriqpaySdk } from "../briqpay-sdk";
 import {
-  ComponentOptions,
   PaymentComponent,
   PaymentMethod,
   PaymentResult,
@@ -22,15 +21,12 @@ export abstract class BaseComponent implements PaymentComponent {
   protected environment: BaseOptions["environment"];
   protected onComplete: (result: PaymentResult) => void;
   protected onError: (
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     error: any,
     context?: { paymentReference?: string }
   ) => void;
 
-  constructor(
-    paymentMethod: PaymentMethod,
-    baseOptions: BaseOptions,
-    _componentOptions: ComponentOptions
-  ) {
+  constructor(paymentMethod: PaymentMethod, baseOptions: BaseOptions) {
     this.paymentMethod = paymentMethod;
     this.sdk = baseOptions.sdk;
     this.processorUrl = baseOptions.processorUrl;

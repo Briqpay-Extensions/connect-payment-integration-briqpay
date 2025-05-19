@@ -25,9 +25,9 @@ describe("BriqpayPaymentEnabler", () => {
       onError: jest.fn(),
     });
 
-    const builder = await enabler.createComponentBuilder("briqpay");
-    expect(builder).toBeDefined();
-    expect(builder.constructor.name).toBe("BriqpayBuilder");
+    await expect(enabler.createComponentBuilder("unsupported")).rejects.toThrow(
+      /Component type not supported/
+    );
   });
 
   test("should throw for unsupported component type", async () => {
@@ -65,6 +65,7 @@ describe("BriqpayPaymentEnabler", () => {
     });
 
     await expect(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       enabler.createDropinBuilder("unsupported" as any)
     ).rejects.toThrow(/Component type not supported/);
   });
@@ -92,7 +93,7 @@ describe("BriqpayPaymentEnabler", () => {
       sessionId: "sess-123",
     });
 
-    const builder = await enabler.createComponentBuilder("briqpay");
+    const builder = await enabler.createDropinBuilder(DropinType.embedded);
     expect(builder).toBeDefined();
   });
 });

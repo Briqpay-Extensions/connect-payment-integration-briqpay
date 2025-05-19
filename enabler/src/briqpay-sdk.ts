@@ -6,7 +6,7 @@ export class BriqpaySdk {
   /**
    * Creates an instance of BriqpaySdk.
    */
-  constructor(params: any) {
+  constructor(params: Record<string, unknown>) {
     this.params = params;
   }
 

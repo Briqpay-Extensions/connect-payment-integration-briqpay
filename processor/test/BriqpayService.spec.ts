@@ -89,11 +89,15 @@ describe('BriqpayService', () => {
       } as Response),
     ) as typeof fetch
 
-    const response = await BriqpayService.createSession(mockCart, {
-      centAmount: 10000,
-      currencyCode: 'SEK',
-      fractionDigits: 2,
-    })
+    const response = await BriqpayService.createSession(
+      mockCart,
+      {
+        centAmount: 10000,
+        currencyCode: 'SEK',
+        fractionDigits: 2,
+      },
+      'localhost',
+    )
 
     expect(global.fetch).toHaveBeenCalled()
     expect(response).toHaveProperty('sessionId', 'abc123')
@@ -115,11 +119,15 @@ describe('BriqpayService', () => {
       } as Response),
     ) as typeof fetch
 
-    const response = await BriqpayService.createSession(mockCart, {
-      centAmount: 10000,
-      currencyCode: 'SEK',
-      fractionDigits: 2,
-    })
+    const response = await BriqpayService.createSession(
+      mockCart,
+      {
+        centAmount: 10000,
+        currencyCode: 'SEK',
+        fractionDigits: 2,
+      },
+      'localhost',
+    )
 
     expect(global.fetch).toHaveBeenCalled()
     expect(response).toHaveProperty('sessionId', 'abc123')
@@ -136,11 +144,15 @@ describe('BriqpayService', () => {
       } as Response),
     ) as typeof fetch
 
-    const response = await BriqpayService.createSession(mockCart, {
-      centAmount: 10000,
-      currencyCode: 'SEK',
-      fractionDigits: 2,
-    })
+    const response = await BriqpayService.createSession(
+      mockCart,
+      {
+        centAmount: 10000,
+        currencyCode: 'SEK',
+        fractionDigits: 2,
+      },
+      'localhost',
+    )
 
     expect(global.fetch).toHaveBeenCalled()
     expect(response).toHaveProperty('sessionId', 'abc123')
@@ -156,11 +168,15 @@ describe('BriqpayService', () => {
       } as Response),
     ) as typeof fetch
 
-    const response = await BriqpayService.createSession(mockCart, {
-      centAmount: 10000,
-      currencyCode: 'SEK',
-      fractionDigits: 2,
-    })
+    const response = await BriqpayService.createSession(
+      mockCart,
+      {
+        centAmount: 10000,
+        currencyCode: 'SEK',
+        fractionDigits: 2,
+      },
+      'localhost',
+    )
 
     expect(global.fetch).toHaveBeenCalled()
     expect(response).toHaveProperty('sessionId', 'abc123')
