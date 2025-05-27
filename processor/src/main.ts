@@ -1,12 +1,11 @@
 import 'dotenv/config'
 import { setupFastify } from './server/server'
-import { createBriqpayCustomType } from './connectors/actions'
 
 void (async () => {
-  // // This may be needed for local development in case the type does not exist on your account,
+  // // This may be needed to uncomment for local development in case the type does not exist on your account,
   // // will be taken care of by postDeploy if deployed to Commerce Tools
   // // Initialize Briqpay custom type
-  await createBriqpayCustomType(process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY as string)
+  // await createBriqpayCustomType(process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY as string)
 
   const server = await setupFastify()
 

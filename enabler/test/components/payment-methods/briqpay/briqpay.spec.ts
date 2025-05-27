@@ -251,8 +251,8 @@ describe("Briqpay", () => {
     expect(state).toEqual({});
   });
 
-  test("isAvailable() resolves with true", async () => {
+  test("isAvailable() resolves with false for non-embedded", async () => {
     const result = await (component as Briqpay).isAvailable();
-    expect(result).toBe(true);
+    expect(result).toBe(false);
   });
 });

@@ -296,7 +296,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     return Promise.resolve({
       dropins: [
         {
-          type: PaymentMethodType.BRIQPAY,
+          type: 'embedded',
         },
       ],
       components: [],
