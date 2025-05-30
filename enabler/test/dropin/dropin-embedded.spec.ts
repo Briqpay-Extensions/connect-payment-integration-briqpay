@@ -3,10 +3,10 @@ import { describe, expect, jest, test } from "@jest/globals";
 import {
   DropinEmbeddedBuilder,
   DropinComponents,
+  BRIQPAY_DECISION,
 } from "../../src/dropin/dropin-embedded";
 import { DropinOptions } from "../../src/payment-enabler/payment-enabler";
 import { BriqpaySdk } from "../../src/briqpay-sdk";
-import { BRIQPAY_DECISION } from "../../../processor/src/dtos/briqpay-payment.dto";
 
 describe("DropinEmbeddedBuilder", () => {
   // Mock fetch

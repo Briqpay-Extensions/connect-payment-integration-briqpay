@@ -14,6 +14,7 @@
     "serve": "npm run build && serve public -l 3000 --cors"
   },
   "dependencies": {
+    "@sinclair/typebox": "0.34.33",
     "serve": "14.2.4"
   },
   "devDependencies": {

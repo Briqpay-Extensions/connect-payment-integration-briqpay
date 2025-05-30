@@ -10,7 +10,7 @@ import {
 } from "../payment-enabler/payment-enabler";
 import { BaseOptions } from "../payment-enabler/payment-enabler-briqpay";
 
-enum BRIQPAY_DECISION {
+export enum BRIQPAY_DECISION {
   ALLOW = "allow",
   REJECT = "reject",
 }

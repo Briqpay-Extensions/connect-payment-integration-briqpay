@@ -412,7 +412,7 @@ describe('briqpay-payment.service', () => {
   test('getSupportedPaymentComponents', async () => {
     const result: ConfigResponse = await paymentService.getSupportedPaymentComponents()
     expect(result?.dropins).toHaveLength(1)
-    expect(result?.dropins[0]?.type).toStrictEqual('briqpay')
+    expect(result?.dropins[0]?.type).toStrictEqual('embedded')
     expect(result?.components).toHaveLength(0)
   })
 
