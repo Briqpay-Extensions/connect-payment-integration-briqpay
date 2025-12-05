@@ -1,0 +1,105 @@
+deployAs:
+  - name: enabler
+    applicationType: assets
+  - name: processor
+    applicationType: service
+    endpoint: /
+    scripts:
+      postDeploy: npm install && npm run connector:post-deploy
+      preUndeploy: npm install && npm run connector:pre-undeploy
+    configuration:
+      standardConfiguration:
+        - key: CTP_PROJECT_KEY
+          description: commercetools project key
+          required: true
+        - key: CTP_CLIENT_ID
+          description: commercetools client ID with manage_payments, manage_orders, view_sessions, view_api_clients, manage_checkout_payment_intents, introspect_oauth_tokens, manage_types and view_types scopes
+          required: true
+        - key: CTP_AUTH_URL
+          description: commercetools Auth URL
+          required: true
+          default: https://auth.europe-west1.gcp.commercetools.com
+        - key: CTP_API_URL
+          description: commercetools API URL
+          required: true
+          default: https://api.europe-west1.gcp.commercetools.com
+        - key: CTP_SESSION_URL
+          description: Session API URL
+          required: true
+          default: https://session.europe-west1.gcp.commercetools.com
+        - key: CTP_JWKS_URL
+          description: JWKs url (example - https://mc-api.europe-west1.gcp.commercetools.com/.well-known/jwks.json)
+          required: true
+          default: https://mc-api.europe-west1.gcp.commercetools.com/.well-known/jwks.json
+        - key: CTP_JWT_ISSUER
+          description: JWT Issuer for jwt validation (example - https://mc-api.europe-west1.gcp.commercetools.com)
+          required: true
+          default: https://mc-api.europe-west1.gcp.commercetools.com
+        - key: BRIQPAY_USERNAME
+          description: Your Briqpay API username
+          required: true
+        - key: BRIQPAY_BASE_URL
+          description: The Briqpay API url
+          required: true
+          default: https://playground-api.briqpay.com/v3
+        - key: BRIQPAY_TERMS_URL
+          description: The URL to your terms page
+          required: true
+        - key: BRIQPAY_CONFIRMATION_URL
+          description: The URL to your order confirmation page
+          required: true
+        - key: BRIQPAY_SESSION_CUSTOM_TYPE_KEY
+          description: Key of CustomType to store briqpay session inside cart
+          required: false
+          default: briqpay-session-id
+        - key: BRIQPAY_PSP_META_DATA_CUSTOMER_FACING_REFERENCE_KEY
+          description: Key of CustomType field to store PSP customer facing reference
+          required: false
+          default: briqpay-psp-meta-data-customer-facing-reference
+        - key: BRIQPAY_PSP_META_DATA_DESCRIPTION_KEY
+          description: Key of CustomType field to store PSP description
+          required: false
+          default: briqpay-psp-meta-data-description
+        - key: BRIQPAY_PSP_META_DATA_TYPE_KEY
+          description: Key of CustomType field to store PSP type
+          required: false
+          default: briqpay-psp-meta-data-type
+        - key: BRIQPAY_PSP_META_DATA_PAYER_EMAIL_KEY
+          description: Key of CustomType field to store PSP payer email
+          required: false
+          default: briqpay-psp-meta-data-payer-email
+        - key: BRIQPAY_PSP_META_DATA_PAYER_FIRST_NAME_KEY
+          description: Key of CustomType field to store PSP payer first name
+          required: false
+          default: briqpay-psp-meta-data-payer-first-name
+        - key: BRIQPAY_PSP_META_DATA_PAYER_LAST_NAME_KEY
+          description: Key of CustomType field to store PSP payer last name
+          required: false
+          default: briqpay-psp-meta-data-payer-last-name
+        - key: BRIQPAY_TRANSACTION_DATA_RESERVATION_ID_KEY
+          description: Key of CustomType field to store transaction reservation ID
+          required: false
+          default: briqpay-transaction-data-reservation-id
+        - key: BRIQPAY_TRANSACTION_DATA_SECONDARY_RESERVATION_ID_KEY
+          description: Key of CustomType field to store transaction secondary reservation ID
+          required: false
+          default: briqpay-transaction-data-secondary-reservation-id
+        - key: BRIQPAY_TRANSACTION_DATA_PSP_ID_KEY
+          description: Key of CustomType field to store transaction PSP ID
+          required: false
+          default: briqpay-transaction-data-psp-id
+        - key: BRIQPAY_TRANSACTION_DATA_PSP_DISPLAY_NAME_KEY
+          description: Key of CustomType field to store transaction PSP display name
+          required: false
+          default: briqpay-transaction-data-psp-display-name
+        - key: BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY
+          description: Key of CustomType field to store transaction PSP integration name
+          required: false
+          default: briqpay-transaction-data-psp-integration-name
+      securedConfiguration:
+        - key: CTP_CLIENT_SECRET
+          description: commercetools client secret
+          required: true
+        - key: BRIQPAY_SECRET
+          description: Your Briqpay API secret
+          required: true
