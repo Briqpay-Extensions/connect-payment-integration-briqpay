@@ -12,12 +12,19 @@ import { appLogger } from '../../payment-sdk'
 import Briqpay from '../../libs/briqpay/BriqpayService'
 import { convertNotificationStatus, convertPaymentResultCode } from './utils'
 import { BriqpayOperationService } from './operation.service'
+import { BriqpaySessionDataService } from './session-data.service'
+import { apiRoot } from '../../libs/commercetools/api-root'
+import { Order } from '@commercetools/platform-sdk'
 
 export class BriqpayNotificationService {
+  private readonly sessionDataService: BriqpaySessionDataService
+
   constructor(
     private readonly ctPaymentService: CommercetoolsPaymentService,
     private readonly operationService: BriqpayOperationService,
-  ) {}
+  ) {
+    this.sessionDataService = new BriqpaySessionDataService()
+  }
 
   public async processNotification(opts: { data: NotificationRequestSchemaDTO }): Promise<void> {
     const {
@@ -189,11 +196,6 @@ export class BriqpayNotificationService {
       (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Success',
     )
 
-    if (alreadyAuthorized) {
-      appLogger.info({ briqpaySessionId }, 'Authorization transaction already exists, skipping update.')
-      return
-    }
-
     // If no authorization exist but a hook is sent, create a payment
     if (!payment.length) {
       await this.operationService.createPayment({
@@ -206,25 +208,35 @@ export class BriqpayNotificationService {
       return
     }
 
-    const updatedPayment = await this.ctPaymentService.updatePayment({
-      id: payment[0].id,
-      transaction: {
-        type: 'Authorization',
-        interactionId: briqpaySessionId,
-        amount: {
-          centAmount: briqpaySession.data!.order!.amountIncVat,
-          currencyCode: briqpaySession.data!.order!.currency,
+    // Update authorization to Success if not already done
+    if (!alreadyAuthorized) {
+      const updatedPayment = await this.ctPaymentService.updatePayment({
+        id: payment[0].id,
+        transaction: {
+          type: 'Authorization',
+          interactionId: briqpaySessionId,
+          amount: {
+            centAmount: briqpaySession.data!.order!.amountIncVat,
+            currencyCode: briqpaySession.data!.order!.currency,
+          },
+          state: convertNotificationStatus(status),
         },
-        state: convertNotificationStatus(status),
-      },
-    })
+      })
 
-    appLogger.info(
-      {
-        updatedPayment,
-      },
-      'Payment updated after processing the notification',
-    )
+      appLogger.info(
+        {
+          updatedPayment,
+        },
+        'Payment updated after processing the notification',
+      )
+    } else {
+      appLogger.info({ briqpaySessionId }, 'Authorization transaction already exists, skipping transaction update.')
+    }
+
+    // Always attempt to ingest Briqpay session data to order custom fields
+    // This is done regardless of whether the authorization was updated, as the order
+    // may have been created after the initial authorization
+    await this.ingestSessionDataToOrder(briqpaySessionId, payment[0].id)
   }
 
   private handleCapturePending = async (
@@ -277,6 +289,10 @@ export class BriqpayNotificationService {
     status: BRIQPAY_WEBHOOK_STATUS,
   ) => {
     const briqpaySessionId = briqpaySession.sessionId
+    // eslint-disable-next-line no-console
+    console.log('>>> handleCaptureApproved called', { briqpaySessionId, briqpayCaptureId })
+    appLogger.info({ briqpaySessionId, briqpayCaptureId, paymentId: payment[0]?.id }, 'handleCaptureApproved called')
+
     // Update pending authorization to success
     await this.updatePendingAuthorization(payment, briqpaySessionId)
 
@@ -299,6 +315,9 @@ export class BriqpayNotificationService {
       },
       'Payment updated after processing the notification',
     )
+
+    // Ingest Briqpay session data to order custom fields
+    await this.ingestSessionDataToOrder(briqpaySessionId, payment[0].id)
   }
 
   private handleCaptureRejected = async (
@@ -428,5 +447,63 @@ export class BriqpayNotificationService {
       },
       'Payment updated after processing the notification',
     )
+  }
+
+  /**
+   * Finds the order associated with a payment and ingests Briqpay session data to order custom fields.
+   * This is a best-effort operation - failures are logged but do not fail the notification processing.
+   *
+   * @param briqpaySessionId - The Briqpay session ID
+   * @param paymentId - The CommerceTools payment ID
+   */
+  private ingestSessionDataToOrder = async (briqpaySessionId: string, paymentId: string): Promise<void> => {
+    // eslint-disable-next-line no-console
+    console.log('>>> ingestSessionDataToOrder called', { briqpaySessionId, paymentId })
+    appLogger.info({ briqpaySessionId, paymentId }, 'Starting ingestSessionDataToOrder lookup')
+
+    try {
+      // Find the order that contains this payment
+      const ordersResponse = await apiRoot
+        .orders()
+        .get({
+          queryArgs: {
+            where: `paymentInfo(payments(id="${paymentId}"))`,
+            limit: 1,
+          },
+        })
+        .execute()
+
+      const orders: Order[] = ordersResponse.body.results
+      appLogger.info({ paymentId, briqpaySessionId, orderCount: orders.length }, 'Order lookup completed')
+
+      if (orders.length === 0) {
+        appLogger.info(
+          { paymentId, briqpaySessionId },
+          'No order found for payment, skipping session data ingestion (order may not be created yet)',
+        )
+        return
+      }
+
+      const order = orders[0]
+      appLogger.info(
+        { orderId: order.id, paymentId, briqpaySessionId, orderVersion: order.version, hasCustom: !!order.custom },
+        'Found order for payment, starting session data ingestion',
+      )
+
+      // Ingest the session data to the order
+      await this.sessionDataService.ingestSessionDataToOrder(briqpaySessionId, order.id)
+    } catch (error) {
+      // Log the error but don't fail the notification processing
+      // The session data ingestion is a best-effort operation
+      appLogger.error(
+        {
+          briqpaySessionId,
+          paymentId,
+          error: error instanceof Error ? error.message : error,
+          stack: error instanceof Error ? error.stack : undefined,
+        },
+        'Failed to ingest Briqpay session data to order (non-fatal)',
+      )
+    }
   }
 }
