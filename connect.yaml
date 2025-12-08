@@ -96,6 +96,9 @@ deployAs:
           description: Key of CustomType field to store transaction PSP integration name
           required: false
           default: briqpay-transaction-data-psp-integration-name
+        - key: ALLOWED_ORIGINS
+          description: Comma-separated list of allowed CORS origins (e.g., https://your-store.com,https://admin.your-store.com)
+          required: false
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
           description: commercetools client secret

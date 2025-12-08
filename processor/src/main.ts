@@ -1,7 +1,18 @@
 import 'dotenv/config'
+import { validateEnvironment } from './config/env-validation'
 import { setupFastify } from './server/server'
 
 void (async () => {
+  // SECURITY: Validate environment variables before starting
+  // This ensures the application doesn't run with missing or invalid configuration
+  try {
+    validateEnvironment()
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error('Environment validation failed:', error)
+    process.exit(1)
+  }
+
   // // This may be needed to uncomment for local development in case the type does not exist on your account,
   // // will be taken care of by postDeploy if deployed to Commerce Tools
   // // Initialize Briqpay custom type

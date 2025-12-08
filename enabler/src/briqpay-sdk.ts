@@ -1,12 +1,23 @@
+export type BriqpaySdkParams = {
+  processorUrl: string;
+  sessionId: string;
+};
+
+export type DecisionResponse = {
+  success: boolean;
+  decision: 'allow' | 'reject';
+};
+
 /**
  * Represents a Briqpay SDK.
  */
 export class BriqpaySdk {
-  private params;
+  private params: BriqpaySdkParams;
+
   /**
    * Creates an instance of BriqpaySdk.
    */
-  constructor(params: Record<string, unknown>) {
+  constructor(params: BriqpaySdkParams) {
     this.params = params;
   }
 
@@ -30,24 +41,52 @@ export class BriqpaySdk {
   }
 
   /**
-   * After receiving a briqpayDecision event, call this method with the outcome
+   * After receiving a briqpayDecision event, call this method with the outcome.
+   * This method securely calls the backend processor which validates the session
+   * and makes the decision through Briqpay's API with proper authentication.
    *
    * @example
    * document.addEventListener("briqpayDecision", function (event) {
    *   // Access the data using event.detail
    *   const data = event.detail.data;
    *
-   *   // Do something with the data
-   *   component.sdk.makeDecision(true);
+   *   // Make the decision through the secure backend
+   *   await component.sdk.makeDecision(true);
    * });
    *
-   * @param decision true|false
+   * @param decision true = allow, false = reject
+   * @returns Promise<DecisionResponse> - The result from the backend
+   * @throws Error if the backend call fails
    */
-  makeDecision(decision: boolean) {
-    const responseEvent = new CustomEvent("briqpayDecisionResponse", {
-      detail: { decision: Boolean(decision) },
+  async makeDecision(decision: boolean): Promise<DecisionResponse> {
+    const briqpayDecision = decision ? 'allow' : 'reject';
+
+    const response = await fetch(`${this.params.processorUrl}/decision`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-ID': this.params.sessionId,
+      },
+      body: JSON.stringify({
+        sessionId: this.params.sessionId,
+        decision: briqpayDecision,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Decision request failed: ${response.status} - ${errorText}`);
+    }
+
+    const result: DecisionResponse = await response.json();
+
+    // Dispatch the response event for Briqpay iframe to handle
+    const responseEvent = new CustomEvent('briqpayDecisionResponse', {
+      detail: { decision: result.success && result.decision === 'allow' },
     });
     document.dispatchEvent(responseEvent);
+
+    return result;
   }
 
   /**

@@ -16,14 +16,19 @@ import { AbstractPaymentService } from './abstract-payment.service'
 import { getConfig } from '../config/config'
 import { appLogger, paymentSDK } from '../payment-sdk'
 import { BriqpayPaymentServiceOptions, CreatePaymentRequest } from './types/briqpay-payment.type'
-import { NotificationRequestSchemaDTO, PaymentResponseSchemaDTO } from '../dtos/briqpay-payment.dto'
+import {
+  BRIQPAY_DECISION,
+  DecisionRequestSchemaDTO,
+  NotificationRequestSchemaDTO,
+  PaymentResponseSchemaDTO,
+} from '../dtos/briqpay-payment.dto'
 import { getCartIdFromContext, getFutureOrderNumberFromContext } from '../libs/fastify/context/context'
 import { TransactionDraftDTO, TransactionResponseDTO } from '../dtos/operations/transaction.dto'
 import BriqpayService from '../libs/briqpay/BriqpayService'
 import { BriqpaySessionService } from './briqpay/session.service'
 import { BriqpayOperationService } from './briqpay/operation.service'
 import { BriqpayNotificationService } from './briqpay/notification.service'
-import { SessionError, ValidationError } from '../libs/errors/briqpay-errors'
+import { SessionError, UpstreamError, ValidationError } from '../libs/errors/briqpay-errors'
 
 export class BriqpayPaymentService extends AbstractPaymentService {
   private sessionService: BriqpaySessionService
@@ -204,5 +209,103 @@ export class BriqpayPaymentService extends AbstractPaymentService {
 
   public createPayment(request: CreatePaymentRequest): Promise<PaymentResponseSchemaDTO> {
     return this.operationService.createPayment(request)
+  }
+
+  /**
+   * Makes a decision on a Briqpay session.
+   * This is the secure server-side implementation that validates the session
+   * belongs to the current cart before calling Briqpay's API.
+   *
+   * @param request - The decision request containing sessionId and decision
+   * @returns Promise with success status and decision made
+   * @throws SessionError if session validation fails
+   * @throws UpstreamError if Briqpay API call fails
+   */
+  public async makeDecision(
+    request: DecisionRequestSchemaDTO,
+  ): Promise<{ success: boolean; decision: BRIQPAY_DECISION }> {
+    const { sessionId, decision, rejectionType, hardError, softErrors } = request
+    const cartId = getCartIdFromContext()
+
+    appLogger.info(
+      {
+        sessionId,
+        decision,
+        cartId,
+      },
+      'Processing makeDecision request',
+    )
+
+    // SECURITY: Validate that the session belongs to the cart from the authenticated context
+    const ctCart = await this.ctCartService.getCart({ id: cartId })
+    const cartSessionId = ctCart.custom?.fields?.['briqpaySessionId'] as string | undefined
+
+    if (!cartSessionId) {
+      appLogger.error({ cartId, sessionId }, 'Cart does not have a Briqpay session associated')
+      throw new SessionError('No Briqpay session found for this cart', 400)
+    }
+
+    if (cartSessionId !== sessionId) {
+      appLogger.error(
+        {
+          cartId,
+          requestedSessionId: sessionId,
+          cartSessionId,
+        },
+        'Session ID mismatch - potential security violation',
+      )
+      throw new SessionError('Session does not belong to this cart', 403)
+    }
+
+    // SECURITY: Call Briqpay's API server-side with proper authentication
+    try {
+      const response = await BriqpayService.makeDecision(sessionId, {
+        decision,
+        rejectionType,
+        hardError,
+        softErrors,
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        appLogger.error(
+          {
+            status: response.status,
+            statusText: response.statusText,
+            errorText,
+            sessionId,
+          },
+          'Briqpay makeDecision API call failed',
+        )
+        throw new UpstreamError(`Briqpay decision failed: ${response.status} ${response.statusText}`)
+      }
+
+      appLogger.info(
+        {
+          sessionId,
+          decision,
+          status: response.status,
+        },
+        'Decision successfully sent to Briqpay',
+      )
+
+      return {
+        success: true,
+        decision,
+      }
+    } catch (error) {
+      if (error instanceof SessionError || error instanceof UpstreamError) {
+        throw error
+      }
+
+      appLogger.error(
+        {
+          error: error instanceof Error ? error.message : error,
+          sessionId,
+        },
+        'Unexpected error in makeDecision',
+      )
+      throw new UpstreamError('Failed to process decision', error)
+    }
   }
 }

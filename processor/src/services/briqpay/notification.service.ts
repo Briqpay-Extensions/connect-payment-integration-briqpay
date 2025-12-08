@@ -38,11 +38,23 @@ export class BriqpayNotificationService {
     appLogger.info({ ...opts.data }, 'Processing notification')
 
     try {
-      // Authenticate towards Briqpay and fetch the session using the API scope in the Briqpay API keys
-      const briqpaySession = await Briqpay.getSession(briqpaySessionId).catch(() => void 0)
+      // SECURITY: Validate webhook by fetching session from Briqpay API
+      // This ensures the sessionId is legitimate and exists in Briqpay's system
+      // An attacker cannot forge a valid sessionId without access to Briqpay
+      const briqpaySession = await Briqpay.getSession(briqpaySessionId).catch((error) => {
+        appLogger.warn(
+          { briqpaySessionId, error: error instanceof Error ? error.message : error },
+          'Failed to validate webhook session - potential spoofing attempt',
+        )
+        return undefined
+      })
 
-      if (briqpaySession?.sessionId !== briqpaySessionId) {
-        throw new Error('Briqpay session validation failed')
+      if (!briqpaySession || briqpaySession.sessionId !== briqpaySessionId) {
+        appLogger.error(
+          { briqpaySessionId, receivedSessionId: briqpaySession?.sessionId },
+          'Webhook validation failed - session mismatch or not found',
+        )
+        throw new Error('Webhook validation failed: Invalid session')
       }
 
       const payment = await this.ctPaymentService.findPaymentsByInterfaceId({
@@ -289,8 +301,6 @@ export class BriqpayNotificationService {
     status: BRIQPAY_WEBHOOK_STATUS,
   ) => {
     const briqpaySessionId = briqpaySession.sessionId
-    // eslint-disable-next-line no-console
-    console.log('>>> handleCaptureApproved called', { briqpaySessionId, briqpayCaptureId })
     appLogger.info({ briqpaySessionId, briqpayCaptureId, paymentId: payment[0]?.id }, 'handleCaptureApproved called')
 
     // Update pending authorization to success
@@ -457,8 +467,6 @@ export class BriqpayNotificationService {
    * @param paymentId - The CommerceTools payment ID
    */
   private ingestSessionDataToOrder = async (briqpaySessionId: string, paymentId: string): Promise<void> => {
-    // eslint-disable-next-line no-console
-    console.log('>>> ingestSessionDataToOrder called', { briqpaySessionId, paymentId })
     appLogger.info({ briqpaySessionId, paymentId }, 'Starting ingestSessionDataToOrder lookup')
 
     try {

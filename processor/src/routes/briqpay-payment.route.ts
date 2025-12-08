@@ -1,9 +1,11 @@
 import { SessionHeaderAuthenticationHook } from '@commercetools/connect-payments-sdk'
 import { FastifyInstance, FastifyPluginOptions } from 'fastify'
 import {
+  BRIQPAY_DECISION,
   ConfigResponseSchema,
   DecisionRequestSchema,
   DecisionRequestSchemaDTO,
+  DecisionResponseSchema,
   NotificationRequestSchemaDTO,
   PaymentRequestSchema,
   PaymentRequestSchemaDTO,
@@ -11,7 +13,7 @@ import {
   PaymentResponseSchemaDTO,
 } from '../dtos/briqpay-payment.dto'
 import { BriqpayPaymentService } from '../services/briqpay-payment.service'
-import Briqpay from '../libs/briqpay/BriqpayService'
+import { appLogger } from '../payment-sdk'
 
 type PaymentRoutesOptions = {
   paymentService: BriqpayPaymentService
@@ -39,17 +41,35 @@ export const paymentRoutes = (fastify: FastifyInstance, opts: FastifyPluginOptio
     },
   )
 
-  fastify.post<{ Body: DecisionRequestSchemaDTO; Reply: void }>(
+  fastify.post<{ Body: DecisionRequestSchemaDTO; Reply: { success: boolean; decision: BRIQPAY_DECISION } }>(
     '/decision',
     {
       preHandler: [opts.sessionHeaderAuthHook.authenticate()],
       schema: {
         body: DecisionRequestSchema,
+        response: {
+          200: DecisionResponseSchema,
+        },
       },
     },
     async (request, reply) => {
-      await Briqpay.makeDecision(request.body.sessionId, { decision: request.body.decision })
-      return reply.status(204).send()
+      appLogger.info(
+        {
+          sessionId: request.body.sessionId,
+          decision: request.body.decision,
+        },
+        'Processing decision request',
+      )
+
+      const result = await opts.paymentService.makeDecision({
+        sessionId: request.body.sessionId,
+        decision: request.body.decision,
+        rejectionType: request.body.rejectionType,
+        hardError: request.body.hardError,
+        softErrors: request.body.softErrors,
+      })
+
+      return reply.status(200).send(result)
     },
   )
 

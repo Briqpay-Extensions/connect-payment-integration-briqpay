@@ -362,3 +362,58 @@ The processor reports support for:
   "components": []
 }
 ```
+
+## Security
+
+The processor implements several security measures for production readiness:
+
+### Authentication & Authorization
+
+- **Session Authentication**: Frontend requests require valid commercetools session ID (`X-Session-ID` header)
+- **OAuth2 Authentication**: Backend operations require Bearer tokens from commercetools
+- **JWT Validation**: Merchant Center integrations validated via commercetools JWKS endpoint
+
+### Input Validation
+
+- **TypeBox Schema Validation**: All request bodies validated against strict schemas
+- **Session ID Pattern**: Regex validation (`^[a-zA-Z0-9-_]{1,128}$`) prevents injection attacks
+- **Array Size Limits**: Prevents DoS via oversized payloads
+
+### Webhook Security
+
+- **Session Validation**: Webhooks validated by fetching session from Briqpay API
+- **Idempotency**: Duplicate notifications handled gracefully
+- **Audit Logging**: All webhook processing logged with correlation IDs
+
+### Security Headers
+
+All responses include security headers:
+
+- `X-Frame-Options: DENY` - Prevents clickjacking
+- `X-Content-Type-Options: nosniff` - Prevents MIME sniffing
+- `X-XSS-Protection: 1; mode=block` - XSS filter
+- `Strict-Transport-Security` - HTTPS enforcement
+- `Content-Security-Policy` - CSP protection
+- `Referrer-Policy: strict-origin-when-cross-origin`
+
+### CORS Configuration
+
+Configure allowed origins in production:
+
+```bash
+ALLOWED_ORIGINS=https://your-frontend.com,https://admin.your-site.com
+```
+
+### Environment Validation
+
+The processor validates all required environment variables at startup and fails fast if configuration is missing or invalid. Sensitive URLs must use HTTPS.
+
+### Audit Logging
+
+All requests are logged with:
+
+- Request method, URL, IP address
+- User-Agent and Origin headers
+- Session ID presence (masked)
+- Response status code and timing
+- Correlation IDs for tracing

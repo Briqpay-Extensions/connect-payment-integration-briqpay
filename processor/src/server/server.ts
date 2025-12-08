@@ -26,10 +26,64 @@ export const setupFastify = async () => {
   // Setup error handler
   server.setErrorHandler(errorHandler)
 
-  // Enable CORS
+  // Enable CORS with secure configuration
+  // SECURITY: Restrict origins in production, allow all only in development
+  const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',').map((o) => o.trim()) || []
   await server.register(cors, {
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Correlation-ID', 'X-Request-ID', 'X-Session-ID'],
-    origin: '*',
+    origin: allowedOrigins.length > 0 ? allowedOrigins : true, // true allows all in dev, configure ALLOWED_ORIGINS in prod
+    credentials: true,
+  })
+
+  // SECURITY: Request logging for audit trails
+  server.addHook('onRequest', (request) => {
+    // Log security-relevant request information
+    request.log.info(
+      {
+        audit: true,
+        method: request.method,
+        url: request.url,
+        ip: request.ip,
+        userAgent: request.headers['user-agent'],
+        correlationId: request.headers['x-correlation-id'],
+        sessionId: request.headers['x-session-id'] ? '[PRESENT]' : '[ABSENT]',
+        origin: request.headers['origin'],
+      },
+      'Incoming request',
+    )
+  })
+
+  // SECURITY: Response logging for audit trails
+  server.addHook('onResponse', async (request, reply) => {
+    request.log.info(
+      {
+        audit: true,
+        method: request.method,
+        url: request.url,
+        statusCode: reply.statusCode,
+        responseTime: reply.elapsedTime,
+        ip: request.ip,
+      },
+      'Request completed',
+    )
+  })
+
+  // SECURITY: Add security headers
+  server.addHook('onSend', async (request, reply) => {
+    // Prevent clickjacking
+    reply.header('X-Frame-Options', 'DENY')
+    // Prevent MIME type sniffing
+    reply.header('X-Content-Type-Options', 'nosniff')
+    // Enable XSS filter
+    reply.header('X-XSS-Protection', '1; mode=block')
+    // Strict transport security (HTTPS only)
+    reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+    // Referrer policy
+    reply.header('Referrer-Policy', 'strict-origin-when-cross-origin')
+    // Content Security Policy
+    reply.header('Content-Security-Policy', "default-src 'self'; frame-ancestors 'none'")
+    // Permissions policy
+    reply.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()')
   })
 
   // Add content type parser for the content type application/x-www-form-urlencoded

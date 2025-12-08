@@ -64,30 +64,58 @@ export const PaymentRequestSchema = Type.Object({
   paymentOutcome: PaymentOutcomeSchema,
 })
 
+// SECURITY: Strict input validation for session IDs to prevent injection attacks
+const SessionIdPattern = /^[a-zA-Z0-9-_]{1,128}$/
+const SafeStringPattern = /^[a-zA-Z0-9\s.,!?'-]{0,500}$/
+
 export const DecisionRequestSchema = Type.Object({
-  sessionId: Type.String(),
+  sessionId: Type.String({
+    minLength: 1,
+    maxLength: 128,
+    pattern: SessionIdPattern.source,
+  }),
   decision: Type.Enum(BRIQPAY_DECISION),
   rejectionType: Type.Optional(Type.Enum(BRIQPAY_REJECT_TYPE)),
   hardError: Type.Optional(
     Type.Object({
-      message: Type.String(),
+      message: Type.String({ maxLength: 500, pattern: SafeStringPattern.source }),
     }),
   ),
   softErrors: Type.Optional(
     Type.Array(
       Type.Object({
-        message: Type.String(),
+        message: Type.String({ maxLength: 500, pattern: SafeStringPattern.source }),
       }),
+      { maxItems: 10 }, // Limit array size to prevent DoS
     ),
   ),
+})
+
+export const DecisionResponseSchema = Type.Object({
+  success: Type.Boolean(),
+  decision: Type.Enum(BRIQPAY_DECISION),
 })
 
 export const NotificationRequestSchema = Type.Object({
   event: Type.Enum(BRIQPAY_WEBHOOK_EVENT),
   status: Type.Enum(BRIQPAY_WEBHOOK_STATUS),
-  sessionId: Type.String(),
-  captureId: Type.Optional(Type.String()),
-  refundId: Type.Optional(Type.String()),
+  sessionId: Type.String({
+    minLength: 1,
+    maxLength: 128,
+    pattern: SessionIdPattern.source,
+  }),
+  captureId: Type.Optional(
+    Type.String({
+      maxLength: 128,
+      pattern: SessionIdPattern.source,
+    }),
+  ),
+  refundId: Type.Optional(
+    Type.String({
+      maxLength: 128,
+      pattern: SessionIdPattern.source,
+    }),
+  ),
   autoCaptured: Type.Optional(Type.Boolean()),
   isPreExistingCapture: Type.Optional(Type.Boolean()),
 })

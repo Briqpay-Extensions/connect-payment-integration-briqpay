@@ -1036,10 +1036,10 @@ class NotificationService {
 
 **Webhook Security**:
 
-- HMAC signature verification
-- IP whitelisting for Briqpay servers
+- Session validation via Briqpay API (verifies sessionId exists in Briqpay's system)
 - Idempotency handling to prevent duplicate processing
 - Comprehensive logging for audit trails
+- Request/response audit logging with correlation IDs
 
 ### Database Integration & Custom Types
 
@@ -1224,10 +1224,13 @@ export const authenticateRequest = async (request: FastifyRequest) => {
 #### Security Measures
 
 - **JWT Token Validation**: Using commercetools JWKS endpoint
-- **API Rate Limiting**: Prevent abuse and ensure fair usage
-- **Input Sanitization**: Prevent injection attacks
-- **HTTPS Enforcement**: Secure all API communications
-- **CORS Configuration**: Controlled cross-origin access
+- **Input Validation**: Strict TypeBox schema validation with regex patterns for session IDs
+- **HTTPS Enforcement**: Secure all API communications (URLs must use HTTPS in production)
+- **CORS Configuration**: Configurable allowed origins via `ALLOWED_ORIGINS` environment variable
+- **Security Headers**: X-Frame-Options, X-Content-Type-Options, HSTS, CSP, and more
+- **Audit Logging**: Request/response logging with correlation IDs for security monitoring
+- **Environment Validation**: Fail-fast startup if required environment variables are missing
+- **Server-Side Decision Handling**: Payment decisions validated server-side to prevent client manipulation
 
 ### Testing Strategy
 
