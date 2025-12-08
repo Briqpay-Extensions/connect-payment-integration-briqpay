@@ -63,6 +63,7 @@
     "typescript": "5.9.3"
   },
   "overrides": {
-    "path-to-regexp": "3.3.0"
+    "path-to-regexp": "3.3.0",
+    "jws": "3.2.3"
   }
 }
