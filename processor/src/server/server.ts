@@ -36,7 +36,8 @@ export const setupFastify = async () => {
   })
 
   // SECURITY: Request logging for audit trails
-  server.addHook('onRequest', (request) => {
+  // eslint-disable-next-line @typescript-eslint/require-await
+  server.addHook('onRequest', async (request) => {
     // Log security-relevant request information
     request.log.info(
       {
@@ -54,6 +55,7 @@ export const setupFastify = async () => {
   })
 
   // SECURITY: Response logging for audit trails
+  // eslint-disable-next-line @typescript-eslint/require-await
   server.addHook('onResponse', async (request, reply) => {
     request.log.info(
       {
@@ -69,6 +71,7 @@ export const setupFastify = async () => {
   })
 
   // SECURITY: Add security headers
+  // eslint-disable-next-line @typescript-eslint/require-await
   server.addHook('onSend', async (request, reply) => {
     // Prevent clickjacking
     reply.header('X-Frame-Options', 'DENY')

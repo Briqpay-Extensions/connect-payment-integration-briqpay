@@ -7,6 +7,35 @@
  * the application from running in an insecure state.
  */
 
+/**
+ * SECURITY: Validates that a URL is either HTTPS or a local development HTTP URL.
+ * Local development URLs are allowed for testing purposes only.
+ * This prevents allowing arbitrary HTTP origins like http://shadywebsite.com
+ */
+function isSecureOrLocalUrl(url: string): boolean {
+  // HTTPS is always allowed
+  if (url.startsWith('https://')) {
+    return true
+  }
+
+  // HTTP is only allowed for local development addresses
+  if (url.startsWith('http://')) {
+    const localPatterns = [
+      'http://localhost',
+      'http://localhost:',
+      'http://127.0.0.1',
+      'http://127.0.0.1:',
+      'http://0.0.0.0',
+      'http://0.0.0.0:',
+      'http://[::1]',
+      'http://[::1]:',
+    ]
+    return localPatterns.some((pattern) => url.startsWith(pattern))
+  }
+
+  return false
+}
+
 type EnvVarConfig = {
   name: string
   required: boolean
@@ -45,16 +74,8 @@ const REQUIRED_ENV_VARS: EnvVarConfig[] = [
   {
     name: 'BRIQPAY_CONFIRMATION_URL',
     required: true,
-    validator: (value) => {
-      // Allow HTTPS URLs and HTTP for localhost/local development
-      const isHttps = value.startsWith('https://')
-      const isLocalHttp =
-        value.startsWith('http://localhost:') ||
-        value.startsWith('http://127.0.0.1:') ||
-        value.startsWith('http://0.0.0.0:')
-      return isHttps || isLocalHttp
-    },
-    errorMessage: 'BRIQPAY_CONFIRMATION_URL must use HTTPS (except for localhost)',
+    validator: isSecureOrLocalUrl,
+    errorMessage: 'BRIQPAY_CONFIRMATION_URL must use HTTPS (except for localhost/127.0.0.1)',
   },
 ]
 
@@ -64,10 +85,12 @@ const OPTIONAL_ENV_VARS: EnvVarConfig[] = [
     name: 'ALLOWED_ORIGINS',
     required: false,
     validator: (value) => {
+      // SECURITY: Each origin must be HTTPS or a local development URL
+      // This prevents allowing arbitrary HTTP origins like http://shadywebsite.com
       const origins = value.split(',').map((o) => o.trim())
-      return origins.every((o) => o.startsWith('http://') || o.startsWith('https://'))
+      return origins.every(isSecureOrLocalUrl)
     },
-    errorMessage: 'ALLOWED_ORIGINS must be comma-separated URLs',
+    errorMessage: 'ALLOWED_ORIGINS must be HTTPS URLs (HTTP only allowed for localhost/127.0.0.1)',
   },
 ]
 
