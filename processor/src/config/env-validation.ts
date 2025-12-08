@@ -45,8 +45,16 @@ const REQUIRED_ENV_VARS: EnvVarConfig[] = [
   {
     name: 'BRIQPAY_CONFIRMATION_URL',
     required: true,
-    validator: (value) => value.startsWith('https://'),
-    errorMessage: 'BRIQPAY_CONFIRMATION_URL must use HTTPS',
+    validator: (value) => {
+      // Allow HTTPS URLs and HTTP for localhost/local development
+      const isHttps = value.startsWith('https://')
+      const isLocalHttp =
+        value.startsWith('http://localhost:') ||
+        value.startsWith('http://127.0.0.1:') ||
+        value.startsWith('http://0.0.0.0:')
+      return isHttps || isLocalHttp
+    },
+    errorMessage: 'BRIQPAY_CONFIRMATION_URL must use HTTPS (except for localhost)',
   },
 ]
 
