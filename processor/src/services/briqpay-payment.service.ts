@@ -42,7 +42,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     this.notificationService = new BriqpayNotificationService(opts.ctPaymentService, this.operationService)
   }
 
-  public async config(hostname: string): Promise<ConfigResponse> {
+  public async config(hostname: string, clientOrigin?: string): Promise<ConfigResponse> {
     try {
       const config = getConfig()
       const cartId = getCartIdFromContext()
@@ -81,12 +81,13 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       )
 
       // Check if a briqpay session id exists on the cart and handle session creation/retrieval
-      appLogger.info({ futureOrderNumber }, 'Creating Briqpay session with futureOrderNumber')
+      appLogger.info({ futureOrderNumber, clientOrigin }, 'Creating Briqpay session with futureOrderNumber')
       const briqpaySession = await this.sessionService.createOrUpdateBriqpaySession(
         ctCart,
         amountPlanned,
         hostname,
         futureOrderNumber,
+        clientOrigin,
       )
 
       // Ensure we have a valid session ID before updating the cart

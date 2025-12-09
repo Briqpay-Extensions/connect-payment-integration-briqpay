@@ -67,7 +67,13 @@ describe('BriqpaySessionService', () => {
 
       const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
 
-      expect(mockedBriqpay.createSession).toHaveBeenCalledWith(mockCart, amountPlanned, 'localhost', undefined)
+      expect(mockedBriqpay.createSession).toHaveBeenCalledWith(
+        mockCart,
+        amountPlanned,
+        'localhost',
+        undefined,
+        undefined,
+      )
       expect(result.sessionId).toBe('new-session-id')
     })
 

@@ -72,6 +72,7 @@ export class BriqpaySessionService {
     amountPlanned: PaymentAmount,
     hostname: string,
     futureOrderNumber?: string,
+    clientOrigin?: string,
   ): Promise<MediumBriqpayResponse> {
     const existingSessionId = ctCart.custom?.fields?.['briqpaySessionId'] as string
     appLogger.info({ existingSessionId }, 'Existing session ID:')
@@ -84,16 +85,23 @@ export class BriqpaySessionService {
           hostname,
           existingSessionId,
           futureOrderNumber,
+          clientOrigin,
         )
         return result
       }
 
       appLogger.info({}, 'Creating new session')
-      const briqpaySession = await Briqpay.createSession(ctCart, amountPlanned, hostname, futureOrderNumber)
+      const briqpaySession = await Briqpay.createSession(
+        ctCart,
+        amountPlanned,
+        hostname,
+        futureOrderNumber,
+        clientOrigin,
+      )
       appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session:')
       return briqpaySession
     } catch (error) {
-      return this.handleSessionCreationFallback(ctCart, amountPlanned, hostname, error, futureOrderNumber)
+      return this.handleSessionCreationFallback(ctCart, amountPlanned, hostname, error, futureOrderNumber, clientOrigin)
     }
   }
 
@@ -103,6 +111,7 @@ export class BriqpaySessionService {
     hostname: string,
     existingSessionId: string,
     futureOrderNumber?: string,
+    clientOrigin?: string,
   ): Promise<MediumBriqpayResponse> {
     const briqpaySession = await Briqpay.getSession(existingSessionId)
     appLogger.info({ existingSessionId }, 'Retrieved Briqpay session:')
@@ -112,7 +121,14 @@ export class BriqpaySessionService {
     appLogger.info({ isCartMatching }, 'Cart matching result:')
 
     if (!isCartMatching) {
-      return this.updateOrCreateSession(ctCart, amountPlanned, hostname, existingSessionId, futureOrderNumber)
+      return this.updateOrCreateSession(
+        ctCart,
+        amountPlanned,
+        hostname,
+        existingSessionId,
+        futureOrderNumber,
+        clientOrigin,
+      )
     }
 
     return briqpaySession
@@ -124,6 +140,7 @@ export class BriqpaySessionService {
     hostname: string,
     existingSessionId: string,
     futureOrderNumber?: string,
+    clientOrigin?: string,
   ): Promise<MediumBriqpayResponse> {
     try {
       appLogger.info({}, 'Updating session with new cart data')
@@ -139,7 +156,13 @@ export class BriqpaySessionService {
         { error: updateError instanceof Error ? updateError.message : updateError },
         'Failed to update Briqpay session, creating new one:',
       )
-      const briqpaySession = await Briqpay.createSession(ctCart, amountPlanned, hostname, futureOrderNumber)
+      const briqpaySession = await Briqpay.createSession(
+        ctCart,
+        amountPlanned,
+        hostname,
+        futureOrderNumber,
+        clientOrigin,
+      )
       appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session after update failed:')
       return briqpaySession
     }
@@ -151,6 +174,7 @@ export class BriqpaySessionService {
     hostname: string,
     error: unknown,
     futureOrderNumber?: string,
+    clientOrigin?: string,
   ): Promise<MediumBriqpayResponse> {
     // If session retrieval fails or no session exists, create a new one
     appLogger.error(
@@ -158,7 +182,13 @@ export class BriqpaySessionService {
       'Session operation failed, creating new session:',
     )
     try {
-      const briqpaySession = await Briqpay.createSession(ctCart, amountPlanned, hostname, futureOrderNumber)
+      const briqpaySession = await Briqpay.createSession(
+        ctCart,
+        amountPlanned,
+        hostname,
+        futureOrderNumber,
+        clientOrigin,
+      )
       appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session after error:')
       return briqpaySession
     } catch (creationError) {

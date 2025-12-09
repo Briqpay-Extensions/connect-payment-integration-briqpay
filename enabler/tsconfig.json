@@ -20,5 +20,5 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "test", "decs.d.ts", "eslint.config.js"]
+  "include": ["src", "test", "decs.d.ts", "eslint.config.js", "vite.config.ts"]
 }

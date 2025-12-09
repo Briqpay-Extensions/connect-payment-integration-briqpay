@@ -30,7 +30,16 @@ function isSecureOrLocalUrl(url: string): boolean {
       'http://[::1]',
       'http://[::1]:',
     ]
-    return localPatterns.some((pattern) => url.startsWith(pattern))
+
+    if (localPatterns.some((pattern) => url.startsWith(pattern))) {
+      return true
+    }
+
+    // Also allow private network IPs for local development (RFC 1918)
+    // 10.0.0.0 - 10.255.255.255, 172.16.0.0 - 172.31.255.255, 192.168.0.0 - 192.168.255.255
+    const privateNetworkRegex =
+      /^http:\/\/(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(:\d+)?(\/.*)?$/
+    return privateNetworkRegex.test(url)
   }
 
   return false
@@ -75,7 +84,7 @@ const REQUIRED_ENV_VARS: EnvVarConfig[] = [
     name: 'BRIQPAY_CONFIRMATION_URL',
     required: true,
     validator: isSecureOrLocalUrl,
-    errorMessage: 'BRIQPAY_CONFIRMATION_URL must use HTTPS (except for localhost/127.0.0.1)',
+    errorMessage: 'BRIQPAY_CONFIRMATION_URL must use HTTPS (except for localhost/127.0.0.1/private network IPs)',
   },
 ]
 
@@ -90,7 +99,7 @@ const OPTIONAL_ENV_VARS: EnvVarConfig[] = [
       const origins = value.split(',').map((o) => o.trim())
       return origins.every(isSecureOrLocalUrl)
     },
-    errorMessage: 'ALLOWED_ORIGINS must be HTTPS URLs (HTTP only allowed for localhost/127.0.0.1)',
+    errorMessage: 'ALLOWED_ORIGINS must be HTTPS URLs (HTTP only allowed for localhost/127.0.0.1/private network IPs)',
   },
 ]
 
