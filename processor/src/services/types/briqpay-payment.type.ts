@@ -314,23 +314,68 @@ export interface BriqpayModuleStatus {
 }
 
 /**
+ * Transaction (authorization) information from Briqpay session.
+ * Located in data.transactions array.
+ */
+export interface BriqpayTransaction {
+  transactionId: string
+  status: TRANSACTION_STATUS
+  amountIncVat: number
+  amountExVat?: number
+  currency: string
+  createdAt?: string
+  reservationId?: string
+  pspId?: string
+  pspDisplayName?: string
+  pspIntegrationName?: string
+  email?: string
+  phoneNumber?: string
+  cart?: CartItem[]
+  captureStatus?: string
+  refundStatus?: string
+}
+
+/**
  * Capture information from Briqpay session.
+ * Located in data.captures array.
  */
 export interface BriqpayCapture {
   captureId: string
   status: TRANSACTION_STATUS
-  amount?: number
-  currency?: string
+  amountIncVat: number
+  amountExVat?: number
+  currency: string
+  createdAt?: string
+  parentTransactionId?: string
+  reservationId?: string
+  autoCaptured?: boolean
+  pspId?: string
+  pspDisplayName?: string
+  pspIntegrationName?: string
+  email?: string
+  phoneNumber?: string
+  cart?: CartItem[]
 }
 
 /**
  * Refund information from Briqpay session.
+ * Located in data.refunds array.
  */
 export interface BriqpayRefund {
   refundId: string
   status: TRANSACTION_STATUS
-  amount?: number
-  currency?: string
+  amountIncVat: number
+  amountExVat?: number
+  currency: string
+  createdAt?: string
+  parentCaptureId?: string
+  parentTransactionId?: string
+  reservationId?: string
+  pspId?: string
+  pspDisplayName?: string
+  pspIntegrationName?: string
+  email?: string
+  cart?: CartItem[]
 }
 
 export type MediumBriqpayResponse = MinimalBriqpayResponse & {
@@ -341,19 +386,33 @@ export type MediumBriqpayResponse = MinimalBriqpayResponse & {
       currency: string
       cart: CartItem[]
     }
+    /**
+     * List of transactions (authorizations) on this session.
+     * This is the source of truth for authorization status.
+     */
+    transactions?: BriqpayTransaction[]
+    /**
+     * List of captures on this session.
+     * This is the source of truth for capture status.
+     */
+    captures?: BriqpayCapture[]
+    /**
+     * List of refunds on this session.
+     * This is the source of truth for refund status.
+     */
+    refunds?: BriqpayRefund[]
   }
   /**
-   * Module status containing the actual order/capture/refund status.
-   * This is the source of truth for status - webhook payloads should not be trusted
-   * until HMAC validation is enabled.
+   * Module status containing high-level order/capture/refund status.
+   * Note: For detailed status, use data.transactions, data.captures, data.refunds arrays.
    */
   moduleStatus?: BriqpayModuleStatus
   /**
-   * List of captures on this session.
+   * @deprecated Use data.captures instead for accurate capture information
    */
   captures?: BriqpayCapture[]
   /**
-   * List of refunds on this session.
+   * @deprecated Use data.refunds instead for accurate refund information
    */
   refunds?: BriqpayRefund[]
 }

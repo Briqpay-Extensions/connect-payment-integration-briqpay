@@ -11,11 +11,13 @@ import { MediumBriqpayResponse } from '../types/briqpay-payment.type'
 import { appLogger } from '../../payment-sdk'
 import Briqpay from '../../libs/briqpay/BriqpayService'
 import {
-  convertNotificationStatus,
-  convertPaymentResultCode,
+  getActualAuthorizationStatus,
   getActualCaptureStatus,
   getActualOrderStatus,
   getActualRefundStatus,
+  getCapture,
+  getRefund,
+  getTransaction,
   orderStatusToWebhookStatus,
   transactionStatusToWebhookStatus,
 } from './utils'
@@ -100,6 +102,7 @@ export class BriqpayNotificationService {
 
   /**
    * Extracts actual statuses from the Briqpay session response.
+   * Uses data.transactions for authorization, data.captures for captures, data.refunds for refunds.
    */
   private extractActualStatuses(
     briqpaySession: MediumBriqpayResponse,
@@ -108,6 +111,7 @@ export class BriqpayNotificationService {
   ) {
     return {
       orderStatus: getActualOrderStatus(briqpaySession),
+      authorizationStatus: getActualAuthorizationStatus(briqpaySession),
       captureStatus: briqpayCaptureId ? getActualCaptureStatus(briqpaySession, briqpayCaptureId) : undefined,
       refundStatus: briqpayRefundId ? getActualRefundStatus(briqpaySession, briqpayRefundId) : undefined,
     }
@@ -129,11 +133,13 @@ export class BriqpayNotificationService {
         webhookEvent,
         webhookStatus, // Log what webhook claimed (for debugging)
         actualOrderStatus: actualStatuses.orderStatus,
+        actualAuthorizationStatus: actualStatuses.authorizationStatus,
         actualCaptureStatus: actualStatuses.captureStatus,
         actualRefundStatus: actualStatuses.refundStatus,
         moduleStatus: briqpaySession.moduleStatus,
-        capturesCount: briqpaySession.captures?.length ?? 0,
-        refundsCount: briqpaySession.refunds?.length ?? 0,
+        transactionsCount: briqpaySession.data?.transactions?.length ?? 0,
+        capturesCount: briqpaySession.data?.captures?.length ?? 0,
+        refundsCount: briqpaySession.data?.refunds?.length ?? 0,
       },
       'Fetched actual status from Briqpay API',
     )
@@ -152,7 +158,7 @@ export class BriqpayNotificationService {
   ): Promise<void> {
     switch (event) {
       case BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS:
-        await this.processOrderStatusEvent(payment, briqpaySession, actualStatuses.orderStatus)
+        await this.processOrderStatusEvent(payment, briqpaySession, actualStatuses)
         break
       case BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS:
         await this.processCaptureStatusEvent(payment, briqpaySession, actualStatuses.captureStatus, briqpayCaptureId)
@@ -165,25 +171,53 @@ export class BriqpayNotificationService {
 
   /**
    * Processes ORDER_STATUS webhook events using actual status from session.
+   * Uses data.transactions[0].status for authorization status (pending/approved).
    */
   private async processOrderStatusEvent(
     payment: Payment[],
     briqpaySession: MediumBriqpayResponse,
-    actualOrderStatus: ReturnType<typeof getActualOrderStatus>,
+    actualStatuses: ReturnType<typeof this.extractActualStatuses>,
   ): Promise<void> {
-    if (!actualOrderStatus) {
-      appLogger.warn({ briqpaySessionId: briqpaySession.sessionId }, 'No orderStatus found in moduleStatus, skipping')
+    const { orderStatus, authorizationStatus } = actualStatuses
+
+    // Prefer authorization status from transactions array if available
+    // This gives us pending/approved directly from the transaction
+    if (authorizationStatus) {
+      const authWebhookStatus = transactionStatusToWebhookStatus(authorizationStatus)
+      appLogger.info(
+        { authorizationStatus, authWebhookStatus },
+        'Processing authorization status from data.transactions',
+      )
+
+      const authHandlers: Partial<Record<BRIQPAY_WEBHOOK_STATUS, () => Promise<void>>> = {
+        [BRIQPAY_WEBHOOK_STATUS.PENDING]: () => this.handleAuthorizationPending(payment, briqpaySession),
+        [BRIQPAY_WEBHOOK_STATUS.APPROVED]: () => this.handleAuthorizationApproved(payment, briqpaySession),
+        [BRIQPAY_WEBHOOK_STATUS.REJECTED]: () => this.handleAuthorizationRejected(payment, briqpaySession),
+      }
+
+      const handler = authHandlers[authWebhookStatus]
+      if (handler) {
+        await handler()
+        return
+      }
+    }
+
+    // Fallback to moduleStatus.payment.orderStatus if no transactions
+    if (!orderStatus) {
+      appLogger.warn(
+        { briqpaySessionId: briqpaySession.sessionId },
+        'No authorization status in transactions and no orderStatus in moduleStatus, skipping',
+      )
       return
     }
 
-    const orderWebhookStatus = orderStatusToWebhookStatus(actualOrderStatus)
-    appLogger.info({ actualOrderStatus, orderWebhookStatus }, 'Processing order status from actual session state')
+    const orderWebhookStatus = orderStatusToWebhookStatus(orderStatus)
+    appLogger.info({ orderStatus, orderWebhookStatus }, 'Processing order status from moduleStatus (fallback)')
 
     const orderHandlers: Partial<Record<BRIQPAY_WEBHOOK_STATUS, () => Promise<void>>> = {
-      [BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING]: () =>
-        this.handleOrderPending(payment, briqpaySession, orderWebhookStatus),
+      [BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING]: () => this.handleAuthorizationPending(payment, briqpaySession),
       [BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED]: () =>
-        this.handleOrderApproved(payment, briqpaySession, orderWebhookStatus),
+        this.handleAuthorizationApproved(payment, briqpaySession),
     }
 
     const handler = orderHandlers[orderWebhookStatus]
@@ -318,100 +352,129 @@ export class BriqpayNotificationService {
     }
   }
 
-  private handleOrderPending = async (
-    payment: Payment[],
-    briqpaySession: MediumBriqpayResponse,
-    status: BRIQPAY_WEBHOOK_STATUS,
-  ) => {
+  /**
+   * Handles Authorization Pending status.
+   * Maps to CT Transaction Type: Authorization with state: Pending
+   */
+  private handleAuthorizationPending = async (payment: Payment[], briqpaySession: MediumBriqpayResponse) => {
     const briqpaySessionId = briqpaySession.sessionId
-    const alreadyAuthorized = payment?.[0]?.transactions.some(
-      (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Success',
+    const transaction = getTransaction(briqpaySession)
+
+    const alreadyExists = payment?.[0]?.transactions.some(
+      (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId,
     )
 
-    if (alreadyAuthorized) {
+    if (alreadyExists) {
       appLogger.info({ briqpaySessionId }, 'Authorization transaction already exists, skipping update.')
       return
     }
 
-    // If no authorization exist but a hook is sent, create a payment
+    // If no payment exists but a hook is sent, create a payment
     if (!payment.length) {
       await this.operationService.createPayment({
         data: {
           paymentMethod: PaymentMethodType.BRIQPAY as unknown as PaymentRequestSchemaDTO['paymentMethod'],
           briqpaySessionId,
-          paymentOutcome: convertPaymentResultCode(status as unknown as PaymentOutcome) as unknown as PaymentOutcome,
+          paymentOutcome: PaymentOutcome.PENDING,
         },
       })
       return
     }
+
+    // Use transaction amount if available, fallback to order amount
+    const amount = transaction?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat ?? 0
+    const currency = transaction?.currency ?? briqpaySession.data?.order?.currency ?? 'EUR'
 
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: payment[0].id,
       transaction: {
         type: 'Authorization',
         interactionId: briqpaySessionId,
-        amount: {
-          centAmount: briqpaySession.data!.order!.amountIncVat,
-          currencyCode: briqpaySession.data!.order!.currency,
-        },
-        state: convertNotificationStatus(status),
+        amount: { centAmount: amount, currencyCode: currency },
+        state: 'Pending',
       },
     })
 
-    appLogger.info(
-      {
-        updatedPayment,
-      },
-      'Payment updated after processing the notification',
-    )
+    appLogger.info({ updatedPayment, transactionId: transaction?.transactionId }, 'Created Authorization Pending')
   }
 
-  private handleOrderApproved = async (
-    payment: Payment[],
-    briqpaySession: MediumBriqpayResponse,
-    status: BRIQPAY_WEBHOOK_STATUS,
-  ) => {
+  /**
+   * Handles Authorization Approved status.
+   * Maps to CT Transaction Type: Authorization with state: Success
+   */
+  private handleAuthorizationApproved = async (payment: Payment[], briqpaySession: MediumBriqpayResponse) => {
     const briqpaySessionId = briqpaySession.sessionId
-    const alreadyAuthorized = payment?.[0]?.transactions.some(
+    const transaction = getTransaction(briqpaySession)
+
+    const alreadySuccessful = payment?.[0]?.transactions.some(
       (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Success',
     )
 
-    // If no authorization exist but a hook is sent, create a payment
+    // If no payment exists but a hook is sent, create a payment
     if (!payment.length) {
       await this.operationService.createPayment({
         data: {
           paymentMethod: PaymentMethodType.BRIQPAY as unknown as PaymentRequestSchemaDTO['paymentMethod'],
           briqpaySessionId,
-          paymentOutcome: convertPaymentResultCode(status as unknown as PaymentOutcome) as unknown as PaymentOutcome,
+          paymentOutcome: PaymentOutcome.APPROVED,
         },
       })
       return
     }
 
+    // Use transaction amount if available, fallback to order amount
+    const amount = transaction?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat ?? 0
+    const currency = transaction?.currency ?? briqpaySession.data?.order?.currency ?? 'EUR'
+
     // Update authorization to Success if not already done
-    if (!alreadyAuthorized) {
+    if (!alreadySuccessful) {
       const updatedPayment = await this.ctPaymentService.updatePayment({
         id: payment[0].id,
         transaction: {
           type: 'Authorization',
           interactionId: briqpaySessionId,
-          amount: {
-            centAmount: briqpaySession.data!.order!.amountIncVat,
-            currencyCode: briqpaySession.data!.order!.currency,
-          },
-          state: convertNotificationStatus(status),
+          amount: { centAmount: amount, currencyCode: currency },
+          state: 'Success',
         },
       })
 
-      appLogger.info(
-        {
-          updatedPayment,
-        },
-        'Payment updated after processing the notification',
-      )
+      appLogger.info({ updatedPayment, transactionId: transaction?.transactionId }, 'Created Authorization Success')
     } else {
-      appLogger.info({ briqpaySessionId }, 'Authorization transaction already exists, skipping transaction update.')
+      appLogger.info({ briqpaySessionId }, 'Authorization Success already exists, skipping.')
     }
+
+    // Always attempt to ingest Briqpay session data to order custom fields
+    await this.ingestSessionDataToOrder(briqpaySessionId, payment[0].id)
+  }
+
+  /**
+   * Handles Authorization Rejected status.
+   * Maps to CT Transaction Type: Authorization with state: Failure
+   */
+  private handleAuthorizationRejected = async (payment: Payment[], briqpaySession: MediumBriqpayResponse) => {
+    const briqpaySessionId = briqpaySession.sessionId
+    const transaction = getTransaction(briqpaySession)
+
+    if (!payment.length) {
+      appLogger.info({ briqpaySessionId }, 'No payment found for rejected authorization, skipping.')
+      return
+    }
+
+    // Use transaction amount if available, fallback to order amount
+    const amount = transaction?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat ?? 0
+    const currency = transaction?.currency ?? briqpaySession.data?.order?.currency ?? 'EUR'
+
+    const updatedPayment = await this.ctPaymentService.updatePayment({
+      id: payment[0].id,
+      transaction: {
+        type: 'Authorization',
+        interactionId: briqpaySessionId,
+        amount: { centAmount: amount, currencyCode: currency },
+        state: 'Failure',
+      },
+    })
+
+    appLogger.info({ updatedPayment, transactionId: transaction?.transactionId }, 'Created Authorization Failure')
 
     // Always attempt to ingest Briqpay session data to order custom fields
     // This is done regardless of whether the authorization was updated, as the order
@@ -419,212 +482,218 @@ export class BriqpayNotificationService {
     await this.ingestSessionDataToOrder(briqpaySessionId, payment[0].id)
   }
 
+  /**
+   * Handles Capture Pending status.
+   * Maps to CT Transaction Type: Charge with state: Pending
+   */
   private handleCapturePending = async (
     payment: Payment[],
     briqpaySession: MediumBriqpayResponse,
     briqpayCaptureId: string,
-    status: BRIQPAY_WEBHOOK_STATUS,
+    _status: BRIQPAY_WEBHOOK_STATUS,
   ) => {
     const briqpaySessionId = briqpaySession.sessionId
+    const capture = getCapture(briqpaySession, briqpayCaptureId)
+
     const alreadyCharged = payment?.[0]?.transactions.some(
       (tx) =>
         tx.type === 'Charge' && tx.interactionId === briqpayCaptureId && ['Success', 'Pending'].includes(tx.state),
     )
 
     if (alreadyCharged) {
-      appLogger.info({ briqpaySessionId }, 'Charge transaction already exists, skipping update.')
+      appLogger.info({ briqpaySessionId, briqpayCaptureId }, 'Charge transaction already exists, skipping update.')
       return
     }
 
     // Update pending authorization to success
     await this.updatePendingAuthorization(payment, briqpaySessionId)
 
-    // Need to store briqpayCaptureId somehwere
+    // Use capture amount if available, fallback to order amount
+    const amount = capture?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat ?? 0
+    const currency = capture?.currency ?? briqpaySession.data?.order?.currency ?? 'EUR'
+
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: payment[0].id,
       transaction: {
         type: 'Charge',
         interactionId: briqpayCaptureId,
-        amount: {
-          centAmount: briqpaySession.data!.order!.amountIncVat,
-          currencyCode: briqpaySession.data!.order!.currency,
-        },
-        state: convertNotificationStatus(status),
+        amount: { centAmount: amount, currencyCode: currency },
+        state: 'Pending',
       },
     })
 
-    appLogger.info(
-      {
-        updatedPayment,
-        briqpayCaptureId,
-      },
-      'Payment updated after processing the notification',
-    )
+    appLogger.info({ updatedPayment, briqpayCaptureId, captureAmount: amount }, 'Created Charge Pending')
   }
 
+  /**
+   * Handles Capture Approved status.
+   * Maps to CT Transaction Type: Charge with state: Success
+   */
   private handleCaptureApproved = async (
     payment: Payment[],
     briqpaySession: MediumBriqpayResponse,
     briqpayCaptureId: string,
-    status: BRIQPAY_WEBHOOK_STATUS,
+    _status: BRIQPAY_WEBHOOK_STATUS,
   ) => {
     const briqpaySessionId = briqpaySession.sessionId
+    const capture = getCapture(briqpaySession, briqpayCaptureId)
+
     appLogger.info({ briqpaySessionId, briqpayCaptureId, paymentId: payment[0]?.id }, 'handleCaptureApproved called')
 
     // Update pending authorization to success
     await this.updatePendingAuthorization(payment, briqpaySessionId)
 
+    // Use capture amount if available, fallback to order amount
+    const amount = capture?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat ?? 0
+    const currency = capture?.currency ?? briqpaySession.data?.order?.currency ?? 'EUR'
+
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: payment[0].id,
       transaction: {
         type: 'Charge',
         interactionId: briqpayCaptureId,
-        amount: {
-          centAmount: briqpaySession.data!.order!.amountIncVat,
-          currencyCode: briqpaySession.data!.order!.currency,
-        },
-        state: convertNotificationStatus(status),
+        amount: { centAmount: amount, currencyCode: currency },
+        state: 'Success',
       },
     })
 
-    appLogger.info(
-      {
-        updatedPayment,
-      },
-      'Payment updated after processing the notification',
-    )
+    appLogger.info({ updatedPayment, briqpayCaptureId, captureAmount: amount }, 'Created Charge Success')
 
     // Ingest Briqpay session data to order custom fields
     await this.ingestSessionDataToOrder(briqpaySessionId, payment[0].id)
   }
 
+  /**
+   * Handles Capture Rejected status.
+   * Maps to CT Transaction Type: Charge with state: Failure
+   */
   private handleCaptureRejected = async (
     payment: Payment[],
     briqpaySession: MediumBriqpayResponse,
     briqpayCaptureId: string,
-    status: BRIQPAY_WEBHOOK_STATUS,
+    _status: BRIQPAY_WEBHOOK_STATUS,
   ) => {
+    const capture = getCapture(briqpaySession, briqpayCaptureId)
+
+    // Use capture amount if available, fallback to order amount
+    const amount = capture?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat ?? 0
+    const currency = capture?.currency ?? briqpaySession.data?.order?.currency ?? 'EUR'
+
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: payment[0].id,
       transaction: {
         type: 'Charge',
         interactionId: briqpayCaptureId,
-        amount: {
-          centAmount: briqpaySession.data!.order!.amountIncVat,
-          currencyCode: briqpaySession.data!.order!.currency,
-        },
-        state: convertNotificationStatus(status),
+        amount: { centAmount: amount, currencyCode: currency },
+        state: 'Failure',
       },
     })
 
-    appLogger.info(
-      {
-        updatedPayment,
-      },
-      'Payment updated after processing the notification',
-    )
+    appLogger.info({ updatedPayment, briqpayCaptureId, captureAmount: amount }, 'Created Charge Failure')
   }
 
+  /**
+   * Handles Refund Pending status.
+   * Maps to CT Transaction Type: Refund with state: Pending
+   */
   private handleRefundPending = async (
     payment: Payment[],
     briqpaySession: MediumBriqpayResponse,
     briqpayRefundId: string,
-    status: BRIQPAY_WEBHOOK_STATUS,
+    _status: BRIQPAY_WEBHOOK_STATUS,
   ) => {
     const briqpaySessionId = briqpaySession.sessionId
+    const refund = getRefund(briqpaySession, briqpayRefundId)
 
     const alreadyRefunded = payment?.[0]?.transactions.some(
       (tx) => tx.type === 'Refund' && tx.interactionId === briqpayRefundId && ['Success', 'Pending'].includes(tx.state),
     )
 
     if (alreadyRefunded) {
-      appLogger.info({ briqpaySessionId }, 'Refund transaction already exists, skipping update.')
+      appLogger.info({ briqpaySessionId, briqpayRefundId }, 'Refund transaction already exists, skipping update.')
       return
     }
 
     // Update pending authorization to success
     await this.updatePendingAuthorization(payment, briqpaySessionId)
 
-    // Need to store briqpayCaptureId somehwere
+    // Use refund amount if available, fallback to order amount
+    const amount = refund?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat ?? 0
+    const currency = refund?.currency ?? briqpaySession.data?.order?.currency ?? 'EUR'
+
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: payment[0].id,
       transaction: {
         type: 'Refund',
         interactionId: briqpayRefundId,
-        amount: {
-          centAmount: briqpaySession.data!.order!.amountIncVat,
-          currencyCode: briqpaySession.data!.order!.currency,
-        },
-        state: convertNotificationStatus(status),
+        amount: { centAmount: amount, currencyCode: currency },
+        state: 'Pending',
       },
     })
 
-    appLogger.info(
-      {
-        updatedPayment,
-        briqpayRefundId,
-      },
-      'Payment updated after processing the notification',
-    )
+    appLogger.info({ updatedPayment, briqpayRefundId, refundAmount: amount }, 'Created Refund Pending')
   }
 
+  /**
+   * Handles Refund Approved status.
+   * Maps to CT Transaction Type: Refund with state: Success
+   */
   private handleRefundApproved = async (
     payment: Payment[],
     briqpaySession: MediumBriqpayResponse,
     briqpayRefundId: string,
-    status: BRIQPAY_WEBHOOK_STATUS,
+    _status: BRIQPAY_WEBHOOK_STATUS,
   ) => {
     const briqpaySessionId = briqpaySession.sessionId
+    const refund = getRefund(briqpaySession, briqpayRefundId)
 
     // Update pending authorization to success
     await this.updatePendingAuthorization(payment, briqpaySessionId)
 
+    // Use refund amount if available, fallback to order amount
+    const amount = refund?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat ?? 0
+    const currency = refund?.currency ?? briqpaySession.data?.order?.currency ?? 'EUR'
+
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: payment[0].id,
       transaction: {
         type: 'Refund',
         interactionId: briqpayRefundId,
-        amount: {
-          centAmount: briqpaySession.data!.order!.amountIncVat,
-          currencyCode: briqpaySession.data!.order!.currency,
-        },
-        state: convertNotificationStatus(status),
+        amount: { centAmount: amount, currencyCode: currency },
+        state: 'Success',
       },
     })
 
-    appLogger.info(
-      {
-        updatedPayment,
-      },
-      'Payment updated after processing the notification',
-    )
+    appLogger.info({ updatedPayment, briqpayRefundId, refundAmount: amount }, 'Created Refund Success')
   }
 
+  /**
+   * Handles Refund Rejected status.
+   * Maps to CT Transaction Type: Refund with state: Failure
+   */
   private handleRefundRejected = async (
     payment: Payment[],
     briqpaySession: MediumBriqpayResponse,
     briqpayRefundId: string,
-    status: BRIQPAY_WEBHOOK_STATUS,
+    _status: BRIQPAY_WEBHOOK_STATUS,
   ) => {
+    const refund = getRefund(briqpaySession, briqpayRefundId)
+
+    // Use refund amount if available, fallback to order amount
+    const amount = refund?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat ?? 0
+    const currency = refund?.currency ?? briqpaySession.data?.order?.currency ?? 'EUR'
+
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: payment[0].id,
       transaction: {
         type: 'Refund',
         interactionId: briqpayRefundId,
-        amount: {
-          centAmount: briqpaySession.data!.order!.amountIncVat,
-          currencyCode: briqpaySession.data!.order!.currency,
-        },
-        state: convertNotificationStatus(status),
+        amount: { centAmount: amount, currencyCode: currency },
+        state: 'Failure',
       },
     })
 
-    appLogger.info(
-      {
-        updatedPayment,
-      },
-      'Payment updated after processing the notification',
-    )
+    appLogger.info({ updatedPayment, briqpayRefundId, refundAmount: amount }, 'Created Refund Failure')
   }
 
   /**

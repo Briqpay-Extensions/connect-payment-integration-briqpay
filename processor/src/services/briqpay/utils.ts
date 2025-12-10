@@ -1,7 +1,14 @@
 import { TransactionState } from '@commercetools/connect-payments-sdk'
 import { BRIQPAY_WEBHOOK_STATUS, PaymentOutcome } from '../../dtos/briqpay-payment.dto'
 import { PaymentModificationStatus } from '../../dtos/operations/payment-intents.dto'
-import { MediumBriqpayResponse, ORDER_STATUS, TRANSACTION_STATUS } from '../types/briqpay-payment.type'
+import {
+  BriqpayCapture,
+  BriqpayRefund,
+  BriqpayTransaction,
+  MediumBriqpayResponse,
+  ORDER_STATUS,
+  TRANSACTION_STATUS,
+} from '../types/briqpay-payment.type'
 
 export const convertNotificationStatus = (resultCode: BRIQPAY_WEBHOOK_STATUS): TransactionState => {
   switch (resultCode) {
@@ -104,6 +111,45 @@ export const transactionStatusToWebhookStatus = (transactionStatus: TRANSACTION_
 }
 
 /**
+ * Gets the first transaction (authorization) from the session.
+ * Transactions are located in data.transactions array.
+ *
+ * @param session - The Briqpay session response
+ * @returns The first transaction, or undefined if none exist
+ */
+export const getTransaction = (session: MediumBriqpayResponse): BriqpayTransaction | undefined => {
+  return session.data?.transactions?.[0]
+}
+
+/**
+ * Gets the authorization status from the session's transactions array.
+ * This is the source of truth for authorization status.
+ *
+ * @param session - The Briqpay session response
+ * @returns The transaction status, or undefined if no transactions exist
+ */
+export const getActualAuthorizationStatus = (session: MediumBriqpayResponse): TRANSACTION_STATUS | undefined => {
+  const transaction = getTransaction(session)
+  return transaction?.status
+}
+
+/**
+ * Finds a capture by ID in the session's data.captures array and returns the full capture object.
+ * Captures are located in data.captures array.
+ *
+ * @param session - The Briqpay session response
+ * @param captureId - The capture ID to find
+ * @returns The capture object, or undefined if not found
+ */
+export const getCapture = (session: MediumBriqpayResponse, captureId: string): BriqpayCapture | undefined => {
+  // Try data.captures first (preferred), fallback to top-level captures for backwards compatibility
+  return (
+    session.data?.captures?.find((c) => c.captureId === captureId) ??
+    session.captures?.find((c) => c.captureId === captureId)
+  )
+}
+
+/**
  * Finds a capture by ID in the session's captures array and returns its actual status.
  *
  * @param session - The Briqpay session response
@@ -114,8 +160,23 @@ export const getActualCaptureStatus = (
   session: MediumBriqpayResponse,
   captureId: string,
 ): TRANSACTION_STATUS | undefined => {
-  const capture = session.captures?.find((c) => c.captureId === captureId)
+  const capture = getCapture(session, captureId)
   return capture?.status
+}
+
+/**
+ * Finds a refund by ID in the session's data.refunds array and returns the full refund object.
+ * Refunds are located in data.refunds array.
+ *
+ * @param session - The Briqpay session response
+ * @param refundId - The refund ID to find
+ * @returns The refund object, or undefined if not found
+ */
+export const getRefund = (session: MediumBriqpayResponse, refundId: string): BriqpayRefund | undefined => {
+  // Try data.refunds first (preferred), fallback to top-level refunds for backwards compatibility
+  return (
+    session.data?.refunds?.find((r) => r.refundId === refundId) ?? session.refunds?.find((r) => r.refundId === refundId)
+  )
 }
 
 /**
@@ -129,6 +190,6 @@ export const getActualRefundStatus = (
   session: MediumBriqpayResponse,
   refundId: string,
 ): TRANSACTION_STATUS | undefined => {
-  const refund = session.refunds?.find((r) => r.refundId === refundId)
+  const refund = getRefund(session, refundId)
   return refund?.status
 }
