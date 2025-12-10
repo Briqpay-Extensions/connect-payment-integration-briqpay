@@ -66,22 +66,19 @@ const createDiscountLineItem = (item: LineItem, localeName: string, taxRate: num
   }
 }
 
-const calculateDiscountPercentage = (item: LineItem): number => {
-  const origUnitGross = item.price.value.centAmount
-  const discountedUnitGross = item.discountedPricePerQuantity?.length
-    ? item.discountedPricePerQuantity[0].discountedPrice.value.centAmount
-    : origUnitGross
-
-  if (origUnitGross === discountedUnitGross) return 0
-  return Math.round(((origUnitGross - discountedUnitGross) / origUnitGross) * 10000)
-}
-
+/**
+ * Creates a regular line item using ORIGINAL prices (before any discounts).
+ * Discounts are handled as separate discount line items to avoid percentage calculation issues.
+ */
 const createRegularLineItem = (item: LineItem, localeName: string, taxRate: number): RegularCartItem => {
   const quantity = item.quantity
   const taxRateAmount = item.taxRate?.amount ?? 0
-  const grossTotal = item.taxedPrice?.totalGross?.centAmount ?? item.price.value.centAmount * quantity
-  const netTotal = item.taxedPrice?.totalNet?.centAmount ?? Math.round(grossTotal / (1 + taxRateAmount))
-  const vatTotal = item.taxedPrice?.totalTax?.centAmount ?? grossTotal - netTotal
+
+  // Use ORIGINAL price (before discounts) for the line item
+  const originalUnitGross = item.price.value.centAmount
+  const originalGrossTotal = originalUnitGross * quantity
+  const originalNetTotal = Math.round(originalGrossTotal / (1 + taxRateAmount))
+  const originalVatTotal = originalGrossTotal - originalNetTotal
 
   return {
     productType: mapBriqpayProductType(item),
@@ -89,41 +86,197 @@ const createRegularLineItem = (item: LineItem, localeName: string, taxRate: numb
     name: localeName,
     quantity,
     quantityUnit: 'pc',
-    unitPrice: Math.round(netTotal / quantity),
-    unitPriceIncVat: Math.round(grossTotal / quantity),
+    unitPrice: Math.round(originalNetTotal / quantity),
+    unitPriceIncVat: originalUnitGross,
     taxRate,
-    discountPercentage: calculateDiscountPercentage(item),
-    totalAmount: grossTotal,
-    totalVatAmount: vatTotal,
+    discountPercentage: 0, // No percentage - discounts are separate line items
+    totalAmount: originalGrossTotal,
+    totalVatAmount: originalVatTotal,
     imageUrl: item.variant?.images?.[0]?.url,
   }
 }
 
-const mapBriqpayCartItem = (lineItems: LineItem[], locale: string | undefined): CartItem[] => {
+/**
+ * Fetches Cart Discount names from CommerceTools by their IDs.
+ * Returns a map of discount ID to localized name.
+ */
+const fetchCartDiscountNames = async (discountIds: string[], locale: string): Promise<Map<string, string>> => {
+  const nameMap = new Map<string, string>()
+
+  if (discountIds.length === 0) {
+    return nameMap
+  }
+
+  try {
+    // Fetch all cart discounts in one query using "in" predicate
+    const response = await apiRoot
+      .cartDiscounts()
+      .get({
+        queryArgs: {
+          where: `id in (${discountIds.map((id) => `"${id}"`).join(', ')})`,
+          limit: discountIds.length,
+        },
+      })
+      .execute()
+
+    for (const cartDiscount of response.body.results) {
+      // Get localized name, fallback to 'en' or first available
+      const name =
+        cartDiscount.name[locale] ||
+        cartDiscount.name['en'] ||
+        cartDiscount.name['en-GB'] ||
+        Object.values(cartDiscount.name)[0] ||
+        cartDiscount.key ||
+        'Discount'
+      nameMap.set(cartDiscount.id, name)
+    }
+  } catch (error) {
+    appLogger.error({ error, discountIds }, 'Failed to fetch cart discount names, using fallback')
+  }
+
+  return nameMap
+}
+
+/**
+ * Creates a discount line item for per-item discounts (discountedPricePerQuantity).
+ * Returns null if there's no discount on this item.
+ * Uses the exact discount amount from CommerceTools to avoid percentage rounding issues.
+ */
+const createItemDiscountLineItem = (
+  item: LineItem,
+  localeName: string,
+  taxRate: number,
+  discountNameMap: Map<string, string>,
+): RegularCartItem | null => {
+  // Check if item has per-quantity discounts
+  if (!item.discountedPricePerQuantity?.length) {
+    return null
+  }
+
+  const quantity = item.quantity
+  const taxRateAmount = item.taxRate?.amount ?? 0
+
+  // Calculate original total (before discount)
+  const originalUnitGross = item.price.value.centAmount
+  const originalGrossTotal = originalUnitGross * quantity
+
+  // Get actual discounted total from CommerceTools (what customer actually pays)
+  const actualGrossTotal = item.taxedPrice?.totalGross?.centAmount ?? originalGrossTotal
+
+  // Calculate the discount amount (difference between original and actual)
+  const discountGrossAmount = originalGrossTotal - actualGrossTotal
+
+  // No discount if amounts are equal
+  if (discountGrossAmount <= 0) {
+    return null
+  }
+
+  // Calculate net and VAT for the discount amount
+  const discountNetAmount = Math.round(discountGrossAmount / (1 + taxRateAmount))
+  const discountVatAmount = discountGrossAmount - discountNetAmount
+
+  // Get unique discount IDs from this item
+  const discountIds = item.discountedPricePerQuantity
+    .flatMap((dpq) => dpq.discountedPrice.includedDiscounts)
+    .map((d) => d.discount.id)
+    .filter((id, index, arr) => arr.indexOf(id) === index) // unique
+
+  // Build discount reference
+  const discountReference =
+    discountIds.length > 0 ? `discount-${discountIds.join('-')}` : `discount-${item.key ?? localeName}`
+
+  // Build discount name from Cart Discount names, fallback to product name
+  const discountNames = discountIds.map((id) => discountNameMap.get(id)).filter((name): name is string => !!name)
+  const discountName = discountNames.length > 0 ? discountNames.join(' + ') : `Discount: ${localeName}`
+
+  return {
+    productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+    reference: discountReference,
+    name: discountName,
+    quantity: 1, // Discount is always quantity 1 with total amount
+    quantityUnit: 'pc',
+    unitPrice: -discountNetAmount, // Negative for discount
+    unitPriceIncVat: -discountGrossAmount, // Negative for discount
+    taxRate,
+    discountPercentage: 0,
+    totalAmount: -discountGrossAmount, // Negative for discount
+    totalVatAmount: -discountVatAmount, // Negative for discount
+    imageUrl: undefined,
+  }
+}
+
+/**
+ * Collects all unique discount IDs from line items.
+ */
+const collectDiscountIds = (lineItems: LineItem[]): string[] => {
+  const discountIds = lineItems.flatMap((item) =>
+    (item.discountedPricePerQuantity ?? []).flatMap((dpq) =>
+      dpq.discountedPrice.includedDiscounts.map((d) => d.discount.id),
+    ),
+  )
+  return [...new Set(discountIds)]
+}
+
+/**
+ * Maps a single line item to cart items (main item + optional discount line).
+ */
+const mapSingleLineItem = (
+  item: LineItem,
+  fallbackLocale: string,
+  discountNameMap: Map<string, string>,
+): CartItem[] => {
+  const localeName = getLocalizedName(item, fallbackLocale)
+  const taxRate = (item.taxRate?.amount ?? 0) * 10000
+  const isDiscountLine = item.lineItemMode === 'GiftCard' || item.priceMode === 'Discounted'
+
+  const cartItem = isDiscountLine
+    ? createDiscountLineItem(item, localeName, taxRate)
+    : createRegularLineItem(item, localeName, taxRate)
+
+  appLogger.info(
+    {
+      ...cartItem,
+      originalUnitGross: item.price.value.centAmount,
+      hasDiscountedPrice: !!item.price.discounted,
+      hasDiscountedPricePerQuantity: (item.discountedPricePerQuantity?.length ?? 0) > 0,
+      taxedPrice: item.taxedPrice,
+    },
+    isDiscountLine ? 'Created discount line item:' : 'Created regular line item:',
+  )
+
+  const result: CartItem[] = [cartItem]
+
+  if (!isDiscountLine) {
+    const itemDiscountLine = createItemDiscountLineItem(item, localeName, taxRate, discountNameMap)
+    if (itemDiscountLine) {
+      appLogger.info(
+        {
+          ...itemDiscountLine,
+          forItem: localeName,
+          originalGross: item.price.value.centAmount * item.quantity,
+          actualGross: item.taxedPrice?.totalGross?.centAmount,
+        },
+        'Created per-item discount line:',
+      )
+      result.push(itemDiscountLine)
+    }
+  }
+
+  return result
+}
+
+const mapBriqpayCartItem = async (lineItems: LineItem[], locale: string | undefined): Promise<CartItem[]> => {
   const fallbackLocale = locale || 'en-GB'
 
-  const mappedItems = lineItems.flatMap((item) => {
-    const localeName = getLocalizedName(item, fallbackLocale)
-    const taxRate = (item.taxRate?.amount ?? 0) * 10000
-    const isDiscountLine = item.lineItemMode === 'GiftCard' || item.priceMode === 'Discounted'
+  const allDiscountIds = collectDiscountIds(lineItems)
+  const discountNameMap = await fetchCartDiscountNames(allDiscountIds, fallbackLocale)
 
-    const cartItem = isDiscountLine
-      ? createDiscountLineItem(item, localeName, taxRate)
-      : createRegularLineItem(item, localeName, taxRate)
+  appLogger.info(
+    { discountIds: allDiscountIds, discountNameMap: Object.fromEntries(discountNameMap) },
+    'Fetched cart discount names:',
+  )
 
-    appLogger.info(
-      {
-        ...cartItem,
-        originalUnitGross: item.price.value.centAmount,
-        hasDiscountedPrice: !!item.price.discounted,
-        hasDiscountedPricePerQuantity: (item.discountedPricePerQuantity?.length ?? 0) > 0,
-        taxedPrice: item.taxedPrice,
-      },
-      isDiscountLine ? 'Created discount line item:' : 'Created regular line item:',
-    )
-
-    return [cartItem]
-  })
+  const mappedItems = lineItems.flatMap((item) => mapSingleLineItem(item, fallbackLocale, discountNameMap))
 
   appLogger.info(mappedItems, 'Final mapped items:')
   return mappedItems
@@ -321,6 +474,7 @@ class BriqpayService {
   ): Promise<CreateSessionRequestBody> {
     const effectiveTaxRate = await this.getEffectiveTaxRate(ctCart)
     const taxMultiplier = 1 + effectiveTaxRate
+    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.locale)
 
     return {
       product: {
@@ -372,7 +526,7 @@ class BriqpayService {
           currency: ctCart.totalPrice.currencyCode,
           amountIncVat: amountPlanned.centAmount,
           amountExVat: ctCart.taxedPrice?.totalNet?.centAmount ?? Math.round(amountPlanned.centAmount / taxMultiplier),
-          cart: mapBriqpayCartItem(ctCart.lineItems, ctCart.locale),
+          cart: cartItems,
         },
       },
       modules: {
@@ -381,7 +535,7 @@ class BriqpayService {
     }
   }
 
-  private addDiscountItem(briqpayCreateSession: CreateSessionRequestBody, ctCart: Cart): void {
+  private async addDiscountItem(briqpayCreateSession: CreateSessionRequestBody, ctCart: Cart): Promise<void> {
     if (!ctCart.discountOnTotalPrice?.discountedNetAmount || !briqpayCreateSession.data?.order?.cart) {
       return
     }
@@ -395,10 +549,23 @@ class BriqpayService {
     const vat = gross - net
     const taxRate = Math.round(((gross - net) / net) * 10000)
 
+    // Get discount IDs from discountOnTotalPrice.includedDiscounts
+    const discountIds =
+      ctCart.discountOnTotalPrice.includedDiscounts?.map((d) => d.discount.id).filter((id) => !!id) ?? []
+
+    // Fetch Cart Discount names
+    const locale = ctCart.locale || 'en-GB'
+    const discountNameMap = await fetchCartDiscountNames(discountIds, locale)
+
+    // Build discount name and reference from Cart Discount names
+    const discountNames = discountIds.map((id) => discountNameMap.get(id)).filter((name): name is string => !!name)
+    const discountName = discountNames.length > 0 ? discountNames.join(' + ') : 'Discount'
+    const discountReference = discountIds.length > 0 ? `discount-${discountIds.join('-')}` : 'total-discount'
+
     const discountItem: RegularCartItem = {
       productType: ITEM_PRODUCT_TYPE.DISCOUNT,
-      reference: 'Discount',
-      name: 'Discount',
+      reference: discountReference,
+      name: discountName,
       quantity: 1,
       quantityUnit: 'pc',
       unitPrice: net, // ex VAT
@@ -415,6 +582,7 @@ class BriqpayService {
         ...discountItem,
         grossAmount: gross,
         netAmount: net,
+        discountIds,
       },
       'Adding total discount line item:',
     )
@@ -430,43 +598,63 @@ class BriqpayService {
     const shippingPrice = ctCart.shippingInfo.price
     const effectiveTaxRate = await this.getEffectiveTaxRate(ctCart)
     const taxMultiplier = 1 + effectiveTaxRate
-
-    // Use the discounted price if available, otherwise use the original price
-    const discountedPrice = ctCart.shippingInfo.discountedPrice?.value.centAmount ?? shippingPrice.centAmount
-
-    // If shipping is fully discounted, skip adding the shipping fee item
-    if (discountedPrice === 0) {
-      appLogger.info(
-        { shippingPrice: shippingPrice.centAmount, discountedPrice },
-        'Shipping is fully discounted, skipping shipping fee item:',
-      )
-      return
-    }
-
-    const shippingNet = Math.round(discountedPrice / taxMultiplier)
-    const shippingGross = discountedPrice
     const shippingTaxRate = (ctCart.shippingInfo.taxRate?.amount ?? effectiveTaxRate) * 10000
-    const discountPercentage =
-      shippingPrice.centAmount > discountedPrice
-        ? Math.round(((shippingPrice.centAmount - discountedPrice) / shippingPrice.centAmount) * 10000)
-        : 0
 
+    // Always use ORIGINAL shipping price (before discounts)
+    const originalShippingGross = shippingPrice.centAmount
+    const originalShippingNet = Math.round(originalShippingGross / taxMultiplier)
+
+    // Add shipping item at original price
     const shippingItem: RegularCartItem = {
       productType: 'shipping_fee' as any,
       reference: 'shippingfee',
       name: 'Shipping fee',
       quantity: 1,
       quantityUnit: 'pc',
-      unitPrice: shippingNet,
-      unitPriceIncVat: shippingGross,
+      unitPrice: originalShippingNet,
+      unitPriceIncVat: originalShippingGross,
       taxRate: shippingTaxRate,
-      discountPercentage,
-      totalAmount: shippingGross,
-      totalVatAmount: shippingGross - shippingNet,
+      discountPercentage: 0, // No percentage - discounts are separate line items
+      totalAmount: originalShippingGross,
+      totalVatAmount: originalShippingGross - originalShippingNet,
     }
 
     briqpayCreateSession.data.order.cart.push(shippingItem)
     appLogger.info({ shippingItem }, 'Added shipping fee item:')
+
+    // If shipping has a discount, add a separate discount line item
+    const discountedPrice = ctCart.shippingInfo.discountedPrice?.value.centAmount
+    if (discountedPrice !== undefined && discountedPrice < originalShippingGross) {
+      const shippingDiscountGross = originalShippingGross - discountedPrice
+      const shippingDiscountNet = Math.round(shippingDiscountGross / taxMultiplier)
+      const shippingDiscountVat = shippingDiscountGross - shippingDiscountNet
+
+      const shippingDiscountItem: RegularCartItem = {
+        productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+        reference: 'shipping-discount',
+        name: 'Shipping Discount',
+        quantity: 1,
+        quantityUnit: 'pc',
+        unitPrice: -shippingDiscountNet, // Negative for discount
+        unitPriceIncVat: -shippingDiscountGross, // Negative for discount
+        taxRate: shippingTaxRate,
+        discountPercentage: 0,
+        totalAmount: -shippingDiscountGross, // Negative for discount
+        totalVatAmount: -shippingDiscountVat, // Negative for discount
+        imageUrl: undefined,
+      }
+
+      briqpayCreateSession.data.order.cart.push(shippingDiscountItem)
+      appLogger.info(
+        {
+          shippingDiscountItem,
+          originalShippingGross,
+          discountedPrice,
+          discountAmount: shippingDiscountGross,
+        },
+        'Added shipping discount line item:',
+      )
+    }
   }
 
   private logFinalAmounts(briqpayCreateSession: CreateSessionRequestBody): void {
@@ -551,7 +739,7 @@ class BriqpayService {
       'Creating Briqpay session with futureOrderNumber as reference1',
     )
 
-    this.addDiscountItem(briqpayCreateSession, ctCart)
+    await this.addDiscountItem(briqpayCreateSession, ctCart)
     await this.addShippingItem(briqpayCreateSession, ctCart)
     this.logFinalAmounts(briqpayCreateSession)
 
@@ -597,11 +785,12 @@ class BriqpayService {
     return responseData
   }
 
-  capture(
+  async capture(
     ctCart: Cart,
     amountPlanned: Omit<PaymentAmount, 'fractionDigits'>,
     sessionId: string,
   ): Promise<{ captureId: string; status: PaymentOutcome } & Record<string, unknown>> {
+    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.locale)
     const briqpayCaptureRequest: Pick<CreateSessionRequestBody, 'data'> = {
       data: {
         order: {
@@ -615,7 +804,7 @@ class BriqpayService {
               0,
             ) ||
               amountPlanned.centAmount),
-          cart: mapBriqpayCartItem(ctCart.lineItems, ctCart.locale),
+          cart: cartItems,
         },
         // Temporary cast
       } as unknown as Record<string, string | number>,
@@ -632,12 +821,13 @@ class BriqpayService {
     })
   }
 
-  refund(
+  async refund(
     ctCart: Cart,
     amountPlanned: Omit<PaymentAmount, 'fractionDigits'>,
     sessionId: string,
     captureId?: string,
   ): Promise<{ refundId: string; status: PaymentOutcome } & Record<string, unknown>> {
+    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.locale)
     const briqpayRefundRequest: Pick<CreateSessionRequestBody, 'data'> & { captureId?: string } = {
       ...(captureId && { captureId }),
       data: {
@@ -652,7 +842,7 @@ class BriqpayService {
               0,
             ) ||
               amountPlanned.centAmount),
-          cart: mapBriqpayCartItem(ctCart.lineItems, ctCart.locale),
+          cart: cartItems,
         },
       },
     }
@@ -690,8 +880,18 @@ class BriqpayService {
     })
   }
 
+  /**
+   * Fetches the full session from Briqpay API including moduleStatus, captures, and refunds.
+   * This is used to get the actual status from Briqpay's source of truth rather than
+   * trusting webhook payloads (which are unauthenticated until HMAC is enabled).
+   *
+   * @param sessionId - The Briqpay session ID
+   * @returns The session data including moduleStatus for status verification
+   */
   getSession(sessionId: string): Promise<MediumBriqpayResponse> {
-    return fetch(`${this.baseUrl}/session/${sessionId}?fields=data,snippet,sessionId`, {
+    // Fetch moduleStatus, captures, and refunds to get actual status from Briqpay
+    // This is critical for security until HMAC webhook validation is implemented
+    return fetch(`${this.baseUrl}/session/${sessionId}?fields=data,snippet,sessionId,moduleStatus,captures,refunds`, {
       method: 'GET',
       headers: {
         Authorization: `Basic ${btoa(this.username + ':' + this.secret)}`,
@@ -746,46 +946,127 @@ class BriqpayService {
     const shippingPrice = cart.shippingInfo.price
     const effectiveTaxRate = await this.getEffectiveTaxRate(cart)
     const taxMultiplier = 1 + effectiveTaxRate
-    const discountedPrice = cart.shippingInfo.discountedPrice?.value.centAmount ?? shippingPrice.centAmount
-
-    // Only add shipping if it's not fully discounted
-    if (discountedPrice <= 0) {
-      appLogger.info(
-        { shippingPrice: shippingPrice.centAmount, discountedPrice },
-        'Shipping is fully discounted, skipping shipping fee item in update session:',
-      )
-      return
-    }
-
-    const shippingNet = Math.round(discountedPrice / taxMultiplier)
-    const shippingGross = discountedPrice
     const shippingTaxRate = (cart.shippingInfo.taxRate?.amount ?? effectiveTaxRate) * 10000
-    const discountPercentage =
-      shippingPrice.centAmount > discountedPrice
-        ? Math.round(((shippingPrice.centAmount - discountedPrice) / shippingPrice.centAmount) * 10000)
-        : 0
 
+    // Always use ORIGINAL shipping price (before discounts)
+    const originalShippingGross = shippingPrice.centAmount
+    const originalShippingNet = Math.round(originalShippingGross / taxMultiplier)
+
+    // Add shipping item at original price
     const shippingItem: RegularCartItem = {
       productType: 'shipping_fee' as any,
       reference: 'shippingfee',
       name: 'Shipping fee',
       quantity: 1,
       quantityUnit: 'pc',
-      unitPrice: shippingNet,
-      unitPriceIncVat: shippingGross,
+      unitPrice: originalShippingNet,
+      unitPriceIncVat: originalShippingGross,
       taxRate: shippingTaxRate,
-      discountPercentage,
-      totalAmount: shippingGross,
-      totalVatAmount: shippingGross - shippingNet,
+      discountPercentage: 0, // No percentage - discounts are separate line items
+      totalAmount: originalShippingGross,
+      totalVatAmount: originalShippingGross - originalShippingNet,
     }
 
     cartItems.push(shippingItem)
     appLogger.info({ shippingItem }, 'Added shipping fee item to update session:')
+
+    // If shipping has a discount, add a separate discount line item
+    const discountedPrice = cart.shippingInfo.discountedPrice?.value.centAmount
+    if (discountedPrice !== undefined && discountedPrice < originalShippingGross) {
+      const shippingDiscountGross = originalShippingGross - discountedPrice
+      const shippingDiscountNet = Math.round(shippingDiscountGross / taxMultiplier)
+      const shippingDiscountVat = shippingDiscountGross - shippingDiscountNet
+
+      const shippingDiscountItem: RegularCartItem = {
+        productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+        reference: 'shipping-discount',
+        name: 'Shipping Discount',
+        quantity: 1,
+        quantityUnit: 'pc',
+        unitPrice: -shippingDiscountNet, // Negative for discount
+        unitPriceIncVat: -shippingDiscountGross, // Negative for discount
+        taxRate: shippingTaxRate,
+        discountPercentage: 0,
+        totalAmount: -shippingDiscountGross, // Negative for discount
+        totalVatAmount: -shippingDiscountVat, // Negative for discount
+        imageUrl: undefined,
+      }
+
+      cartItems.push(shippingDiscountItem)
+      appLogger.info(
+        {
+          shippingDiscountItem,
+          originalShippingGross,
+          discountedPrice,
+          discountAmount: shippingDiscountGross,
+        },
+        'Added shipping discount line item to update session:',
+      )
+    }
+  }
+
+  /**
+   * Adds discount item to cart items array for session updates.
+   * CT discount amounts are negative, we negate them to make Briqpay see a positive discount.
+   */
+  private async addDiscountItemToCart(cartItems: CartItem[], cart: Cart): Promise<void> {
+    if (!cart.discountOnTotalPrice?.discountedNetAmount) {
+      return
+    }
+
+    const net = -cart.discountOnTotalPrice.discountedNetAmount.centAmount
+    const gross = -(
+      cart.discountOnTotalPrice.discountedGrossAmount?.centAmount ??
+      cart.discountOnTotalPrice.discountedNetAmount.centAmount
+    )
+    const vat = gross - net
+    const taxRate = net !== 0 ? Math.round(((gross - net) / net) * 10000) : 0
+
+    // Get discount IDs from discountOnTotalPrice.includedDiscounts
+    const discountIds =
+      cart.discountOnTotalPrice.includedDiscounts?.map((d) => d.discount.id).filter((id) => !!id) ?? []
+
+    // Fetch Cart Discount names
+    const locale = cart.locale || 'en-GB'
+    const discountNameMap = await fetchCartDiscountNames(discountIds, locale)
+
+    // Build discount name and reference from Cart Discount names
+    const discountNames = discountIds.map((id) => discountNameMap.get(id)).filter((name): name is string => !!name)
+    const discountName = discountNames.length > 0 ? discountNames.join(' + ') : 'Discount'
+    const discountReference = discountIds.length > 0 ? `discount-${discountIds.join('-')}` : 'total-discount'
+
+    const discountItem: RegularCartItem = {
+      productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+      reference: discountReference,
+      name: discountName,
+      quantity: 1,
+      quantityUnit: 'pc',
+      unitPrice: net, // ex VAT
+      unitPriceIncVat: gross, // incl VAT
+      taxRate,
+      discountPercentage: 0,
+      totalAmount: gross,
+      totalVatAmount: vat,
+      imageUrl: undefined,
+    }
+
+    appLogger.info(
+      {
+        ...discountItem,
+        grossAmount: gross,
+        netAmount: net,
+        discountIds,
+      },
+      'Adding total discount line item to update session:',
+    )
+
+    cartItems.push(discountItem)
   }
 
   public async updateSession(sessionId: string, cart: Cart, amount: Money): Promise<MediumBriqpayResponse> {
     try {
-      const cartItems = mapBriqpayCartItem(cart.lineItems, cart.locale)
+      const cartItems = await mapBriqpayCartItem(cart.lineItems, cart.locale)
+      await this.addDiscountItemToCart(cartItems, cart)
       await this.addShippingItemToCart(cartItems, cart)
 
       const effectiveTaxRate = await this.getEffectiveTaxRate(cart)

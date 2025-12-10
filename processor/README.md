@@ -22,7 +22,7 @@ The processor fetches cart and payment details from commercetools Composable Com
 - **Briqpay Session Management**: Create and update Briqpay payment sessions
 - **Payment Operations**: Capture, refund, cancel, and reverse payments
 - **Webhook Handling**: Process Briqpay notifications for order status, capture status, and refund status
-- **Custom Types**: Automatic creation of commercetools custom types for storing Briqpay session IDs on orders
+- **Custom Types**: Automatic creation of commercetools custom types for storing Briqpay session data on orders (session ID, PSP metadata, transaction data)
 - **Health Checks**: Status endpoint with health checks for both commercetools and Briqpay APIs
 
 ## Tech Stack
@@ -42,11 +42,13 @@ The processor fetches cart and payment details from commercetools Composable Com
 processor/
 ├── src/
 │   ├── config/
-│   │   └── config.ts              # Application configuration
+│   │   ├── config.ts              # Application configuration
+│   │   └── env-validation.ts      # Environment variable validation
 │   ├── connectors/
 │   │   ├── actions.ts             # Custom type creation for Briqpay
 │   │   ├── post-deploy.ts         # Post-deployment script
 │   │   └── pre-undeploy.ts        # Pre-undeployment script
+│   ├── custom-types/              # Custom type definitions
 │   ├── dtos/
 │   │   ├── briqpay-payment.dto.ts # Briqpay-specific DTOs and schemas
 │   │   └── operations/            # Operation DTOs (config, status, transactions, etc.)
@@ -56,7 +58,7 @@ processor/
 │   │   ├── commercetools/         # commercetools API utilities
 │   │   ├── errors/                # Custom error classes
 │   │   ├── fastify/               # Fastify plugins and middleware
-│   │   └── logger/                # Logging utilities
+│   │   └── logger/                # Application logger setup
 │   ├── routes/
 │   │   ├── briqpay-payment.route.ts  # Briqpay-specific routes
 │   │   └── operation.route.ts        # Standard operation routes
@@ -71,6 +73,7 @@ processor/
 │   │   │   ├── notification.service.ts   # Webhook notification handling
 │   │   │   ├── operation.service.ts      # Payment operations (capture, refund, etc.)
 │   │   │   ├── session.service.ts        # Briqpay session management
+│   │   │   ├── session-data.service.ts   # Session data management
 │   │   │   └── utils.ts                  # Utility functions
 │   │   └── types/                 # Service type definitions
 │   ├── main.ts                    # Application entry point
@@ -160,6 +163,7 @@ Copy `.env.template` to `.env` and configure the following variables:
 | `BRIQPAY_TERMS_URL`               | URL to your terms and conditions    | `https://example.com/terms`               |
 | `BRIQPAY_CONFIRMATION_URL`        | Order confirmation redirect URL     | `https://yoursite.com/order-confirmation` |
 | `BRIQPAY_SESSION_CUSTOM_TYPE_KEY` | Custom type key for session storage | `briqpay-session-id`                      |
+| `ALLOWED_ORIGINS`                 | Comma-separated list of allowed CORS origins | -                                   |
 
 ### Application Configuration
 
@@ -183,6 +187,7 @@ The API client must have the following scopes:
 - `introspect_oauth_tokens`
 - `manage_checkout_payment_intents`
 - `manage_types`
+- `view_types`
 
 ## API Endpoints
 
@@ -243,13 +248,13 @@ For local development, use the included JWT mock server:
 
 ```bash
 # Set environment variable
-export CTP_JWKS_URL="http://localhost:9000/jwt/.well-known/jwks.json"
+export CTP_JWKS_URL="http://localhost:9002/jwt/.well-known/jwks.json"
 
 # Start JWT mock server
 docker compose up -d
 
 # Obtain a test token
-curl -X POST 'http://localhost:9000/jwt/token' \
+curl -X POST 'http://localhost:9002/jwt/token' \
   -H 'Content-Type: application/json' \
   -d '{
     "iss": "https://mc-api.europe-west1.gcp.commercetools.com",
@@ -272,7 +277,20 @@ npm run build
 npm run connector:post-deploy
 ```
 
-The script creates a custom type with key `briqpay-session-id` (configurable via `BRIQPAY_SESSION_CUSTOM_TYPE_KEY`) containing a `briqpaySessionId` field on the `order` resource type.
+The script creates a custom type with key `briqpay-session-id` (configurable via `BRIQPAY_SESSION_CUSTOM_TYPE_KEY`) on the `order` resource type with the following fields:
+
+- `briqpaySessionId` - Session ID
+- `briqpayPspMetaDataCustomerFacingReference` - PSP customer reference
+- `briqpayPspMetaDataDescription` - PSP description
+- `briqpayPspMetaDataType` - PSP type
+- `briqpayPspMetaDataPayerEmail` - Payer email
+- `briqpayPspMetaDataPayerFirstName` - Payer first name
+- `briqpayPspMetaDataPayerLastName` - Payer last name
+- `briqpayTransactionDataReservationId` - Reservation ID
+- `briqpayTransactionDataSecondaryReservationId` - Secondary reservation ID
+- `briqpayTransactionDataPspId` - PSP ID
+- `briqpayTransactionDataPspDisplayName` - PSP display name
+- `briqpayTransactionDataPspIntegrationName` - PSP integration name
 
 ### Pre-Undeploy Script
 
@@ -315,10 +333,10 @@ A `docker-compose.yaml` is provided for running a JWT mock server during local d
 ```yaml
 services:
   jwt-server:
-    image: node:alpine
+    image: node:24.11.1-alpine
     command: npx --package jwt-mock-server -y start
     ports:
-      - 9000:9000
+      - 9002:9000
 ```
 
 ```bash
@@ -382,7 +400,7 @@ The processor implements several security measures for production readiness:
 ### Webhook Security
 
 - **Session Validation**: Webhooks validated by fetching session from Briqpay API
-- **Idempotency**: Duplicate notifications handled gracefully
+- **Duplicate Detection**: Checks if authorization already exists before processing
 - **Audit Logging**: All webhook processing logged with correlation IDs
 
 ### Security Headers
@@ -395,6 +413,7 @@ All responses include security headers:
 - `Strict-Transport-Security` - HTTPS enforcement
 - `Content-Security-Policy` - CSP protection
 - `Referrer-Policy: strict-origin-when-cross-origin`
+- `Permissions-Policy` - Restricts browser features (geolocation, microphone, camera)
 
 ### CORS Configuration
 

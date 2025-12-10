@@ -21,7 +21,7 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
 - Supports multiple payment methods through Briqpay (invoice, installments, etc.)
 - Real-time payment session synchronization between Briqpay and commercetools
 - Webhook support for asynchronous payment status updates (capture, refund, cancel)
-- Automatic custom type creation for storing Briqpay session ID on orders
+- Automatic custom type creation for storing Briqpay session data on orders (session ID, PSP metadata, transaction data)
 - Supports payment operations: authorize, capture, refund, cancel, and reverse
 - Includes local development utilities with Docker Compose setup
 - Jest testing framework with MSW for API mocking
@@ -302,7 +302,7 @@ flowchart TD
 
 ## Important Notes
 
-- The connector stores the Briqpay session ID as a custom field on the commercetools order using the custom type specified by `BRIQPAY_SESSION_CUSTOM_TYPE_KEY`.
+- The connector stores the Briqpay session ID as a custom field on the commercetools **cart** during checkout, which is then transferred to the order. The custom type is specified by `BRIQPAY_SESSION_CUSTOM_TYPE_KEY`.
 
 - Webhook notifications from Briqpay are processed asynchronously. Ensure your webhook endpoint is publicly accessible and properly configured in the Briqpay dashboard.
 
@@ -361,7 +361,7 @@ docker-compose up
 
 This starts three services:
 
-- **JWT Server** (port 9002) - Mock JWT server for development
+- **JWT Server** (port 9002 → 9000 internal) - Mock JWT server for development
 - **Enabler** (port 3000) - Frontend payment components
 - **Processor** (port 8080) - Backend payment services
 
@@ -400,6 +400,8 @@ npx --package jwt-mock-server -y start
 │   ├── src
 │   │   ├── config/
 │   │   ├── connectors/
+│   │   ├── custom-types/
+│   │   ├── dtos/
 │   │   ├── libs/
 │   │   ├── routes/
 │   │   ├── server/
@@ -469,9 +471,56 @@ deployAs:
           description: The URL to your order confirmation page
           required: true
         - key: BRIQPAY_SESSION_CUSTOM_TYPE_KEY
-          description: Key of CustomType to store briqpay session inside order
+          description: Key of CustomType to store briqpay session inside cart
           required: false
           default: briqpay-session-id
+        - key: BRIQPAY_PSP_META_DATA_CUSTOMER_FACING_REFERENCE_KEY
+          description: Key of CustomType field to store PSP customer facing reference
+          required: false
+          default: briqpay-psp-meta-data-customer-facing-reference
+        - key: BRIQPAY_PSP_META_DATA_DESCRIPTION_KEY
+          description: Key of CustomType field to store PSP description
+          required: false
+          default: briqpay-psp-meta-data-description
+        - key: BRIQPAY_PSP_META_DATA_TYPE_KEY
+          description: Key of CustomType field to store PSP type
+          required: false
+          default: briqpay-psp-meta-data-type
+        - key: BRIQPAY_PSP_META_DATA_PAYER_EMAIL_KEY
+          description: Key of CustomType field to store PSP payer email
+          required: false
+          default: briqpay-psp-meta-data-payer-email
+        - key: BRIQPAY_PSP_META_DATA_PAYER_FIRST_NAME_KEY
+          description: Key of CustomType field to store PSP payer first name
+          required: false
+          default: briqpay-psp-meta-data-payer-first-name
+        - key: BRIQPAY_PSP_META_DATA_PAYER_LAST_NAME_KEY
+          description: Key of CustomType field to store PSP payer last name
+          required: false
+          default: briqpay-psp-meta-data-payer-last-name
+        - key: BRIQPAY_TRANSACTION_DATA_RESERVATION_ID_KEY
+          description: Key of CustomType field to store transaction reservation ID
+          required: false
+          default: briqpay-transaction-data-reservation-id
+        - key: BRIQPAY_TRANSACTION_DATA_SECONDARY_RESERVATION_ID_KEY
+          description: Key of CustomType field to store transaction secondary reservation ID
+          required: false
+          default: briqpay-transaction-data-secondary-reservation-id
+        - key: BRIQPAY_TRANSACTION_DATA_PSP_ID_KEY
+          description: Key of CustomType field to store transaction PSP ID
+          required: false
+          default: briqpay-transaction-data-psp-id
+        - key: BRIQPAY_TRANSACTION_DATA_PSP_DISPLAY_NAME_KEY
+          description: Key of CustomType field to store transaction PSP display name
+          required: false
+          default: briqpay-transaction-data-psp-display-name
+        - key: BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY
+          description: Key of CustomType field to store transaction PSP integration name
+          required: false
+          default: briqpay-transaction-data-psp-integration-name
+        - key: ALLOWED_ORIGINS
+          description: Comma-separated list of allowed CORS origins
+          required: false
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
           description: commercetools client secret
@@ -505,10 +554,10 @@ deployAs:
 To integrate the Briqpay payment enabler in your frontend:
 
 ```typescript
-import { BriqpayPaymentEnabler } from "@briqpay/commercetools-enabler";
+import { Enabler } from "connector-enabler";
 
 // Create the enabler instance
-const enabler = await BriqpayPaymentEnabler.create({
+const enabler = await Enabler.create({
   processorUrl: "https://your-processor-url",
   sessionId: "commercetools-checkout-session-id",
   onComplete: (result) => {
@@ -589,7 +638,7 @@ curl --location 'http://localhost:8080/operations/status' \
 - TypeScript 5.9.3 - Type safety
 - Jest 30.2.0 - Testing framework
 - ESLint 9.39.1 - Code linting
-- SCSS support for styling
+- Sass 1.94.2 - SCSS support for styling
 
 ### Processor Dependencies
 
@@ -597,6 +646,8 @@ curl --location 'http://localhost:8080/operations/status' \
 {
   "@commercetools/connect-payments-sdk": "0.24.0", // commercetools Connect SDK
   "@commercetools/platform-sdk": "^8.14.0", // commercetools Platform SDK
+  "@commercetools/ts-client": "^3.4.1", // commercetools TypeScript client
+  "@commercetools-backend/loggers": "24.11.0", // Logging utilities
   "fastify": "5.6.2", // Web framework
   "@sinclair/typebox": "0.34.41", // Runtime type validation
   "dotenv": "17.2.3" // Environment variable management
@@ -684,14 +735,14 @@ The `docker-compose.yaml` provides production-ready containerization:
 
 ```yaml
 services:
-  jwt-server: # JWT authentication service
-  enabler: # Frontend payment components
-  processor: # Backend payment services
+  jwt-server: # JWT authentication service (port 9002 → 9000)
+  enabler: # Frontend payment components (port 3000)
+  processor: # Backend payment services (port 8080)
 ```
 
 **Key Features**:
 
-- Node.js 20 Alpine containers
+- Node.js 24 Alpine containers (node:24.11.1-alpine)
 - Volume mounting for development
 - Proper service dependencies
 - Environment variable injection
@@ -838,12 +889,14 @@ cd processor && npm run watch
 
 ### Debug Mode
 
-```bash
-# Enable debug logging
-DEBUG=* npm run dev
+Set the `LOGGER_LEVEL` environment variable to `debug` for verbose logging:
 
-# Processor debug mode
-DEBUG=commercetools:* npm run watch
+```bash
+# In processor/.env
+LOGGER_LEVEL=debug
+
+# Then run
+npm run watch
 ```
 
 ## 📚 API Documentation
@@ -868,19 +921,22 @@ DEBUG=commercetools:* npm run watch
 ### Enabler Interface
 
 ```typescript
-interface PaymentEnabler {
-  createComponentBuilder(type: string): Promise<PaymentComponentBuilder>;
-  createDropinBuilder(type: DropinType): Promise<PaymentDropinBuilder>;
-}
+// Import from the built enabler
+import { Enabler } from "connector-enabler";
 
-// Usage example
-const enabler = await BriqpayPaymentEnabler.create({
+// Create enabler instance
+const enabler = await Enabler.create({
   processorUrl: "https://processor-url",
-  sessionId: "session-id",
-  onComplete: (result) => console.log(result),
+  sessionId: "commercetools-session-id",
+  onComplete: (result) => {
+    if (result.isSuccess) {
+      console.log("Payment completed:", result.paymentReference);
+    }
+  },
   onError: (error) => console.error(error),
 });
 
+// Create and mount drop-in
 const builder = await enabler.createDropinBuilder("embedded");
 const dropin = builder.build({ onDropinReady: async () => {} });
 dropin.mount("#payment-container");
@@ -897,22 +953,7 @@ dropin.mount("#payment-container");
 ### Runtime Optimizations
 
 - Fastify for high-performance HTTP handling
-- Connection pooling for commercetools API
-- Efficient session management with Redis (optional)
-
-## 📈 Monitoring & Observability
-
-### Logging
-
-- Structured logging with correlation IDs
-- Request/response logging for debugging
-- Error tracking and reporting
-
-### Metrics
-
-- Payment transaction success rates
-- API response times
-- Error rates by endpoint and type
+- Efficient session management via commercetools cart custom fields
 
 ## 🏛️ Processor Deep Dive
 
@@ -938,42 +979,43 @@ The `BriqpayService` class handles all direct Briqpay API interactions:
 ```typescript
 class BriqpayService {
   // Session management
-  async createSession(sessionData: SessionRequest): Promise<SessionResponse>;
-  async updateSession(
-    sessionId: string,
-    updates: SessionUpdate
-  ): Promise<SessionResponse>;
+  async createSession(ctCart: Cart, amountPlanned: PaymentAmount, hostname: string): Promise<BriqpayResponse>;
+  async updateSession(sessionId: string, cart: Cart, amount: Money): Promise<MediumBriqpayResponse>;
+  async getSession(sessionId: string): Promise<MediumBriqpayResponse>;
 
   // Payment operations
-  async executePayment(paymentData: PaymentRequest): Promise<PaymentResponse>;
-  async capturePayment(captureData: CaptureRequest): Promise<CaptureResponse>;
-  async refundPayment(refundData: RefundRequest): Promise<RefundResponse>;
+  async capture(ctCart: Cart, amountPlanned: PaymentAmount, sessionId: string): Promise<CaptureResponse>;
+  async refund(ctCart: Cart, amountPlanned: PaymentAmount, sessionId: string, captureId?: string): Promise<RefundResponse>;
+  async cancel(sessionId: string): Promise<{ status: PaymentOutcome }>;
+  
+  // Decision handling
+  makeDecision(sessionId: string, decisionRequest: BriqpayDecisionRequest): Promise<Response>;
 }
 ```
 
 **Key Features**:
 
-- Automatic retry logic with exponential backoff
 - Request/response validation using TypeBox schemas
 - Error handling with commercetools-compatible error mapping
-- Session state management and persistence
+- Session state management via commercetools cart custom fields
 
-#### SessionService
+#### BriqpaySessionService
 
 Manages payment sessions across the commercetools ecosystem:
 
 ```typescript
-class SessionService {
-  // Creates Briqpay session and stores reference in commercetools cart
-  async createPaymentSession(cart: Cart): Promise<PaymentSession>;
+class BriqpaySessionService {
+  // Creates or updates Briqpay session based on cart state
+  async createOrUpdateBriqpaySession(
+    ctCart: Cart,
+    amountPlanned: PaymentAmount,
+    hostname: string
+  ): Promise<MediumBriqpayResponse>;
 
-  // Retrieves session data from commercetools custom fields
-  async getSessionFromCart(cart: Cart): Promise<PaymentSession | null>;
-
-  // Updates session status and cart custom fields
-  async updateSessionStatus(
-    sessionId: string,
-    status: SessionStatus
+  // Updates cart with Briqpay session ID custom field
+  async updateCartWithBriqpaySessionId(
+    ctCart: Cart,
+    briqpaySessionId: string
   ): Promise<void>;
 }
 ```
@@ -981,63 +1023,51 @@ class SessionService {
 **Session Storage Strategy**:
 
 - Uses commercetools custom fields on Cart objects
-- Custom Type: `briqpay-session-id` (configurable)
-- Stores session ID, status, and metadata
+- Custom Type key: configurable via `BRIQPAY_SESSION_CUSTOM_TYPE_KEY`
+- Compares cart with existing session to determine if update is needed
 - Enables session recovery across frontend/backend boundaries
 
-#### OperationService
+#### BriqpayOperationService
 
 Handles commercetools payment operations and state transitions:
 
 ```typescript
-class OperationService {
-  // Process payment operations from commercetools
-  async processPayment(
-    payment: Payment,
-    request: PaymentRequest
-  ): Promise<PaymentUpdate>;
+class BriqpayOperationService {
+  // Capture an authorized payment
+  async capturePayment(request: CapturePaymentRequest): Promise<PaymentProviderModificationResponse>;
 
-  // Handle different operation types
-  async handleAuthorize(payment: Payment): Promise<PaymentUpdate>;
-  async handleCancel(payment: Payment): Promise<PaymentUpdate>;
-  async handleRefund(payment: Payment, amount?: Money): Promise<PaymentUpdate>;
+  // Cancel an authorized payment
+  async cancelPayment(request: CancelPaymentRequest): Promise<PaymentProviderModificationResponse>;
 
-  // Map Briqpay statuses to commercetools payment states
-  private mapPaymentStatus(briqpayStatus: string): PaymentStatus;
+  // Refund a captured payment
+  async refundPayment(request: RefundPaymentRequest): Promise<PaymentProviderModificationResponse>;
+
+  // Reverse a payment
+  async reversePayment(request: ReversePaymentRequest): Promise<PaymentProviderModificationResponse>;
 }
 ```
 
 **Operation Flow**:
 
 1. Receives payment operation from commercetools
-2. Validates operation against current payment state
+2. Validates operation against current payment state (e.g., cannot cancel captured payment)
 3. Executes corresponding Briqpay API call
-4. Updates commercetools payment with results
-5. Handles error scenarios and rollbacks
+4. Updates commercetools payment with transaction results
 
 #### NotificationService
 
 Processes Briqpay webhooks for asynchronous payment updates:
 
 ```typescript
-class NotificationService {
+class BriqpayNotificationService {
   // Handle webhook notifications
-  async processNotification(notification: BriqpayNotification): Promise<void>;
-
-  // Verify webhook authenticity
-  private verifyWebhookSignature(payload: string, signature: string): boolean;
-
-  // Update payment based on notification
-  private async updatePaymentFromNotification(
-    notification: BriqpayNotification
-  ): Promise<void>;
+  async processNotification(opts: { data: NotificationRequestSchemaDTO }): Promise<void>;
 }
 ```
 
 **Webhook Security**:
 
-- Session validation via Briqpay API (verifies sessionId exists in Briqpay's system)
-- Idempotency handling to prevent duplicate processing
+- Session validation via Briqpay API (fetches session to verify sessionId exists in Briqpay's system)
 - Comprehensive logging for audit trails
 - Request/response audit logging with correlation IDs
 
@@ -1048,178 +1078,62 @@ class NotificationService {
 The processor automatically creates and manages commercetools custom types:
 
 ```typescript
-// Post-deployment hook
+// Post-deployment hook creates custom type with multiple fields:
 export async function createBriqpayCustomType(typeKey: string) {
-  const customType = {
-    key: typeKey,
-    name: { en: "Briqpay Session ID" },
-    resourceTypeIds: ["order"],
-    fieldDefinitions: [
-      {
-        name: "briqpaySessionId",
-        label: { en: "Briqpay Session ID" },
-        type: { name: "String" },
-        required: false,
-      },
-    ],
-  };
+  // Creates custom type on 'order' resource with fields:
+  // - briqpaySessionId: Session ID
+  // - briqpayPspMetaDataCustomerFacingReference: PSP customer reference
+  // - briqpayPspMetaDataDescription: PSP description
+  // - briqpayPspMetaDataType: PSP type
+  // - briqpayPspMetaDataPayerEmail: Payer email
+  // - briqpayPspMetaDataPayerFirstName: Payer first name
+  // - briqpayPspMetaDataPayerLastName: Payer last name
+  // - briqpayTransactionDataReservationId: Reservation ID
+  // - briqpayTransactionDataSecondaryReservationId: Secondary reservation ID
+  // - briqpayTransactionDataPspId: PSP ID
+  // - briqpayTransactionDataPspDisplayName: PSP display name
+  // - briqpayTransactionDataPspIntegrationName: PSP integration name
 }
 ```
 
 ### API Routes & Endpoints
 
-#### Briqpay Payment Routes
+The processor exposes the following routes:
 
-```typescript
-// /briqpay-payment.route.ts
-export const paymentRoutes = (
-  fastify: FastifyInstance,
-  opts: PaymentRoutesOptions
-) => {
-  // Get config and create/retrieve Briqpay session
-  fastify.get("/config", {
-    preHandler: [opts.sessionHeaderAuthHook.authenticate()],
-    schema: { response: { 200: ConfigResponseSchema } },
-    handler: async (request, reply) => {
-      const paymentConfig = await opts.paymentService.config(request.hostname);
-      reply.code(200).send(paymentConfig);
-    },
-  });
+**Briqpay Payment Routes** (root level):
+- `GET /config` - Returns Briqpay session config and HTML snippet
+- `POST /decision` - Submits payment decision to Briqpay (allow/reject)
+- `POST /payments` - Creates payment in commercetools
+- `POST /notifications` - Handles Briqpay webhook notifications
 
-  // Submit decision to Briqpay
-  fastify.post("/decision", {
-    preHandler: [opts.sessionHeaderAuthHook.authenticate()],
-    schema: { body: DecisionRequestSchema },
-    handler: async (request, reply) => {
-      await Briqpay.makeDecision(request.body.sessionId, {
-        decision: request.body.decision,
-      });
-      return reply.status(204).send();
-    },
-  });
-
-  // Create payment in commercetools
-  fastify.post("/payments", {
-    preHandler: [opts.sessionHeaderAuthHook.authenticate()],
-    schema: {
-      body: PaymentRequestSchema,
-      response: { 200: PaymentResponseSchema },
-    },
-    handler: async (request, reply) => {
-      const resp = await opts.paymentService.createPayment({
-        data: request.body,
-      });
-      return reply.status(200).send(resp);
-    },
-  });
-
-  // Handle Briqpay webhooks
-  fastify.post("/notifications", {
-    handler: async (request, reply) => {
-      await opts.paymentService.processNotification({ data: request.body });
-      return reply.status(200).send("[accepted]");
-    },
-  });
-};
-```
+**Operation Routes** (`/operations` prefix):
+- `GET /operations/config` - Get payment configuration
+- `GET /operations/status` - Health check status
+- `GET /operations/payment-components` - Get supported payment components
+- `POST /operations/payment-intents/:id` - Modify payment (capture/cancel/refund)
+- `POST /operations/transactions` - Create transaction
 
 ### Request/Response Validation
 
-All endpoints use **TypeBox** schemas for runtime validation:
-
-```typescript
-const createSessionSchema = {
-  body: Type.Object({
-    cartId: Type.String(),
-    currency: Type.String(),
-    amount: Type.Number(),
-    returnUrl: Type.String(),
-    termsUrl: Type.String(),
-  }),
-  response: Type.Object({
-    sessionId: Type.String(),
-    sessionUrl: Type.String(),
-    status: Type.String(),
-  }),
-};
-```
+All endpoints use **TypeBox** schemas for runtime validation. Schemas are defined in `src/dtos/` directory.
 
 ### Error Handling Strategy
 
-#### Comprehensive Error Management
+The processor uses custom error classes defined in `src/libs/errors/briqpay-errors.ts`:
 
-```typescript
-class BriqpayError extends Error {
-  constructor(
-    message: string,
-    public readonly code: string,
-    public readonly statusCode: number = 500,
-    public readonly details?: any
-  ) {
-    super(message);
-  }
-}
+- **SessionError** - Session-related failures
+- **ValidationError** - Invalid request data (400)
+- **ErrorInvalidOperation** - Invalid payment operation (from SDK)
 
-// Error mapping to commercetools format
-export const mapBriqpayError = (error: BriqpayError) => ({
-  code: error.code,
-  message: error.message,
-  statusCode: error.statusCode,
-  extension: error.details,
-});
-```
-
-#### Error Categories
-
-- **Validation Errors**: 400 - Invalid request data
-- **Authentication Errors**: 401 - Invalid API credentials
-- **Authorization Errors**: 403 - Insufficient permissions
-- **Not Found Errors**: 404 - Resource not found
-- **Payment Errors**: 422 - Payment processing failures
-- **Server Errors**: 500 - Internal system errors
-
-### Performance Optimizations
-
-#### Connection Management
-
-```typescript
-// commercetools client configuration
-const client = createClient({
-  middlewares: [
-    // Request logging middleware
-    logRequest(),
-    // Response caching middleware
-    cacheResponse({ ttl: 300 }),
-    // Retry middleware for failed requests
-    retry({ maxRetries: 3, backoff: "exponential" }),
-  ],
-});
-```
-
-#### Memory Management
-
-- Connection pooling for commercetools API calls
-- Efficient session data caching with TTL
-- Garbage collection for expired sessions
-- Stream processing for large payloads
+Errors are handled by Fastify's error handler and returned in commercetools-compatible format.
 
 ### Security Implementation
 
-#### Authentication Flow
+Authentication is handled by the commercetools Connect Payments SDK:
 
-```typescript
-// JWT validation middleware
-export const authenticateRequest = async (request: FastifyRequest) => {
-  const token = request.headers.authorization?.replace("Bearer ", "");
-
-  if (!token) {
-    throw new UnauthorizedError("Missing authorization token");
-  }
-
-  const decoded = await verifyJWT(token, process.env.CTP_JWKS_URL!);
-  request.user = decoded;
-};
-```
+- **SessionHeaderAuthenticationHook** - Validates `X-Session-Id` header for frontend routes
+- **JWTAuthenticationHook** - Validates JWT tokens for Merchant Center routes
+- **Oauth2AuthenticationHook** - Validates OAuth2 tokens for backend operations
 
 #### Security Measures
 
@@ -1234,112 +1148,39 @@ export const authenticateRequest = async (request: FastifyRequest) => {
 
 ### Testing Strategy
 
-#### Unit Tests
+Tests are located in the `test/` directory and use Jest with MSW for API mocking.
 
-```typescript
-// BriqpayService.test.ts
-describe("BriqpayService", () => {
-  describe("createSession", () => {
-    it("should create session successfully", async () => {
-      const mockSession = { sessionId: "test-123", status: "created" };
-      jest.spyOn(briqpayApi, "createSession").mockResolvedValue(mockSession);
+```bash
+# Run tests
+npm run test
 
-      const result = await briqpayService.createSession(sessionData);
-      expect(result).toEqual(mockSession);
-    });
-
-    it("should handle API errors gracefully", async () => {
-      jest
-        .spyOn(briqpayApi, "createSession")
-        .mockRejectedValue(new Error("API Error"));
-
-      await expect(briqpayService.createSession(sessionData)).rejects.toThrow(
-        BriqpayError
-      );
-    });
-  });
-});
+# Run with coverage
+npm run test:coverage
 ```
 
-#### Integration Tests
-
-- Full payment flow testing with mock Briqpay API
-- commercetools integration testing with test project
-- Webhook processing validation
-- Error scenario testing
+Coverage thresholds are set to 75% for branches, functions, lines, and statements.
 
 ### Monitoring & Observability
 
-#### Structured Logging
+The processor uses `@commercetools-backend/loggers` via `appLogger` for structured logging:
 
 ```typescript
-// Request logging middleware
-export const requestLogger = async (
-  request: FastifyRequest,
-  reply: FastifyReply
-) => {
-  const startTime = Date.now();
+import { appLogger } from './payment-sdk'
 
-  reply.addHook("onSend", async () => {
-    const duration = Date.now() - startTime;
-
-    logger.info("Request completed", {
-      method: request.method,
-      url: request.url,
-      statusCode: reply.statusCode,
-      duration,
-      correlationId: request.id,
-      userId: request.user?.sub,
-    });
-  });
-};
+appLogger.info({ sessionId, cartId }, 'Processing payment')
+appLogger.error({ error }, 'Payment failed')
 ```
 
-#### Metrics Collection
-
-- Request/response times by endpoint
-- Payment success/failure rates
-- API error frequencies
-- Memory usage and performance metrics
-- Briqpay API call success rates
+Configure log level via `LOGGER_LEVEL` environment variable (default: `info`).
 
 ### Deployment Considerations
 
-#### Environment-Specific Configurations
+The processor uses environment variables for all configuration. See the [Configuration Variables](#configuration-variables) section for the complete list. Key deployment notes:
 
-```typescript
-// Environment detection
-const isProduction = process.env.NODE_ENV === "production";
-const isDevelopment = process.env.NODE_ENV === "development";
-
-// Configuration based on environment
-const config = {
-  briqpay: {
-    baseUrl: process.env.BRIQPAY_BASE_URL || "https://api.briqpay.com/v3",
-    timeout: isProduction ? 30000 : 10000,
-    retries: isProduction ? 3 : 1,
-  },
-  logging: {
-    level: isProduction ? "info" : "debug",
-    format: isProduction ? "json" : "pretty",
-  },
-};
-```
-
-#### Health Checks
-
-```typescript
-// Health check endpoint
-fastify.get("/health", async () => ({
-  status: "ok",
-  timestamp: new Date().toISOString(),
-  services: {
-    commercetools: await checkCommercetoolsHealth(),
-    briqpay: await checkBriqpayHealth(),
-    database: await checkDatabaseHealth(),
-  },
-}));
-```
+- **Briqpay URL**: Use `https://playground-api.briqpay.com/v3` for testing, production URL for live
+- **Logging**: Configure `LOGGER_LEVEL` (default: `info`)
+- **Health Check**: Configure timeout via `HEALTH_CHECK_TIMEOUT` (default: `5000`ms)
+- **CORS**: Set `ALLOWED_ORIGINS` for production deployments
 
 ## Best Practices
 

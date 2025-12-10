@@ -297,15 +297,65 @@ export interface MinimalBriqpayResponse {
   sessionId: string
 }
 
+/**
+ * Module status from Briqpay session response.
+ * Used to determine the actual order/capture/refund status from Briqpay's source of truth.
+ */
+export interface BriqpayModuleStatus {
+  payment?: {
+    uiStatus?: string
+    orderStatus?: ORDER_STATUS
+    captureStatus?: TRANSACTION_STATUS
+    refundStatus?: string
+  }
+  order_info?: {
+    uiStatus?: string
+  }
+}
+
+/**
+ * Capture information from Briqpay session.
+ */
+export interface BriqpayCapture {
+  captureId: string
+  status: TRANSACTION_STATUS
+  amount?: number
+  currency?: string
+}
+
+/**
+ * Refund information from Briqpay session.
+ */
+export interface BriqpayRefund {
+  refundId: string
+  status: TRANSACTION_STATUS
+  amount?: number
+  currency?: string
+}
+
 export type MediumBriqpayResponse = MinimalBriqpayResponse & {
-  data: {
-    order: {
+  data?: {
+    order?: {
       amountIncVat: number
       amountExVat?: number
       currency: string
       cart: CartItem[]
     }
   }
+  /**
+   * Module status containing the actual order/capture/refund status.
+   * This is the source of truth for status - webhook payloads should not be trusted
+   * until HMAC validation is enabled.
+   */
+  moduleStatus?: BriqpayModuleStatus
+  /**
+   * List of captures on this session.
+   */
+  captures?: BriqpayCapture[]
+  /**
+   * List of refunds on this session.
+   */
+  refunds?: BriqpayRefund[]
 }
 
 export interface CreateSessionRequestBody {

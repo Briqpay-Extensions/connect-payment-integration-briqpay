@@ -4,37 +4,46 @@ import { beforeEach, describe, expect, it, jest, afterEach } from '@jest/globals
 import { mockGetCartResult } from './utils/mock-cart-data'
 import { BRIQPAY_DECISION } from '../src/dtos/briqpay-payment.dto'
 import { Cart } from '@commercetools/platform-sdk'
+import { apiRoot } from '../src/libs/commercetools/api-root'
+
+// Mock the apiRoot for fetchCartDiscountNames
+jest.mock('../src/libs/commercetools/api-root', () => ({
+  apiRoot: {
+    cartDiscounts: jest.fn<any>(),
+    taxCategories: jest.fn<any>(),
+    productProjections: jest.fn<any>(),
+  },
+}))
 
 // Mock the payment SDK setup
 jest.mock('../src/payment-sdk', () => ({
   paymentSDK: {
     ctCartService: {
-      getCart: jest.fn(),
-      addPayment: jest.fn(),
-      getPaymentAmount: jest.fn(),
-      getCartByPaymentId: jest.fn(),
+      getCart: jest.fn<any>(),
+      addPayment: jest.fn<any>(),
+      getPaymentAmount: jest.fn<any>(),
+      getCartByPaymentId: jest.fn<any>(),
     },
     ctPaymentService: {
-      getPayment: jest.fn(),
-      createPayment: jest.fn(),
-      updatePayment: jest.fn(),
-      hasTransactionInState: jest.fn(),
+      getPayment: jest.fn<any>(),
+      createPayment: jest.fn<any>(),
+      updatePayment: jest.fn<any>(),
+      hasTransactionInState: jest.fn<any>(),
     },
     ctAPI: {
       client: {
-        execute: jest.fn(),
-        carts: jest.fn().mockReturnValue({
-          withId: jest.fn().mockReturnValue({
-            post: jest.fn().mockReturnValue({
-              execute: jest.fn(),
+        execute: jest.fn<any>(),
+        carts: jest.fn<any>().mockReturnValue({
+          withId: jest.fn<any>().mockReturnValue({
+            post: jest.fn<any>().mockReturnValue({
+              execute: jest.fn<any>(),
             }),
           }),
         }),
-
-        customObjects: jest.fn().mockReturnValue({
-          withContainerAndKey: jest.fn().mockReturnValue({
-            get: jest.fn().mockReturnValue({
-              execute: jest.fn().mockReturnValue(
+        customObjects: jest.fn<any>().mockReturnValue({
+          withContainerAndKey: jest.fn<any>().mockReturnValue({
+            get: jest.fn<any>().mockReturnValue({
+              execute: jest.fn<any>().mockReturnValue(
                 Promise.resolve({
                   body: {
                     value: {
@@ -50,19 +59,39 @@ jest.mock('../src/payment-sdk', () => ({
     },
   },
   appLogger: {
-    info: jest.fn(),
-    error: jest.fn(),
+    info: jest.fn<any>(),
+    error: jest.fn<any>(),
+    warn: jest.fn<any>(),
   },
 }))
 
+// Helper to setup apiRoot mocks
+const setupApiRootMocks = () => {
+  ;(apiRoot.cartDiscounts as jest.Mock<any>).mockReturnValue({
+    get: jest.fn<any>().mockReturnValue({
+      execute: jest.fn<any>().mockResolvedValue({ body: { results: [] } }),
+    }),
+  })
+  ;(apiRoot.taxCategories as jest.Mock<any>).mockReturnValue({
+    withId: jest.fn<any>().mockReturnValue({
+      get: jest.fn<any>().mockReturnValue({
+        execute: jest.fn<any>().mockResolvedValue({ body: { rates: [{ country: 'GB', amount: 0.2 }] } }),
+      }),
+    }),
+  })
+  ;(apiRoot.productProjections as jest.Mock<any>).mockReturnValue({
+    withId: jest.fn<any>().mockReturnValue({
+      get: jest.fn<any>().mockReturnValue({
+        execute: jest.fn<any>().mockResolvedValue({ body: { taxCategory: { id: 'tax-category-id' } } }),
+      }),
+    }),
+  })
+}
+
 describe('BriqpayService', () => {
   beforeEach(() => {
-    // global.fetch = jest.fn().mockReturnValue(
-    //   Promise.resolve({
-    //     ok: true,
-    //     json: async () => ({ sessionId: 'abc123' }),
-    //   } as Response),
-    // ) as typeof fetch
+    jest.clearAllMocks()
+    setupApiRootMocks()
   })
 
   it('should create a session with gift cards', async () => {
@@ -743,6 +772,589 @@ describe('BriqpayService', () => {
           'localhost',
         ),
       ).rejects.toThrow('Could not determine effective tax rate')
+    })
+
+    it('should fallback to tax rate from product when line item has no tax rate', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult()))
+      delete mockCart.lineItems[0].taxRate
+      mockCart.lineItems[0].productId = 'product-with-tax-category'
+
+      // Mock apiRoot for tax category lookup
+      ;(apiRoot.taxCategories as jest.Mock<any>).mockReturnValue({
+        withId: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({
+            execute: jest.fn<any>().mockResolvedValue({
+              body: {
+                rates: [{ country: 'GB', amount: 0.2 }],
+              },
+            }),
+          }),
+        }),
+      })
+      ;(apiRoot.productProjections as jest.Mock<any>).mockReturnValue({
+        withId: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({
+            execute: jest.fn<any>().mockResolvedValue({
+              body: {
+                taxCategory: { id: 'tax-category-id' },
+              },
+            }),
+          }),
+        }),
+      })
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+    })
+
+    it('should handle tax category lookup with state matching', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult()))
+      delete mockCart.lineItems[0].taxRate
+      mockCart.lineItems[0].productId = 'product-with-tax-category'
+      mockCart.shippingAddress.state = 'CA'
+      ;(apiRoot.taxCategories as jest.Mock<any>).mockReturnValue({
+        withId: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({
+            execute: jest.fn<any>().mockResolvedValue({
+              body: {
+                rates: [
+                  { country: 'GB', state: 'CA', amount: 0.25 },
+                  { country: 'GB', amount: 0.2 },
+                ],
+              },
+            }),
+          }),
+        }),
+      })
+      ;(apiRoot.productProjections as jest.Mock<any>).mockReturnValue({
+        withId: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({
+            execute: jest.fn<any>().mockResolvedValue({
+              body: {
+                taxCategory: { id: 'tax-category-id' },
+              },
+            }),
+          }),
+        }),
+      })
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+    })
+
+    it('should handle tax category lookup error gracefully', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult()))
+      delete mockCart.lineItems[0].taxRate
+      mockCart.lineItems[0].productId = 'product-with-tax-category'
+      ;(apiRoot.productProjections as jest.Mock<any>).mockReturnValue({
+        withId: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({
+            execute: jest.fn<any>().mockRejectedValue(new Error('Product not found')),
+          }),
+        }),
+      })
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+    })
+
+    it('should handle tax category fetch error gracefully', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult()))
+      delete mockCart.lineItems[0].taxRate
+      mockCart.lineItems[0].productId = 'product-with-tax-category'
+      ;(apiRoot.productProjections as jest.Mock<any>).mockReturnValue({
+        withId: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({
+            execute: jest.fn<any>().mockResolvedValue({
+              body: {
+                taxCategory: { id: 'tax-category-id' },
+              },
+            }),
+          }),
+        }),
+      })
+      ;(apiRoot.taxCategories as jest.Mock<any>).mockReturnValue({
+        withId: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({
+            execute: jest.fn<any>().mockRejectedValue(new Error('Tax category not found')),
+          }),
+        }),
+      })
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+    })
+  })
+
+  describe('local development origin detection', () => {
+    it('should use env URL for non-local origins', async () => {
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        'https://production.example.com',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+    })
+
+    it('should use clientOrigin for localhost', async () => {
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        'http://localhost:3000',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+    })
+
+    it('should use clientOrigin for 127.x.x.x addresses', async () => {
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        'http://127.0.0.1:3000',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+    })
+
+    it('should use clientOrigin for IPv6 loopback', async () => {
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        'http://[::1]:3000',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+    })
+
+    it('should use clientOrigin for private IP 10.x.x.x', async () => {
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        'http://10.0.0.1:3000',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+    })
+
+    it('should use clientOrigin for private IP 192.168.x.x', async () => {
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        'http://192.168.1.1:3000',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+    })
+
+    it('should use clientOrigin for private IP 172.16-31.x.x', async () => {
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        'http://172.16.0.1:3000',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+    })
+
+    it('should handle invalid clientOrigin URL gracefully', async () => {
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        'not-a-valid-url',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+    })
+
+    it('should extract origin from referer URL with path', async () => {
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        'http://localhost:3000/checkout/payment',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+    })
+  })
+
+  describe('cart discount name fetching', () => {
+    it('should fetch cart discount names for items with discounts', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      mockCart.lineItems[0].discountedPricePerQuantity = [
+        {
+          quantity: 1,
+          discountedPrice: {
+            value: {
+              type: 'centPrecision',
+              centAmount: 100000,
+              currencyCode: 'EUR',
+              fractionDigits: 2,
+            },
+            includedDiscounts: [
+              {
+                discount: { typeId: 'cart-discount', id: 'discount-id-1' },
+                discountedAmount: {
+                  type: 'centPrecision',
+                  centAmount: 19000,
+                  currencyCode: 'EUR',
+                  fractionDigits: 2,
+                },
+              },
+            ],
+          },
+        },
+      ]
+      ;(mockCart.lineItems[0] as any).taxedPrice = {
+        totalGross: { centAmount: 100000, currencyCode: 'EUR' },
+        totalNet: { centAmount: 84034, currencyCode: 'EUR' },
+        totalTax: { centAmount: 15966, currencyCode: 'EUR' },
+      }
+      ;(apiRoot.cartDiscounts as jest.Mock<any>).mockReturnValue({
+        get: jest.fn<any>().mockReturnValue({
+          execute: jest.fn<any>().mockResolvedValue({
+            body: {
+              results: [
+                {
+                  id: 'discount-id-1',
+                  name: { en: 'Summer Sale', 'en-GB': 'Summer Sale GB' },
+                  key: 'summer-sale',
+                },
+              ],
+            },
+          }),
+        }),
+      })
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(apiRoot.cartDiscounts).toHaveBeenCalled()
+    })
+
+    it('should handle cart discount fetch error gracefully', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      mockCart.lineItems[0].discountedPricePerQuantity = [
+        {
+          quantity: 1,
+          discountedPrice: {
+            value: {
+              type: 'centPrecision',
+              centAmount: 100000,
+              currencyCode: 'EUR',
+              fractionDigits: 2,
+            },
+            includedDiscounts: [
+              {
+                discount: { typeId: 'cart-discount', id: 'discount-id-1' },
+                discountedAmount: {
+                  type: 'centPrecision',
+                  centAmount: 19000,
+                  currencyCode: 'EUR',
+                  fractionDigits: 2,
+                },
+              },
+            ],
+          },
+        },
+      ]
+      ;(mockCart.lineItems[0] as any).taxedPrice = {
+        totalGross: { centAmount: 100000, currencyCode: 'EUR' },
+        totalNet: { centAmount: 84034, currencyCode: 'EUR' },
+        totalTax: { centAmount: 15966, currencyCode: 'EUR' },
+      }
+      ;(apiRoot.cartDiscounts as jest.Mock<any>).mockReturnValue({
+        get: jest.fn<any>().mockReturnValue({
+          execute: jest.fn<any>().mockRejectedValue(new Error('API error')),
+        }),
+      })
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+    })
+  })
+
+  describe('updateSession with discounts', () => {
+    it('should update session with total discount on cart', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      ;(mockCart as any).discountOnTotalPrice = {
+        discountedNetAmount: {
+          centAmount: -1000,
+          currencyCode: 'EUR',
+        },
+        discountedGrossAmount: {
+          centAmount: -1190,
+          currencyCode: 'EUR',
+        },
+        includedDiscounts: [{ discount: { id: 'discount-1', typeId: 'cart-discount' } }],
+      }
+      ;(apiRoot.cartDiscounts as jest.Mock<any>).mockReturnValue({
+        get: jest.fn<any>().mockReturnValue({
+          execute: jest.fn<any>().mockResolvedValue({
+            body: {
+              results: [{ id: 'discount-1', name: { en: 'Total Discount' } }],
+            },
+          }),
+        }),
+      })
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'updated-session' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.updateSession('abc123', mockCart, {
+        centAmount: 10000,
+        currencyCode: 'EUR',
+      })
+
+      expect(response).toHaveProperty('sessionId', 'updated-session')
+    })
+
+    it('should update session with shipping discount', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      ;(mockCart as any).shippingInfo.discountedPrice = {
+        value: {
+          centAmount: 500,
+          currencyCode: 'EUR',
+        },
+      }
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'updated-session' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.updateSession('abc123', mockCart, {
+        centAmount: 10000,
+        currencyCode: 'EUR',
+      })
+
+      expect(response).toHaveProperty('sessionId', 'updated-session')
+    })
+
+    it('should handle zero net discount amount in addDiscountItemToCart', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      ;(mockCart as any).discountOnTotalPrice = {
+        discountedNetAmount: {
+          centAmount: 0,
+          currencyCode: 'EUR',
+        },
+        discountedGrossAmount: {
+          centAmount: 0,
+          currencyCode: 'EUR',
+        },
+      }
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'updated-session' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.updateSession('abc123', mockCart, {
+        centAmount: 10000,
+        currencyCode: 'EUR',
+      })
+
+      expect(response).toHaveProperty('sessionId', 'updated-session')
+    })
+  })
+
+  describe('logFinalAmounts edge cases', () => {
+    it('should handle cart with no items in logFinalAmounts', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      mockCart.lineItems = []
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
     })
   })
 })

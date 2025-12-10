@@ -41,12 +41,12 @@ The enabler is designed to be loaded by the commercetools Checkout or directly i
 enabler/
 ├── src/
 │   ├── briqpay-sdk.ts                    # Briqpay SDK wrapper (suspend/resume/rehydrate)
-│   ├── main.ts                           # Entry point - exports BriqpayPaymentEnabler
+│   ├── main.ts                           # Entry point - exports Enabler (alias for BriqpayPaymentEnabler)
 │   ├── components/
 │   │   ├── base.ts                       # Base component class
 │   │   └── payment-methods/
 │   │       └── briqpay/
-│   │           └── briqpay.ts            # Briqpay payment component
+│   │           └── briqpay.ts            # Briqpay payment component (currently unused)
 │   ├── dropin/
 │   │   └── dropin-embedded.ts            # Embedded drop-in component
 │   ├── dtos/
@@ -156,9 +156,9 @@ import { Enabler } from "connector-enabler";
 const enabler = await Enabler.create({
   processorUrl: "https://your-processor-url",
   sessionId: "commercetools-session-id",
-  onComplete: ({ isSuccess, paymentReference }) => {
-    if (isSuccess) {
-      console.log("Payment completed:", paymentReference);
+  onComplete: (result) => {
+    if (result.isSuccess) {
+      console.log("Payment completed:", result.paymentReference);
       // Redirect to confirmation page
     }
   },
@@ -176,6 +176,7 @@ const dropin = builder.build({
   onPayButtonClick: async (sdk) => {
     // Optional: Perform validation before payment
     // sdk.suspend() / sdk.resume() for cart updates
+    // sdk.makeDecision(true) to allow payment
   },
 });
 
@@ -221,12 +222,12 @@ The SDK instance is available via the `onPayButtonClick` callback.
 
 #### Methods
 
-| Method                               | Description                                                       |
-| ------------------------------------ | ----------------------------------------------------------------- |
-| `suspend()`                          | Adds an overlay over the payment widget (use during cart updates) |
-| `resume()`                           | Removes the overlay and rehydrates the iframe                     |
-| `rehydrate(autoRehydrate?: boolean)` | Fetches latest session config and optionally resumes              |
-| `makeDecision(decision: boolean)`    | Responds to a `briqpayDecision` event                             |
+| Method                               | Description                                                                              |
+| ------------------------------------ | ---------------------------------------------------------------------------------------- |
+| `suspend()`                          | Adds an overlay over the payment widget (use during cart updates)                        |
+| `resume()`                           | Removes the overlay and rehydrates the iframe                                            |
+| `rehydrate(autoRehydrate?: boolean)` | Fetches latest session config and optionally resumes                                     |
+| `makeDecision(decision: boolean)`    | Makes a decision through the backend processor. `true` = allow, `false` = reject         |
 
 ### DropinComponent
 
@@ -289,7 +290,7 @@ document.addEventListener("briqpayDecision", (event: CustomEvent) => {
 | `softErrors`    | `{ message: string }[]`                        | Non-blocking error messages            |
 | `hardError`     | `{ message: string }`                          | Blocking error message                 |
 
-> **Note**: If no response is received within 10 seconds, the decision defaults to `allow`.
+> **Note**: If no response is received within 10 seconds, the decision defaults to allow (`{ decision: true }`).
 
 ## Testing
 
@@ -342,7 +343,8 @@ The `index.html` file provides a development test page that:
 To use the test page:
 
 1. Start the processor on port 8080
-2. Start a JWT mock server on port 9002
+2. Start a JWT mock server on port 9002 (via `docker compose up` from parent directory)
 3. Configure `.env` with your commercetools credentials
 4. Run `npm run dev`
-5. Enter a cart ID and click "Create checkout"
+5. Open http://localhost:3000
+6. Enter a cart ID and click "Create checkout"

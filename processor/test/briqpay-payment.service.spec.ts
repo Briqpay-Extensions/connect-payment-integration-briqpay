@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, test, expect, afterEach, jest, beforeEach } from '@jest/globals'
 import { ConfigResponse, ModifyPayment, StatusResponse } from '../src/services/types/operation.type'
 import { paymentSDK } from '../src/payment-sdk'
@@ -10,12 +11,16 @@ import {
   CreatePaymentRequest,
   BriqpayPaymentServiceOptions,
   ITEM_PRODUCT_TYPE,
+  ORDER_STATUS,
+  TRANSACTION_STATUS,
 } from '../src/services/types/briqpay-payment.type'
 import { AbstractPaymentService } from '../src/services/abstract-payment.service'
 import { BriqpayPaymentService } from '../src/services/briqpay-payment.service'
 import * as FastifyContext from '../src/libs/fastify/context/context'
 import * as StatusHandler from '@commercetools/connect-payments-sdk/dist/api/handlers/status.handler'
 import {
+  BRIQPAY_DECISION,
+  BRIQPAY_REJECT_TYPE,
   BRIQPAY_WEBHOOK_EVENT,
   BRIQPAY_WEBHOOK_STATUS,
   PaymentMethodType,
@@ -26,6 +31,36 @@ import Briqpay from '../src/libs/briqpay/BriqpayService'
 import { Cart } from '@commercetools/platform-sdk'
 import { briqpaySessionIdCustomType } from '../src/custom-types/custom-types'
 import { apiRoot } from '../src/libs/commercetools/api-root'
+
+/**
+ * Helper to create a mock Briqpay session response with the appropriate moduleStatus.
+ * The notification service reads actual status from moduleStatus (source of truth),
+ * not from the webhook payload.
+ */
+const createMockBriqpaySession = (opts: {
+  sessionId?: string
+  orderStatus?: ORDER_STATUS
+  captures?: Array<{ captureId: string; status: TRANSACTION_STATUS }>
+  refunds?: Array<{ refundId: string; status: TRANSACTION_STATUS }>
+}) => ({
+  sessionId: opts.sessionId ?? 'abc123',
+  htmlSnippet: '<div>Briqpay</div>',
+  data: {
+    order: {
+      amountIncVat: 119000,
+      currency: 'EUR',
+      cart: [],
+    },
+  },
+  moduleStatus: {
+    payment: {
+      uiStatus: 'completed',
+      orderStatus: opts.orderStatus ?? ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+    },
+  },
+  captures: opts.captures ?? [],
+  refunds: opts.refunds ?? [],
+})
 
 // Mock the apiRoot
 jest.mock('../src/libs/commercetools/api-root', () => ({
@@ -73,6 +108,7 @@ jest.mock('../src/payment-sdk', () => ({
   appLogger: {
     info: jest.fn(),
     error: jest.fn(),
+    warn: jest.fn(),
   },
 }))
 
@@ -86,7 +122,6 @@ function setupMockConfig(keysAndValues: Record<string, string>) {
     mockConfig[key] = keysAndValues[key]
   })
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   jest.spyOn(Config, 'getConfig').mockReturnValue(mockConfig as any)
 }
 
@@ -102,15 +137,17 @@ describe('briqpay-payment.service', () => {
     jest.resetAllMocks()
 
     // Setup apiRoot mock
-    ;(apiRoot.carts as jest.Mock).mockReturnValue({
-      withId: jest.fn().mockReturnValue({
-        post: jest.fn().mockReturnValue({
-          execute: jest.fn().mockResolvedValue({ body: { version: 1 } }),
+    ;(apiRoot.carts as jest.Mock<any>).mockReturnValue({
+      withId: jest.fn<any>().mockReturnValue({
+        post: jest.fn<any>().mockReturnValue({
+          execute: jest.fn<any>().mockResolvedValue({ body: { version: 1 } }),
         }),
       }),
     })
 
     // Mock Briqpay service methods
+    // Note: moduleStatus is the source of truth for status in notification processing
+    // The webhook payload status is ignored - actual status is read from moduleStatus
     const mockBriqpayResponse = {
       sessionId: 'abc123',
       status: PaymentOutcome.APPROVED,
@@ -122,6 +159,14 @@ describe('briqpay-payment.service', () => {
           cart: [],
         },
       },
+      moduleStatus: {
+        payment: {
+          uiStatus: 'completed',
+          orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        },
+      },
+      captures: [],
+      refunds: [],
     }
     jest.spyOn(Briqpay, 'createSession').mockReturnValue(Promise.resolve(mockBriqpayResponse))
     jest.spyOn(Briqpay, 'getSession').mockReturnValue(Promise.resolve(mockBriqpayResponse))
@@ -288,9 +333,7 @@ describe('briqpay-payment.service', () => {
     }
 
     // Mocking the necessary methods
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cartWithDifferentAmount as any)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     jest.spyOn(Briqpay, 'getSession').mockResolvedValue(briqpaySession as any)
 
     setupMockConfig({ mockClientKey: '', mockEnvironment: 'test' })
@@ -321,9 +364,7 @@ describe('briqpay-payment.service', () => {
         },
       },
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(mockCart as any).customLineItems = []
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(mockCart as any).taxedPrice = {
       totalNet: {
         type: 'centPrecision',
@@ -356,7 +397,6 @@ describe('briqpay-payment.service', () => {
         fractionDigits: 2,
       },
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(mockCart as any).taxedPricePortions = [
       {
         name: 'de-standard',
@@ -787,7 +827,6 @@ describe('briqpay-payment.service', () => {
     jest.spyOn(Briqpay, 'capture').mockReturnValue(
       Promise.resolve({
         captureId: '123',
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any),
     )
 
@@ -1204,8 +1243,12 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleOrderPending on ORDER_PENDING event', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return ORDER_PENDING status (source of truth)
+    jest
+      .spyOn(Briqpay, 'getSession')
+      .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_PENDING }))
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async ({ interfaceId }) => {
       if (interfaceId === 'abc123') {
@@ -1266,8 +1309,12 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleOrderPending on ORDER_PENDING event with a success authorization already existing', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return ORDER_PENDING status (source of truth)
+    jest
+      .spyOn(Briqpay, 'getSession')
+      .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_PENDING }))
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async ({ interfaceId }) => {
       if (interfaceId === 'abc123') {
@@ -1330,8 +1377,12 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleOrderPending on ORDER_PENDING event with no payment existing', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return ORDER_PENDING status (source of truth)
+    jest
+      .spyOn(Briqpay, 'getSession')
+      .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_PENDING }))
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async () => {
       return []
@@ -1349,8 +1400,12 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleOrderRejected on ORDER_REJECTED event', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return ORDER_REJECTED status (source of truth)
+    jest
+      .spyOn(Briqpay, 'getSession')
+      .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_REJECTED }))
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async () => {
       return []
@@ -1368,8 +1423,12 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleOrderRejected on ORDER_CANCELLED event', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return ORDER_CANCELLED status (source of truth)
+    jest
+      .spyOn(Briqpay, 'getSession')
+      .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_CANCELLED }))
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async () => {
       return []
@@ -1387,8 +1446,12 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleOrderApproved on ORDER_APPROVED_NOT_CAPTURED event', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return ORDER_APPROVED_NOT_CAPTURED status (source of truth)
+    jest
+      .spyOn(Briqpay, 'getSession')
+      .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED }))
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async ({ interfaceId }) => {
       if (interfaceId === 'abc123') {
@@ -1449,8 +1512,12 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleOrderApproved on ORDER_APPROVED_NOT_CAPTURED event with an authorization already pending', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return ORDER_APPROVED_NOT_CAPTURED status (source of truth)
+    jest
+      .spyOn(Briqpay, 'getSession')
+      .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED }))
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async ({ interfaceId }) => {
       if (interfaceId === 'abc123') {
@@ -1525,8 +1592,12 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleOrderApproved on ORDER_APPROVED_NOT_CAPTURED event with an authorization already successful', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return ORDER_APPROVED_NOT_CAPTURED status (source of truth)
+    jest
+      .spyOn(Briqpay, 'getSession')
+      .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED }))
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async ({ interfaceId }) => {
       if (interfaceId === 'abc123') {
@@ -1589,8 +1660,12 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleOrderApproved on ORDER_APPROVED_NOT_CAPTURED event with no payment existing', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return ORDER_APPROVED_NOT_CAPTURED status (source of truth)
+    jest
+      .spyOn(Briqpay, 'getSession')
+      .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED }))
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async () => {
       return []
@@ -1608,8 +1683,15 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleCapturePending on capture PENDING event', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return capture with PENDING status (source of truth)
+    jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
+      createMockBriqpaySession({
+        orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.PENDING }],
+      }),
+    )
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async ({ interfaceId }) => {
       if (interfaceId === 'abc123') {
@@ -1671,8 +1753,15 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleCaptureApproved on capture APPROVED event', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return capture with APPROVED status (source of truth)
+    jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
+      createMockBriqpaySession({
+        orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.APPROVED }],
+      }),
+    )
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async ({ interfaceId }) => {
       if (interfaceId === 'abc123') {
@@ -1734,8 +1823,15 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleCaptureApproved on capture APPROVED event with pending authorization', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return capture with APPROVED status (source of truth)
+    jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
+      createMockBriqpaySession({
+        orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.APPROVED }],
+      }),
+    )
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async ({ interfaceId }) => {
       if (interfaceId === 'abc123') {
@@ -1799,8 +1895,15 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleCapturePending on capture PENDING event with existing approved charge', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return capture with PENDING status (source of truth)
+    jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
+      createMockBriqpaySession({
+        orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.PENDING }],
+      }),
+    )
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async ({ interfaceId }) => {
       if (interfaceId === 'abc123') {
@@ -1864,8 +1967,15 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleCaptureRejected on capture REJECTED event', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return capture with REJECTED status (source of truth)
+    jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
+      createMockBriqpaySession({
+        orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.REJECTED }],
+      }),
+    )
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async ({ interfaceId }) => {
       if (interfaceId === 'abc123') {
@@ -1927,8 +2037,16 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleRefundPending on refund PENDING event', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return refund with PENDING status (source of truth)
+    // Note: refundId must match the one in the webhook payload
+    jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
+      createMockBriqpaySession({
+        orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        refunds: [{ refundId: 'cde123', status: TRANSACTION_STATUS.PENDING }],
+      }),
+    )
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async ({ interfaceId }) => {
       if (interfaceId === 'abc123') {
@@ -1990,8 +2108,15 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleRefundPending on refund PENDING event with already successful refund', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return refund with PENDING status (source of truth)
+    jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
+      createMockBriqpaySession({
+        orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        refunds: [{ refundId: 'cde123', status: TRANSACTION_STATUS.PENDING }],
+      }),
+    )
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async ({ interfaceId }) => {
       if (interfaceId === 'abc123') {
@@ -2055,8 +2180,15 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleRefundApproved on refund APPROVED event', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return refund with APPROVED status (source of truth)
+    jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
+      createMockBriqpaySession({
+        orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        refunds: [{ refundId: 'cde123', status: TRANSACTION_STATUS.APPROVED }],
+      }),
+    )
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async ({ interfaceId }) => {
       if (interfaceId === 'abc123') {
@@ -2118,8 +2250,15 @@ describe('briqpay-payment.service', () => {
   })
 
   test('calls handleRefundRejected on refund REJECTED event', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+    // Mock Briqpay.getSession to return refund with REJECTED status (source of truth)
+    jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
+      createMockBriqpaySession({
+        orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        refunds: [{ refundId: 'cde123', status: TRANSACTION_STATUS.REJECTED }],
+      }),
+    )
 
     jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async ({ interfaceId }) => {
       if (interfaceId === 'abc123') {
@@ -2186,7 +2325,6 @@ describe('briqpay-payment.service', () => {
         payment: {
           transactions: [],
         },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any),
     ).rejects.toThrow('Cannot find briqpay session')
   })
@@ -2202,7 +2340,6 @@ describe('briqpay-payment.service', () => {
             },
           ],
         },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any),
     ).rejects.toThrow('Must have a successful capture first')
   })
@@ -2227,7 +2364,6 @@ describe('briqpay-payment.service', () => {
             },
           ],
         },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any),
     ).rejects.toThrow('Already refunded')
   })
@@ -2239,7 +2375,6 @@ describe('briqpay-payment.service', () => {
           centAmount: 452243,
         },
       },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     await expect(
@@ -2260,7 +2395,6 @@ describe('briqpay-payment.service', () => {
             centAmount: 123123,
           },
         },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any),
     ).rejects.toThrow('Commerce Tools does not support partial refunds towards all payment providers')
   })
@@ -2272,10 +2406,8 @@ describe('briqpay-payment.service', () => {
           centAmount: 123123,
         },
       },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
 
     await briqpayPaymentService.refundPayment({
@@ -2299,9 +2431,244 @@ describe('briqpay-payment.service', () => {
           centAmount: 123123,
         },
       },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     expect(updateSpy).toHaveBeenCalledTimes(2)
+  })
+
+  describe('makeDecision', () => {
+    test('should successfully make a decision when session belongs to cart', async () => {
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
+        ...mockGetCartResult(),
+        custom: {
+          type: { typeId: 'type', id: 'briqpay-session-id' },
+          fields: {
+            briqpaySessionId: 'abc123',
+          },
+        },
+      })
+
+      jest.spyOn(Briqpay, 'makeDecision').mockResolvedValue({
+        ok: true,
+        status: 204,
+      } as Response)
+
+      const result = await briqpayPaymentService.makeDecision({
+        sessionId: 'abc123',
+        decision: BRIQPAY_DECISION.ALLOW,
+      })
+
+      expect(result).toEqual({
+        success: true,
+        decision: BRIQPAY_DECISION.ALLOW,
+      })
+    })
+
+    test('should throw SessionError when cart has no Briqpay session', async () => {
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
+        ...mockGetCartResult(),
+        custom: undefined,
+      })
+
+      await expect(
+        briqpayPaymentService.makeDecision({
+          sessionId: 'abc123',
+          decision: BRIQPAY_DECISION.ALLOW,
+        }),
+      ).rejects.toThrow('No Briqpay session found for this cart')
+    })
+
+    test('should throw SessionError when session ID does not match cart session', async () => {
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
+        ...mockGetCartResult(),
+        custom: {
+          type: { typeId: 'type', id: 'briqpay-session-id' },
+          fields: {
+            briqpaySessionId: 'different-session-id',
+          },
+        },
+      })
+
+      await expect(
+        briqpayPaymentService.makeDecision({
+          sessionId: 'abc123',
+          decision: BRIQPAY_DECISION.ALLOW,
+        }),
+      ).rejects.toThrow('Session does not belong to this cart')
+    })
+
+    test('should throw UpstreamError when Briqpay API call fails', async () => {
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
+        ...mockGetCartResult(),
+        custom: {
+          type: { typeId: 'type', id: 'briqpay-session-id' },
+          fields: {
+            briqpaySessionId: 'abc123',
+          },
+        },
+      })
+
+      jest.spyOn(Briqpay, 'makeDecision').mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        text: async () => 'Invalid decision',
+      } as Response)
+
+      await expect(
+        briqpayPaymentService.makeDecision({
+          sessionId: 'abc123',
+          decision: BRIQPAY_DECISION.ALLOW,
+        }),
+      ).rejects.toThrow('Briqpay decision failed: 400 Bad Request')
+    })
+
+    test('should throw UpstreamError on unexpected error', async () => {
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
+        ...mockGetCartResult(),
+        custom: {
+          type: { typeId: 'type', id: 'briqpay-session-id' },
+          fields: {
+            briqpaySessionId: 'abc123',
+          },
+        },
+      })
+
+      jest.spyOn(Briqpay, 'makeDecision').mockRejectedValue(new Error('Network error'))
+
+      await expect(
+        briqpayPaymentService.makeDecision({
+          sessionId: 'abc123',
+          decision: BRIQPAY_DECISION.ALLOW,
+        }),
+      ).rejects.toThrow('Failed to process decision')
+    })
+
+    test('should pass rejection details to Briqpay', async () => {
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
+        ...mockGetCartResult(),
+        custom: {
+          type: { typeId: 'type', id: 'briqpay-session-id' },
+          fields: {
+            briqpaySessionId: 'abc123',
+          },
+        },
+      })
+
+      const makeDecisionSpy = jest.spyOn(Briqpay, 'makeDecision').mockResolvedValue({
+        ok: true,
+        status: 204,
+      } as Response)
+
+      await briqpayPaymentService.makeDecision({
+        sessionId: 'abc123',
+        decision: BRIQPAY_DECISION.REJECT,
+        rejectionType: BRIQPAY_REJECT_TYPE.REJECT_WITH_ERROR,
+        hardError: { message: 'Invalid address' },
+        softErrors: [{ message: 'Missing phone' }],
+      })
+
+      expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', {
+        decision: BRIQPAY_DECISION.REJECT,
+        rejectionType: BRIQPAY_REJECT_TYPE.REJECT_WITH_ERROR,
+        hardError: { message: 'Invalid address' },
+        softErrors: [{ message: 'Missing phone' }],
+      })
+    })
+  })
+
+  describe('config error handling', () => {
+    test('should throw SessionError when session response is missing sessionId', async () => {
+      setupMockConfig({ mockClientKey: '', mockEnvironment: 'test' })
+
+      jest.spyOn(Briqpay, 'createSession').mockResolvedValue({
+        htmlSnippet: '<div>Briqpay</div>',
+        // sessionId is missing
+      })
+
+      await expect(paymentService.config('localhost')).rejects.toThrow(
+        'Invalid Briqpay session response: missing sessionId',
+      )
+    })
+  })
+
+  describe('status with Briqpay API down', () => {
+    test('should return DOWN status when Briqpay health check fails', async () => {
+      jest.spyOn(StatusHandler, 'statusHandler').mockReturnValue(() =>
+        Promise.resolve({
+          status: 200,
+          body: {
+            status: 'Partially Available',
+            checks: [
+              {
+                name: 'CoCo Permissions',
+                status: 'UP',
+                message: 'CoCo Permissions are available',
+                details: {},
+              },
+              {
+                name: 'Briqpay Payment API',
+                status: 'DOWN',
+                message: 'The Briqpay paymentAPI is down for some reason. Please check the logs for more details.',
+                details: {
+                  error: new Error('Connection refused'),
+                },
+              },
+            ],
+            timestamp: new Date().toISOString(),
+            version: '1.0.0',
+          },
+        }),
+      )
+
+      const result = await paymentService.status()
+
+      expect(result?.status).toBe('Partially Available')
+      expect(result?.checks).toHaveLength(2)
+      expect(result?.checks[1]?.status).toBe('DOWN')
+    })
+  })
+
+  describe('notification webhook validation', () => {
+    test('should throw error when webhook session validation fails', async () => {
+      jest.spyOn(Briqpay, 'getSession').mockRejectedValue(new Error('Session not found'))
+
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+
+      // The notification should fail validation
+      await expect(
+        briqpayPaymentService.processNotification({
+          data: {
+            sessionId: 'invalid-session',
+            event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+            status: BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING,
+          },
+        }),
+      ).rejects.toThrow('Webhook validation failed: Invalid session')
+    })
+
+    test('should throw error when session mismatch in webhook validation', async () => {
+      jest.spyOn(Briqpay, 'getSession').mockResolvedValue({
+        sessionId: 'different-session-id',
+        htmlSnippet: '<div></div>',
+        data: {
+          order: {
+            amountIncVat: 119000,
+            currency: 'EUR',
+            cart: [],
+          },
+        },
+      } as any)
+
+      await expect(
+        briqpayPaymentService.processNotification({
+          data: {
+            sessionId: 'abc123',
+            event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+            status: BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING,
+          },
+        }),
+      ).rejects.toThrow('Webhook validation failed: Invalid session')
+    })
   })
 })
