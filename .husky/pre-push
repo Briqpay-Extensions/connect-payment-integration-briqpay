@@ -1,24 +1,18 @@
 #!/usr/bin/env sh
 . "$(dirname -- "$0")/_/husky.sh"
 
-# Check if we're pushing any tags
-# pre-push receives: <local ref> <local sha> <remote ref> <remote sha>
-while read local_ref local_sha remote_ref remote_sha; do
-  if echo "$remote_ref" | grep -q "^refs/tags/"; then
-    TAG_NAME=$(echo "$remote_ref" | sed 's|refs/tags/||')
-    echo "🏷️  Tag push detected: $TAG_NAME"
-    echo "Running commercetools connect validation..."
-    
-    commercetools connect validate .
-    if [ $? -ne 0 ]; then
-      echo "❌ commercetools connect validation failed"
-      exit 1
-    fi
-    
-    echo "✅ commercetools connect validation passed!"
-    # Only validate once even if pushing multiple tags
-    break
-  fi
-done
+# Always validate before pushing
+echo "Running commercetools connect validation..."
+commercetools connect validate .
+if [ $? -ne 0 ]; then
+  echo "❌ commercetools connect validation failed"
+  exit 1
+fi
+
+npm audit --audit-level=low
+if [ $? -ne 0 ]; then
+  echo "❌ npm audit found vulnerabilities. Push denied."
+  exit 1
+fi
 
 exit 0

@@ -495,7 +495,16 @@ export class BriqpayNotificationService {
     const briqpaySessionId = briqpaySession.sessionId
     const capture = getCapture(briqpaySession, briqpayCaptureId)
 
-    const alreadyCharged = payment?.[0]?.transactions.some(
+    // If no payment exists, log and return gracefully
+    if (!payment.length) {
+      appLogger.info(
+        { briqpaySessionId, briqpayCaptureId },
+        'No payment found for capture pending, skipping (payment may not be created yet)',
+      )
+      return
+    }
+
+    const alreadyCharged = payment[0].transactions.some(
       (tx) =>
         tx.type === 'Charge' && tx.interactionId === briqpayCaptureId && ['Success', 'Pending'].includes(tx.state),
     )
@@ -540,6 +549,16 @@ export class BriqpayNotificationService {
 
     appLogger.info({ briqpaySessionId, briqpayCaptureId, paymentId: payment[0]?.id }, 'handleCaptureApproved called')
 
+    // If no payment exists, log and return gracefully
+    // This can happen when webhooks arrive before the payment is created in CT
+    if (!payment.length) {
+      appLogger.info(
+        { briqpaySessionId, briqpayCaptureId },
+        'No payment found for capture approved, skipping (payment may not be created yet)',
+      )
+      return
+    }
+
     // Update pending authorization to success
     await this.updatePendingAuthorization(payment, briqpaySessionId)
 
@@ -573,7 +592,17 @@ export class BriqpayNotificationService {
     briqpayCaptureId: string,
     _status: BRIQPAY_WEBHOOK_STATUS,
   ) => {
+    const briqpaySessionId = briqpaySession.sessionId
     const capture = getCapture(briqpaySession, briqpayCaptureId)
+
+    // If no payment exists, log and return gracefully
+    if (!payment.length) {
+      appLogger.info(
+        { briqpaySessionId, briqpayCaptureId },
+        'No payment found for capture rejected, skipping (payment may not be created yet)',
+      )
+      return
+    }
 
     // Use capture amount if available, fallback to order amount
     const amount = capture?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat ?? 0
@@ -605,7 +634,16 @@ export class BriqpayNotificationService {
     const briqpaySessionId = briqpaySession.sessionId
     const refund = getRefund(briqpaySession, briqpayRefundId)
 
-    const alreadyRefunded = payment?.[0]?.transactions.some(
+    // If no payment exists, log and return gracefully
+    if (!payment.length) {
+      appLogger.info(
+        { briqpaySessionId, briqpayRefundId },
+        'No payment found for refund pending, skipping (payment may not be created yet)',
+      )
+      return
+    }
+
+    const alreadyRefunded = payment[0].transactions.some(
       (tx) => tx.type === 'Refund' && tx.interactionId === briqpayRefundId && ['Success', 'Pending'].includes(tx.state),
     )
 
@@ -647,6 +685,15 @@ export class BriqpayNotificationService {
     const briqpaySessionId = briqpaySession.sessionId
     const refund = getRefund(briqpaySession, briqpayRefundId)
 
+    // If no payment exists, log and return gracefully
+    if (!payment.length) {
+      appLogger.info(
+        { briqpaySessionId, briqpayRefundId },
+        'No payment found for refund approved, skipping (payment may not be created yet)',
+      )
+      return
+    }
+
     // Update pending authorization to success
     await this.updatePendingAuthorization(payment, briqpaySessionId)
 
@@ -677,7 +724,17 @@ export class BriqpayNotificationService {
     briqpayRefundId: string,
     _status: BRIQPAY_WEBHOOK_STATUS,
   ) => {
+    const briqpaySessionId = briqpaySession.sessionId
     const refund = getRefund(briqpaySession, briqpayRefundId)
+
+    // If no payment exists, log and return gracefully
+    if (!payment.length) {
+      appLogger.info(
+        { briqpaySessionId, briqpayRefundId },
+        'No payment found for refund rejected, skipping (payment may not be created yet)',
+      )
+      return
+    }
 
     // Use refund amount if available, fallback to order amount
     const amount = refund?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat ?? 0
