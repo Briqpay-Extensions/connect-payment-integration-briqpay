@@ -371,6 +371,7 @@ This starts three services:
 # Terminal 1: Start Processor
 cd processor
 npm install
+
 npm run watch
 
 # Terminal 2: Start Enabler
@@ -979,17 +980,37 @@ The `BriqpayService` class handles all direct Briqpay API interactions:
 ```typescript
 class BriqpayService {
   // Session management
-  async createSession(ctCart: Cart, amountPlanned: PaymentAmount, hostname: string): Promise<BriqpayResponse>;
-  async updateSession(sessionId: string, cart: Cart, amount: Money): Promise<MediumBriqpayResponse>;
+  async createSession(
+    ctCart: Cart,
+    amountPlanned: PaymentAmount,
+    hostname: string
+  ): Promise<BriqpayResponse>;
+  async updateSession(
+    sessionId: string,
+    cart: Cart,
+    amount: Money
+  ): Promise<MediumBriqpayResponse>;
   async getSession(sessionId: string): Promise<MediumBriqpayResponse>;
 
   // Payment operations
-  async capture(ctCart: Cart, amountPlanned: PaymentAmount, sessionId: string): Promise<CaptureResponse>;
-  async refund(ctCart: Cart, amountPlanned: PaymentAmount, sessionId: string, captureId?: string): Promise<RefundResponse>;
+  async capture(
+    ctCart: Cart,
+    amountPlanned: PaymentAmount,
+    sessionId: string
+  ): Promise<CaptureResponse>;
+  async refund(
+    ctCart: Cart,
+    amountPlanned: PaymentAmount,
+    sessionId: string,
+    captureId?: string
+  ): Promise<RefundResponse>;
   async cancel(sessionId: string): Promise<{ status: PaymentOutcome }>;
-  
+
   // Decision handling
-  makeDecision(sessionId: string, decisionRequest: BriqpayDecisionRequest): Promise<Response>;
+  makeDecision(
+    sessionId: string,
+    decisionRequest: BriqpayDecisionRequest
+  ): Promise<Response>;
 }
 ```
 
@@ -1034,16 +1055,24 @@ Handles commercetools payment operations and state transitions:
 ```typescript
 class BriqpayOperationService {
   // Capture an authorized payment
-  async capturePayment(request: CapturePaymentRequest): Promise<PaymentProviderModificationResponse>;
+  async capturePayment(
+    request: CapturePaymentRequest
+  ): Promise<PaymentProviderModificationResponse>;
 
   // Cancel an authorized payment
-  async cancelPayment(request: CancelPaymentRequest): Promise<PaymentProviderModificationResponse>;
+  async cancelPayment(
+    request: CancelPaymentRequest
+  ): Promise<PaymentProviderModificationResponse>;
 
   // Refund a captured payment
-  async refundPayment(request: RefundPaymentRequest): Promise<PaymentProviderModificationResponse>;
+  async refundPayment(
+    request: RefundPaymentRequest
+  ): Promise<PaymentProviderModificationResponse>;
 
   // Reverse a payment
-  async reversePayment(request: ReversePaymentRequest): Promise<PaymentProviderModificationResponse>;
+  async reversePayment(
+    request: ReversePaymentRequest
+  ): Promise<PaymentProviderModificationResponse>;
 }
 ```
 
@@ -1061,7 +1090,9 @@ Processes Briqpay webhooks for asynchronous payment updates:
 ```typescript
 class BriqpayNotificationService {
   // Handle webhook notifications
-  async processNotification(opts: { data: NotificationRequestSchemaDTO }): Promise<void>;
+  async processNotification(opts: {
+    data: NotificationRequestSchemaDTO;
+  }): Promise<void>;
 }
 ```
 
@@ -1101,12 +1132,14 @@ export async function createBriqpayCustomType(typeKey: string) {
 The processor exposes the following routes:
 
 **Briqpay Payment Routes** (root level):
+
 - `GET /config` - Returns Briqpay session config and HTML snippet
 - `POST /decision` - Submits payment decision to Briqpay (allow/reject)
 - `POST /payments` - Creates payment in commercetools
 - `POST /notifications` - Handles Briqpay webhook notifications
 
 **Operation Routes** (`/operations` prefix):
+
 - `GET /operations/config` - Get payment configuration
 - `GET /operations/status` - Health check status
 - `GET /operations/payment-components` - Get supported payment components
@@ -1165,10 +1198,10 @@ Coverage thresholds are set to 75% for branches, functions, lines, and statement
 The processor uses `@commercetools-backend/loggers` via `appLogger` for structured logging:
 
 ```typescript
-import { appLogger } from './payment-sdk'
+import { appLogger } from "./payment-sdk";
 
-appLogger.info({ sessionId, cartId }, 'Processing payment')
-appLogger.error({ error }, 'Payment failed')
+appLogger.info({ sessionId, cartId }, "Processing payment");
+appLogger.error({ error }, "Payment failed");
 ```
 
 Configure log level via `LOGGER_LEVEL` environment variable (default: `info`).
