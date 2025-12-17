@@ -106,3 +106,6 @@ deployAs:
         - key: BRIQPAY_SECRET
           description: Your Briqpay API secret
           required: true
+        - key: BRIQPAY_WEBHOOK_SECRET
+          description: Briqpay webhook signing secret for HMAC verification (optional but recommended). When configured, webhooks are verified using HMAC-SHA256 signatures before processing.
+          required: false

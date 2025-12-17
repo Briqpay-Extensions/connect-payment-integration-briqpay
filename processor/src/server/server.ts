@@ -90,6 +90,19 @@ export const setupFastify = async () => {
   // Add content type parser for the content type application/x-www-form-urlencoded
   await server.register(fastifyFormBody)
 
+  // Add raw body support for webhook HMAC verification
+  // This stores the raw request body for signature verification
+  server.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+    try {
+      // Store raw body on request for HMAC verification
+      ;(req as unknown as { rawBody: string }).rawBody = body as string
+      const json = JSON.parse(body as string)
+      done(null, json)
+    } catch (err) {
+      done(err as Error, undefined)
+    }
+  })
+
   // Register context plugin
   await server.register(requestContextPlugin)
 

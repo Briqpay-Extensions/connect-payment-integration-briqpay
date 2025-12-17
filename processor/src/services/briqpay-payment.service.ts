@@ -184,7 +184,11 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     })
   }
 
-  public processNotification(opts: { data: NotificationRequestSchemaDTO }): Promise<void> {
+  public processNotification(opts: {
+    data: NotificationRequestSchemaDTO
+    signatureHeader?: string
+    rawBody?: string
+  }): Promise<void> {
     return this.notificationService.processNotification(opts)
   }
 

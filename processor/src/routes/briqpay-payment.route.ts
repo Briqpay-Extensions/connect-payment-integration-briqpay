@@ -99,12 +99,20 @@ export const paymentRoutes = (fastify: FastifyInstance, opts: FastifyPluginOptio
   fastify.post<{ Body: NotificationRequestSchemaDTO }>(
     '/notifications',
     {
-      // Authentication will be done through Briqpay for hooks
+      // Authentication will be done through HMAC verification if BRIQPAY_WEBHOOK_SECRET is configured
       preHandler: [],
     },
     async (request, reply) => {
+      // Get the signature header for HMAC verification (if configured)
+      const signatureHeader = request.headers['x-briq-signature'] as string | undefined
+
+      // Get raw body for HMAC verification - Fastify stores it when rawBody option is enabled
+      const rawBody = (request as unknown as { rawBody?: string }).rawBody
+
       await opts.paymentService.processNotification({
         data: request.body,
+        signatureHeader,
+        rawBody,
       })
 
       return reply.status(200).send('[accepted]')

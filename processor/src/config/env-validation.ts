@@ -1,3 +1,5 @@
+import { appLogger } from '../payment-sdk'
+
 /**
  * Environment variable validation for security-critical configuration.
  * This module ensures all required environment variables are present
@@ -101,6 +103,13 @@ const OPTIONAL_ENV_VARS: EnvVarConfig[] = [
     },
     errorMessage: 'ALLOWED_ORIGINS must be HTTPS URLs (HTTP only allowed for localhost/127.0.0.1/private network IPs)',
   },
+
+  // Briqpay webhook HMAC verification (optional but recommended)
+  {
+    name: 'BRIQPAY_WEBHOOK_SECRET',
+    required: false,
+    sensitive: true,
+  },
 ]
 
 export class EnvValidationError extends Error {
@@ -184,6 +193,5 @@ export function logEnvironmentStatus(): void {
     }
   }
 
-  // eslint-disable-next-line no-console
-  console.log('Environment configuration:', JSON.stringify(status, null, 2))
+  appLogger.info(status, 'Environment configuration:')
 }
