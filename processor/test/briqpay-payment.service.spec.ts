@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, test, expect, afterEach, jest, beforeEach } from '@jest/globals'
+import crypto from 'crypto'
 import { ConfigResponse, ModifyPayment, StatusResponse } from '../src/services/types/operation.type'
 import { paymentSDK } from '../src/payment-sdk'
 import { DefaultPaymentService } from '@commercetools/connect-payments-sdk/dist/commercetools/services/ct-payment.service'
@@ -13,6 +14,7 @@ import {
   ITEM_PRODUCT_TYPE,
   ORDER_STATUS,
   TRANSACTION_STATUS,
+  MediumBriqpayResponse,
 } from '../src/services/types/briqpay-payment.type'
 import { AbstractPaymentService } from '../src/services/abstract-payment.service'
 import { BriqpayPaymentService } from '../src/services/briqpay-payment.service'
@@ -23,14 +25,15 @@ import {
   BRIQPAY_REJECT_TYPE,
   BRIQPAY_WEBHOOK_EVENT,
   BRIQPAY_WEBHOOK_STATUS,
+  NotificationRequestSchemaDTO,
   PaymentMethodType,
   PaymentOutcome,
 } from '../src/dtos/briqpay-payment.dto'
-import { TransactionDraftDTO } from '../src/dtos/operations/transaction.dto'
+import { apiRoot } from '../src/libs/commercetools/api-root'
 import Briqpay from '../src/libs/briqpay/BriqpayService'
 import { Cart } from '@commercetools/platform-sdk'
+import { TransactionDraftDTO } from '../src/dtos/operations/transaction.dto'
 import { briqpaySessionIdCustomType } from '../src/custom-types/custom-types'
-import { apiRoot } from '../src/libs/commercetools/api-root'
 
 /**
  * Helper to create a mock Briqpay session response with the appropriate moduleStatus.
@@ -40,27 +43,47 @@ import { apiRoot } from '../src/libs/commercetools/api-root'
 const createMockBriqpaySession = (opts: {
   sessionId?: string
   orderStatus?: ORDER_STATUS
-  captures?: Array<{ captureId: string; status: TRANSACTION_STATUS }>
-  refunds?: Array<{ refundId: string; status: TRANSACTION_STATUS }>
-}) => ({
-  sessionId: opts.sessionId ?? 'abc123',
-  htmlSnippet: '<div>Briqpay</div>',
-  data: {
-    order: {
-      amountIncVat: 119000,
-      currency: 'EUR',
-      cart: [],
+  captures?: Array<{ captureId: string; status: TRANSACTION_STATUS; amountIncVat: number; currency: string }>
+  refunds?: Array<{ refundId: string; status: TRANSACTION_STATUS; amountIncVat: number; currency: string }>
+}): MediumBriqpayResponse => {
+  return {
+    sessionId: opts.sessionId || 'abc123',
+    htmlSnippet: '<div></div>',
+    data: {
+      order: {
+        amountIncVat: 119000,
+        currency: 'EUR',
+        cart: [],
+      },
+      transactions: [],
+      captures: opts.captures || [],
+      refunds: opts.refunds || [],
     },
-  },
-  moduleStatus: {
-    payment: {
-      uiStatus: 'completed',
-      orderStatus: opts.orderStatus ?? ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+    moduleStatus: {
+      payment: {
+        uiStatus: 'completed',
+        orderStatus: opts.orderStatus || ORDER_STATUS.ORDER_PENDING,
+      },
     },
-  },
-  captures: opts.captures ?? [],
-  refunds: opts.refunds ?? [],
-})
+    captures: opts.captures || [],
+    refunds: opts.refunds || [],
+  }
+}
+
+const createSignedWebhookRequest = (data: NotificationRequestSchemaDTO) => {
+  const secret = process.env.BRIQPAY_WEBHOOK_SECRET
+  if (!secret) {
+    throw new Error('BRIQPAY_WEBHOOK_SECRET must be set in tests')
+  }
+
+  const rawBody = JSON.stringify(data)
+  const timestamp = Date.now().toString()
+  const signedPayload = `${timestamp}.${rawBody}`
+  const signature = crypto.createHmac('sha256', secret).update(signedPayload).digest('base64')
+  const signatureHeader = `t=${timestamp},s1=${signature}`
+
+  return { rawBody, signatureHeader }
+}
 
 // Mock the apiRoot
 jest.mock('../src/libs/commercetools/api-root', () => ({
@@ -135,6 +158,8 @@ describe('briqpay-payment.service', () => {
   beforeEach(() => {
     jest.setTimeout(10000)
     jest.resetAllMocks()
+
+    process.env.BRIQPAY_WEBHOOK_SECRET = 'test-secret'
 
     // Setup apiRoot mock
     ;(apiRoot.carts as jest.Mock<any>).mockReturnValue({
@@ -1285,13 +1310,19 @@ describe('briqpay-payment.service', () => {
       throw new Error('Not Found')
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING,
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING,
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.PENDING,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(updateSpy).toHaveBeenCalledWith({
       id: 'payment-id-1',
@@ -1365,13 +1396,19 @@ describe('briqpay-payment.service', () => {
       throw new Error('Not Found')
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING,
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING,
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.PENDING,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(updateSpy).toHaveBeenCalledTimes(0)
   })
@@ -1388,13 +1425,19 @@ describe('briqpay-payment.service', () => {
       return []
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING,
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING,
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.PENDING,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(createSpy).toHaveBeenCalledTimes(1)
   })
@@ -1411,13 +1454,19 @@ describe('briqpay-payment.service', () => {
       return []
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.ORDER_REJECTED,
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.ORDER_REJECTED,
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.REJECTED,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(createSpy).toHaveBeenCalledTimes(0)
   })
@@ -1434,13 +1483,19 @@ describe('briqpay-payment.service', () => {
       return []
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.ORDER_CANCELLED,
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.ORDER_CANCELLED,
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.CANCELLED,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(createSpy).toHaveBeenCalledTimes(0)
   })
@@ -1488,13 +1543,19 @@ describe('briqpay-payment.service', () => {
       throw new Error('Not Found')
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.APPROVED,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(updateSpy).toHaveBeenCalledWith({
       id: 'payment-id-1',
@@ -1568,13 +1629,19 @@ describe('briqpay-payment.service', () => {
       throw new Error('Not Found')
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.APPROVED,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(updateSpy).toHaveBeenCalledWith({
       id: 'payment-id-1',
@@ -1648,13 +1715,19 @@ describe('briqpay-payment.service', () => {
       throw new Error('Not Found')
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.APPROVED,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(updateSpy).toHaveBeenCalledTimes(0)
   })
@@ -1671,13 +1744,19 @@ describe('briqpay-payment.service', () => {
       return []
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.APPROVED,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(createSpy).toHaveBeenCalledTimes(1)
   })
@@ -1689,7 +1768,7 @@ describe('briqpay-payment.service', () => {
     jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
       createMockBriqpaySession({
         orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
-        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.PENDING }],
+        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.PENDING, amountIncVat: 119000, currency: 'EUR' }],
       }),
     )
 
@@ -1728,14 +1807,20 @@ describe('briqpay-payment.service', () => {
       throw new Error('Not Found')
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.PENDING,
-        captureId: 'bcd123',
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.PENDING,
+      captureId: 'bcd123',
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.PENDING,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(updateSpy).toHaveBeenCalledWith({
       id: 'payment-id-1',
@@ -1759,7 +1844,7 @@ describe('briqpay-payment.service', () => {
     jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
       createMockBriqpaySession({
         orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
-        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.APPROVED }],
+        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 119000, currency: 'EUR' }],
       }),
     )
 
@@ -1798,14 +1883,20 @@ describe('briqpay-payment.service', () => {
       throw new Error('Not Found')
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.APPROVED,
-        captureId: 'bcd123',
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.APPROVED,
+      captureId: 'bcd123',
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.APPROVED,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(updateSpy).toHaveBeenCalledWith({
       id: 'payment-id-1',
@@ -1829,7 +1920,7 @@ describe('briqpay-payment.service', () => {
     jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
       createMockBriqpaySession({
         orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
-        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.APPROVED }],
+        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 119000, currency: 'EUR' }],
       }),
     )
 
@@ -1882,14 +1973,20 @@ describe('briqpay-payment.service', () => {
       throw new Error('Not Found')
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.APPROVED,
-        captureId: 'bcd123',
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.APPROVED,
+      captureId: 'bcd123',
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.APPROVED,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(updateSpy).toHaveBeenCalledTimes(2)
   })
@@ -1901,7 +1998,7 @@ describe('briqpay-payment.service', () => {
     jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
       createMockBriqpaySession({
         orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
-        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.PENDING }],
+        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.PENDING, amountIncVat: 119000, currency: 'EUR' }],
       }),
     )
 
@@ -1954,14 +2051,20 @@ describe('briqpay-payment.service', () => {
       throw new Error('Not Found')
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.PENDING,
-        captureId: 'bcd123',
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.PENDING,
+      captureId: 'bcd123',
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.PENDING,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(updateSpy).toHaveBeenCalledTimes(0)
   })
@@ -1973,7 +2076,7 @@ describe('briqpay-payment.service', () => {
     jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
       createMockBriqpaySession({
         orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
-        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.REJECTED }],
+        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.REJECTED, amountIncVat: 119000, currency: 'EUR' }],
       }),
     )
 
@@ -2012,14 +2115,20 @@ describe('briqpay-payment.service', () => {
       throw new Error('Not Found')
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.REJECTED,
-        captureId: 'bcd123',
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.REJECTED,
+      captureId: 'bcd123',
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.REJECTED,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(updateSpy).toHaveBeenCalledWith({
       id: 'payment-id-1',
@@ -2044,7 +2153,7 @@ describe('briqpay-payment.service', () => {
     jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
       createMockBriqpaySession({
         orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
-        refunds: [{ refundId: 'cde123', status: TRANSACTION_STATUS.PENDING }],
+        refunds: [{ refundId: 'cde123', status: TRANSACTION_STATUS.PENDING, amountIncVat: 119000, currency: 'EUR' }],
       }),
     )
 
@@ -2083,14 +2192,20 @@ describe('briqpay-payment.service', () => {
       throw new Error('Not Found')
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.PENDING,
-        refundId: 'cde123',
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.PENDING,
+      refundId: 'cde123',
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.PENDING,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(updateSpy).toHaveBeenCalledWith({
       id: 'payment-id-1',
@@ -2114,7 +2229,7 @@ describe('briqpay-payment.service', () => {
     jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
       createMockBriqpaySession({
         orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
-        refunds: [{ refundId: 'cde123', status: TRANSACTION_STATUS.PENDING }],
+        refunds: [{ refundId: 'cde123', status: TRANSACTION_STATUS.PENDING, amountIncVat: 119000, currency: 'EUR' }],
       }),
     )
 
@@ -2167,14 +2282,20 @@ describe('briqpay-payment.service', () => {
       throw new Error('Not Found')
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.PENDING,
-        refundId: 'cde123',
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.PENDING,
+      refundId: 'cde123',
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.PENDING,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(updateSpy).toHaveBeenCalledTimes(0)
   })
@@ -2186,7 +2307,7 @@ describe('briqpay-payment.service', () => {
     jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
       createMockBriqpaySession({
         orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
-        refunds: [{ refundId: 'cde123', status: TRANSACTION_STATUS.APPROVED }],
+        refunds: [{ refundId: 'cde123', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 119000, currency: 'EUR' }],
       }),
     )
 
@@ -2225,14 +2346,20 @@ describe('briqpay-payment.service', () => {
       throw new Error('Not Found')
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.APPROVED,
-        refundId: 'cde123',
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.APPROVED,
+      refundId: 'cde123',
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.APPROVED,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(updateSpy).toHaveBeenCalledWith({
       id: 'payment-id-1',
@@ -2256,7 +2383,7 @@ describe('briqpay-payment.service', () => {
     jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
       createMockBriqpaySession({
         orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
-        refunds: [{ refundId: 'cde123', status: TRANSACTION_STATUS.REJECTED }],
+        refunds: [{ refundId: 'cde123', status: TRANSACTION_STATUS.REJECTED, amountIncVat: 119000, currency: 'EUR' }],
       }),
     )
 
@@ -2295,14 +2422,20 @@ describe('briqpay-payment.service', () => {
       throw new Error('Not Found')
     })
 
-    await briqpayPaymentService.processNotification({
-      data: {
-        sessionId: 'abc123',
-        event: BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS,
-        status: BRIQPAY_WEBHOOK_STATUS.REJECTED,
-        refundId: 'cde123',
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.REJECTED,
+      refundId: 'cde123',
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.REJECTED,
+        amountIncVat: 119000,
+        currency: 'EUR',
       },
-    })
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(updateSpy).toHaveBeenCalledWith({
       id: 'payment-id-1',
@@ -2630,35 +2763,8 @@ describe('briqpay-payment.service', () => {
   })
 
   describe('notification webhook validation', () => {
-    test('should throw error when webhook session validation fails', async () => {
-      jest.spyOn(Briqpay, 'getSession').mockRejectedValue(new Error('Session not found'))
-
-      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
-
-      // The notification should fail validation
-      await expect(
-        briqpayPaymentService.processNotification({
-          data: {
-            sessionId: 'invalid-session',
-            event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
-            status: BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING,
-          },
-        }),
-      ).rejects.toThrow('Webhook validation failed: Invalid session')
-    })
-
-    test('should throw error when session mismatch in webhook validation', async () => {
-      jest.spyOn(Briqpay, 'getSession').mockResolvedValue({
-        sessionId: 'different-session-id',
-        htmlSnippet: '<div></div>',
-        data: {
-          order: {
-            amountIncVat: 119000,
-            currency: 'EUR',
-            cart: [],
-          },
-        },
-      } as any)
+    test('should throw error when BRIQPAY_WEBHOOK_SECRET is missing', async () => {
+      process.env.BRIQPAY_WEBHOOK_SECRET = ''
 
       await expect(
         briqpayPaymentService.processNotification({
@@ -2668,7 +2774,23 @@ describe('briqpay-payment.service', () => {
             status: BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING,
           },
         }),
-      ).rejects.toThrow('Webhook validation failed: Invalid session')
+      ).rejects.toThrow('Webhooks disabled: BRIQPAY_WEBHOOK_SECRET missing')
+    })
+
+    test('should throw error when signature header or raw body is missing', async () => {
+      process.env.BRIQPAY_WEBHOOK_SECRET = 'test-secret'
+
+      await expect(
+        briqpayPaymentService.processNotification({
+          data: {
+            sessionId: 'abc123',
+            event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+            status: BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING,
+          },
+          signatureHeader: undefined,
+          rawBody: undefined,
+        }),
+      ).rejects.toThrow('Webhook verification failed: Missing required signature data')
     })
   })
 })

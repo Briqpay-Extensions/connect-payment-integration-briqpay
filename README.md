@@ -30,11 +30,11 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
 
 1. **Create Connect application** and install Briqpay connector in commercetools Connect
 
-2. **Create commercetools API client** with the following scopes:
+2. **Create commercetools API client** with the following scopes (your case may vary):
 
-   - `manage_payments`, `manage_orders`, `view_sessions`, `view_api_clients`
-   - `manage_checkout_payment_intents`, `introspect_oauth_tokens`
-   - `manage_types`, `view_types`
+   - **Manage**: `manage_orders`, `manage_payments`, `manage_subscriptions`, `manage_sessions`, `manage_shopping_lists`, `manage_checkout_payment_intents`
+   - **View**: `view_connectors`, `view_customers`, `view_categories`, `view_connectors_deployments`, `view_published_products`, `view_sessions`
+   - **Tokens**: `view_api_clients`
 
 3. **Set commercetools configuration values**:
 
@@ -51,13 +51,25 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
 
    - `BRIQPAY_USERNAME`
    - `BRIQPAY_SECRET`
+   - `BRIQPAY_WEBHOOK_SECRET` - **Mandatory** for secure webhook processing (HMAC verification)
    - `BRIQPAY_BASE_URL`
    - `BRIQPAY_TERMS_URL`
    - `BRIQPAY_CONFIRMATION_URL`
 
-5. **Optionally set custom type key**:
+5. **Optionally set custom type keys**:
 
-   - `BRIQPAY_SESSION_CUSTOM_TYPE_KEY` - If not provided, connector will automatically create it with default key `briqpay-session-id`
+   - `BRIQPAY_SESSION_CUSTOM_TYPE_KEY` - Default: `briqpay-session-id`
+   - `BRIQPAY_PSP_META_DATA_CUSTOMER_FACING_REFERENCE_KEY` - Default: `briqpay-psp-meta-data-customer-facing-reference`
+   - `BRIQPAY_PSP_META_DATA_DESCRIPTION_KEY` - Default: `briqpay-psp-meta-data-description`
+   - `BRIQPAY_PSP_META_DATA_TYPE_KEY` - Default: `briqpay-psp-meta-data-type`
+   - `BRIQPAY_PSP_META_DATA_PAYER_EMAIL_KEY` - Default: `briqpay-psp-meta-data-payer-email`
+   - `BRIQPAY_PSP_META_DATA_PAYER_FIRST_NAME_KEY` - Default: `briqpay-psp-meta-data-payer-first-name`
+   - `BRIQPAY_PSP_META_DATA_PAYER_LAST_NAME_KEY` - Default: `briqpay-psp-meta-data-payer-last-name`
+   - `BRIQPAY_TRANSACTION_DATA_RESERVATION_ID_KEY` - Default: `briqpay-transaction-data-reservation-id`
+   - `BRIQPAY_TRANSACTION_DATA_SECONDARY_RESERVATION_ID_KEY` - Default: `briqpay-transaction-data-secondary-reservation-id`
+   - `BRIQPAY_TRANSACTION_DATA_PSP_ID_KEY` - Default: `briqpay-transaction-data-psp-id`
+   - `BRIQPAY_TRANSACTION_DATA_PSP_DISPLAY_NAME_KEY` - Default: `briqpay-transaction-data-psp-display-name`
+   - `BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY` - Default: `briqpay-transaction-data-psp-integration-name`
 
 6. **Deploy on Connect**
 

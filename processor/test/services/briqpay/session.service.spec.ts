@@ -84,7 +84,7 @@ describe('BriqpaySessionService', () => {
         locale: 'en',
         custom: {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { briqpaySessionId: 'existing-session-id' },
+          fields: { 'briqpay-session-id': 'existing-session-id' },
         },
       } as Cart
 
@@ -115,7 +115,7 @@ describe('BriqpaySessionService', () => {
         locale: 'en',
         custom: {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { briqpaySessionId: 'existing-session-id' },
+          fields: { 'briqpay-session-id': 'existing-session-id' },
         },
       } as Cart
 
@@ -140,7 +140,7 @@ describe('BriqpaySessionService', () => {
         locale: 'en',
         custom: {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { briqpaySessionId: 'existing-session-id' },
+          fields: { 'briqpay-session-id': 'existing-session-id' },
         },
       } as Cart
 
@@ -176,7 +176,7 @@ describe('BriqpaySessionService', () => {
         ...baseCart,
         custom: {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { briqpaySessionId: 'existing-session-id' },
+          fields: { 'briqpay-session-id': 'existing-session-id' },
         },
       } as Cart
 
@@ -199,7 +199,7 @@ describe('BriqpaySessionService', () => {
         locale: 'en',
         custom: {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { briqpaySessionId: 'existing-session-id' },
+          fields: { 'briqpay-session-id': 'existing-session-id' },
         },
       } as Cart
 
@@ -228,7 +228,7 @@ describe('BriqpaySessionService', () => {
         locale: undefined,
         custom: {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { briqpaySessionId: 'existing-session-id' },
+          fields: { 'briqpay-session-id': 'existing-session-id' },
         },
       } as unknown as Cart
 
@@ -259,7 +259,7 @@ describe('BriqpaySessionService', () => {
         locale: 'de',
         custom: {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { briqpaySessionId: 'existing-session-id' },
+          fields: { 'briqpay-session-id': 'existing-session-id' },
         },
       } as Cart
 
@@ -295,7 +295,7 @@ describe('BriqpaySessionService', () => {
         locale: 'en',
         custom: {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { briqpaySessionId: 'existing-session-id' },
+          fields: { 'briqpay-session-id': 'existing-session-id' },
         },
         lineItems: [
           {

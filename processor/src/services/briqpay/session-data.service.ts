@@ -97,59 +97,85 @@ export class BriqpaySessionDataService {
   ): ExtractedBriqpayCustomFields {
     const result: ExtractedBriqpayCustomFields = {}
 
+    // Helper to get field name from environment or fallback
+    const getFieldName = (envKey: string, fallback: string) => process.env[envKey] || fallback
+
     // Extract PSP Metadata fields (only present in BriqpayFullSessionResponse)
     const pspMetadata: BriqpayPspMetadata | undefined = (sessionData as BriqpayFullSessionResponse).data?.pspMetadata
     if (pspMetadata) {
-      this.setIfPresent(result, 'briqpayPspMetaDataCustomerFacingReference', pspMetadata.customerFacingReference)
-      this.setIfPresent(result, 'briqpayPspMetaDataDescription', pspMetadata.description)
-      this.setIfPresent(result, 'briqpayPspMetaDataType', pspMetadata.type)
-      this.setIfPresent(result, 'briqpayPspMetaDataPayerEmail', pspMetadata.payerEmail)
-      this.setIfPresent(result, 'briqpayPspMetaDataPayerFirstName', pspMetadata.payerFirstName)
-      this.setIfPresent(result, 'briqpayPspMetaDataPayerLastName', pspMetadata.payerLastName)
+      this.setIfPresent(
+        result,
+        getFieldName(
+          'BRIQPAY_PSP_META_DATA_CUSTOMER_FACING_REFERENCE_KEY',
+          'briqpay-psp-meta-data-customer-facing-reference',
+        ),
+        pspMetadata.customerFacingReference,
+      )
+      this.setIfPresent(
+        result,
+        getFieldName('BRIQPAY_PSP_META_DATA_DESCRIPTION_KEY', 'briqpay-psp-meta-data-description'),
+        pspMetadata.description,
+      )
+      this.setIfPresent(
+        result,
+        getFieldName('BRIQPAY_PSP_META_DATA_TYPE_KEY', 'briqpay-psp-meta-data-type'),
+        pspMetadata.type,
+      )
+      this.setIfPresent(
+        result,
+        getFieldName('BRIQPAY_PSP_META_DATA_PAYER_EMAIL_KEY', 'briqpay-psp-meta-data-payer-email'),
+        pspMetadata.payerEmail,
+      )
+      this.setIfPresent(
+        result,
+        getFieldName('BRIQPAY_PSP_META_DATA_PAYER_FIRST_NAME_KEY', 'briqpay-psp-meta-data-payer-first-name'),
+        pspMetadata.payerFirstName,
+      )
+      this.setIfPresent(
+        result,
+        getFieldName('BRIQPAY_PSP_META_DATA_PAYER_LAST_NAME_KEY', 'briqpay-psp-meta-data-payer-last-name'),
+        pspMetadata.payerLastName,
+      )
     }
 
     // Extract Transaction Data fields from the first (primary) transaction
     const transactions = sessionData.data?.transactions
-    appLogger.info(
-      {
-        hasTransactions: !!transactions,
-        transactionCount: transactions?.length ?? 0,
-        firstTransaction: transactions?.[0]
-          ? {
-              reservationId: transactions[0].reservationId,
-              pspId: transactions[0].pspId,
-              pspDisplayName: transactions[0].pspDisplayName,
-              pspIntegrationName: transactions[0].pspIntegrationName,
-            }
-          : null,
-      },
-      'Extracting transaction data from Briqpay session',
-    )
-
     if (transactions && transactions.length > 0) {
       const primaryTransaction = transactions[0]
-      this.setIfPresent(result, 'briqpayTransactionDataReservationId', primaryTransaction.reservationId)
-      // secondaryReservationId is only in some responses/payloads
+      this.setIfPresent(
+        result,
+        getFieldName('BRIQPAY_TRANSACTION_DATA_RESERVATION_ID_KEY', 'briqpay-transaction-data-reservation-id'),
+        primaryTransaction.reservationId,
+      )
       if ('secondaryReservationId' in primaryTransaction) {
         this.setIfPresent(
           result,
-          'briqpayTransactionDataSecondaryReservationId',
+          getFieldName(
+            'BRIQPAY_TRANSACTION_DATA_SECONDARY_RESERVATION_ID_KEY',
+            'briqpay-transaction-data-secondary-reservation-id',
+          ),
           (primaryTransaction as any).secondaryReservationId,
         )
       }
-      this.setIfPresent(result, 'briqpayTransactionDataPspId', primaryTransaction.pspId)
-      this.setIfPresent(result, 'briqpayTransactionDataPspDisplayName', primaryTransaction.pspDisplayName)
-      this.setIfPresent(result, 'briqpayTransactionDataPspIntegrationName', primaryTransaction.pspIntegrationName)
+      this.setIfPresent(
+        result,
+        getFieldName('BRIQPAY_TRANSACTION_DATA_PSP_ID_KEY', 'briqpay-transaction-data-psp-id'),
+        primaryTransaction.pspId,
+      )
+      this.setIfPresent(
+        result,
+        getFieldName('BRIQPAY_TRANSACTION_DATA_PSP_DISPLAY_NAME_KEY', 'briqpay-transaction-data-psp-display-name'),
+        primaryTransaction.pspDisplayName,
+      )
+      this.setIfPresent(
+        result,
+        getFieldName(
+          'BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY',
+          'briqpay-transaction-data-psp-integration-name',
+        ),
+        primaryTransaction.pspIntegrationName,
+      )
     }
-
-    appLogger.info(
-      {
-        extractedFieldCount: Object.keys(result).length,
-        extractedFields: Object.keys(result),
-        extractedValues: result,
-      },
-      'Extracted custom fields from Briqpay session',
-    )
 
     return result
   }
@@ -283,11 +309,7 @@ export class BriqpaySessionDataService {
   /**
    * Helper to set a field only if the value is a non-empty string
    */
-  private setIfPresent(
-    target: ExtractedBriqpayCustomFields,
-    key: keyof ExtractedBriqpayCustomFields,
-    value: string | undefined | null,
-  ): void {
+  private setIfPresent(target: ExtractedBriqpayCustomFields, key: string, value: string | undefined | null): void {
     if (value !== undefined && value !== null && value !== '') {
       target[key] = value
     }

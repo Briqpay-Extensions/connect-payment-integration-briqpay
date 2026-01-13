@@ -156,12 +156,12 @@ describe('BriqpaySessionDataService', () => {
       const result = service.extractCustomFields(sessionData)
 
       expect(result).toEqual({
-        briqpayPspMetaDataCustomerFacingReference: 'REF-123',
-        briqpayPspMetaDataDescription: 'Test description',
-        briqpayPspMetaDataType: 'invoice',
-        briqpayPspMetaDataPayerEmail: 'test@example.com',
-        briqpayPspMetaDataPayerFirstName: 'John',
-        briqpayPspMetaDataPayerLastName: 'Doe',
+        'briqpay-psp-meta-data-customer-facing-reference': 'REF-123',
+        'briqpay-psp-meta-data-description': 'Test description',
+        'briqpay-psp-meta-data-type': 'invoice',
+        'briqpay-psp-meta-data-payer-email': 'test@example.com',
+        'briqpay-psp-meta-data-payer-first-name': 'John',
+        'briqpay-psp-meta-data-payer-last-name': 'Doe',
       })
     })
 
@@ -184,11 +184,11 @@ describe('BriqpaySessionDataService', () => {
       const result = service.extractCustomFields(sessionData)
 
       expect(result).toEqual({
-        briqpayTransactionDataReservationId: 'res-123',
-        briqpayTransactionDataSecondaryReservationId: 'sec-res-456',
-        briqpayTransactionDataPspId: 'psp-789',
-        briqpayTransactionDataPspDisplayName: 'Invoice',
-        briqpayTransactionDataPspIntegrationName: 'Ratepay - Invoice',
+        'briqpay-transaction-data-reservation-id': 'res-123',
+        'briqpay-transaction-data-secondary-reservation-id': 'sec-res-456',
+        'briqpay-transaction-data-psp-id': 'psp-789',
+        'briqpay-transaction-data-psp-display-name': 'Invoice',
+        'briqpay-transaction-data-psp-integration-name': 'Ratepay - Invoice',
       })
     })
 
@@ -214,12 +214,12 @@ describe('BriqpaySessionDataService', () => {
       const result = service.extractCustomFields(sessionData)
 
       expect(result).toEqual({
-        briqpayPspMetaDataDescription: 'KA0376778N1',
-        briqpayTransactionDataReservationId: '17-20251205240773668',
-        briqpayTransactionDataSecondaryReservationId: 'RIUS.U091.8WHW.1MT6',
-        briqpayTransactionDataPspId: '14ff2352-2b48-411d-801e-cb8bbea56bf4',
-        briqpayTransactionDataPspDisplayName: 'Invoice',
-        briqpayTransactionDataPspIntegrationName: 'Ratepay - Invoice',
+        'briqpay-psp-meta-data-description': 'KA0376778N1',
+        'briqpay-transaction-data-reservation-id': '17-20251205240773668',
+        'briqpay-transaction-data-secondary-reservation-id': 'RIUS.U091.8WHW.1MT6',
+        'briqpay-transaction-data-psp-id': '14ff2352-2b48-411d-801e-cb8bbea56bf4',
+        'briqpay-transaction-data-psp-display-name': 'Invoice',
+        'briqpay-transaction-data-psp-integration-name': 'Ratepay - Invoice',
       })
     })
 
@@ -254,12 +254,12 @@ describe('BriqpaySessionDataService', () => {
       const result = service.extractCustomFields(sessionData)
 
       expect(result).toEqual({
-        briqpayPspMetaDataDescription: 'Valid description',
-        briqpayTransactionDataReservationId: 'res-123',
+        'briqpay-psp-meta-data-description': 'Valid description',
+        'briqpay-transaction-data-reservation-id': 'res-123',
       })
-      expect(result).not.toHaveProperty('briqpayPspMetaDataType')
-      expect(result).not.toHaveProperty('briqpayPspMetaDataPayerEmail')
-      expect(result).not.toHaveProperty('briqpayTransactionDataPspId')
+      expect(result).not.toHaveProperty('briqpay-psp-meta-data-type')
+      expect(result).not.toHaveProperty('briqpay-psp-meta-data-payer-email')
+      expect(result).not.toHaveProperty('briqpay-transaction-data-psp-id')
     })
 
     test('should use first transaction when multiple transactions exist', () => {
@@ -281,8 +281,8 @@ describe('BriqpaySessionDataService', () => {
 
       const result = service.extractCustomFields(sessionData)
 
-      expect(result.briqpayTransactionDataReservationId).toBe('first-res')
-      expect(result.briqpayTransactionDataPspDisplayName).toBe('First PSP')
+      expect(result['briqpay-transaction-data-reservation-id']).toBe('first-res')
+      expect(result['briqpay-transaction-data-psp-display-name']).toBe('First PSP')
     })
 
     test('should handle empty transactions array', () => {
@@ -302,8 +302,8 @@ describe('BriqpaySessionDataService', () => {
   describe('updateOrderCustomFields', () => {
     test('should update order with custom fields when order has existing custom type', async () => {
       const customFields: ExtractedBriqpayCustomFields = {
-        briqpayPspMetaDataDescription: 'Test description',
-        briqpayTransactionDataReservationId: 'res-123',
+        'briqpay-psp-meta-data-description': 'Test description',
+        'briqpay-transaction-data-reservation-id': 'res-123',
       }
 
       mockOrderGet.mockResolvedValueOnce({
@@ -324,8 +324,16 @@ describe('BriqpaySessionDataService', () => {
         body: {
           version: 1,
           actions: [
-            { action: 'setCustomField', name: 'briqpayPspMetaDataDescription', value: 'Test description' },
-            { action: 'setCustomField', name: 'briqpayTransactionDataReservationId', value: 'res-123' },
+            {
+              action: 'setCustomField',
+              name: 'briqpay-psp-meta-data-description',
+              value: 'Test description',
+            },
+            {
+              action: 'setCustomField',
+              name: 'briqpay-transaction-data-reservation-id',
+              value: 'res-123',
+            },
           ],
         },
       })
@@ -333,7 +341,7 @@ describe('BriqpaySessionDataService', () => {
 
     test('should set custom type first when order has no custom type', async () => {
       const customFields: ExtractedBriqpayCustomFields = {
-        briqpayPspMetaDataDescription: 'Test description',
+        'briqpay-psp-meta-data-description': 'Test description',
       }
 
       mockOrderGet.mockResolvedValueOnce({
@@ -367,7 +375,7 @@ describe('BriqpaySessionDataService', () => {
             {
               action: 'setCustomType',
               type: {
-                key: 'briqpaySessionId',
+                key: 'briqpay-session-id',
                 typeId: 'type',
               },
             },
@@ -379,7 +387,13 @@ describe('BriqpaySessionDataService', () => {
       expect(mockOrderPost).toHaveBeenNthCalledWith(2, {
         body: {
           version: 2,
-          actions: [{ action: 'setCustomField', name: 'briqpayPspMetaDataDescription', value: 'Test description' }],
+          actions: [
+            {
+              action: 'setCustomField',
+              name: 'briqpay-psp-meta-data-description',
+              value: 'Test description',
+            },
+          ],
         },
       })
     })
@@ -435,8 +449,16 @@ describe('BriqpaySessionDataService', () => {
         body: {
           version: 1,
           actions: expect.arrayContaining([
-            { action: 'setCustomField', name: 'briqpayPspMetaDataDescription', value: 'Test description' },
-            { action: 'setCustomField', name: 'briqpayTransactionDataReservationId', value: 'res-123' },
+            {
+              action: 'setCustomField',
+              name: 'briqpay-psp-meta-data-description',
+              value: 'Test description',
+            },
+            {
+              action: 'setCustomField',
+              name: 'briqpay-transaction-data-reservation-id',
+              value: 'res-123',
+            },
           ]),
         },
       })

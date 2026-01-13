@@ -1,4 +1,4 @@
-import { CommercetoolsPaymentService, Errorx, Payment } from '@commercetools/connect-payments-sdk'
+import { CommercetoolsPaymentService, Payment } from '@commercetools/connect-payments-sdk'
 import {
   BRIQPAY_WEBHOOK_EVENT,
   BRIQPAY_WEBHOOK_STATUS,
@@ -9,7 +9,6 @@ import {
 } from '../../dtos/briqpay-payment.dto'
 import { MediumBriqpayResponse, ORDER_STATUS, TRANSACTION_STATUS } from '../types/briqpay-payment.type'
 import { appLogger } from '../../payment-sdk'
-import Briqpay from '../../libs/briqpay/BriqpayService'
 import {
   getActualAuthorizationStatus,
   getActualCaptureStatus,
@@ -44,33 +43,31 @@ export class BriqpayNotificationService {
   /**
    * Processes incoming webhook notifications from Briqpay.
    *
-   * This service supports two modes of operation:
-   *
-   * 1. **HMAC-verified mode** (when BRIQPAY_WEBHOOK_SECRET is configured):
-   *    - Verifies the webhook signature using HMAC-SHA256
-   *    - Trusts the webhook payload directly for status updates
-   *    - Provides better performance by avoiding an extra API call
-   *    - Still fetches session for order custom field ingestion
-   *
-   * 2. **Session-fetch mode** (default, when no secret is configured):
-   *    - Uses the webhook as a trigger only
-   *    - Fetches actual status from Briqpay API to prevent spoofing
-   *    - Protects against race conditions and webhook reliability issues
+   * This service requires HMAC verification (BRIQPAY_WEBHOOK_SECRET must be configured).
+   * It trusts the webhook payload directly for status updates and transaction data,
+   * avoiding extra API calls to Briqpay.
    */
   public async processNotification(opts: {
     data: NotificationRequestSchemaDTO
     signatureHeader?: string
     rawBody?: string
   }): Promise<void> {
-    appLogger.info({ ...opts.data, hmacEnabled: isHmacVerificationEnabled() }, 'Processing notification')
+    const { sessionId: briqpaySessionId } = opts.data
+    appLogger.info({ briqpaySessionId, hmacEnabled: isHmacVerificationEnabled() }, 'Processing notification')
+
     try {
-      // Check if HMAC verification is enabled and we have the required data
-      if (isHmacVerificationEnabled() && opts.signatureHeader && opts.rawBody) {
-        await this.processWithHmacVerification(opts)
-      } else {
-        // Fallback to session-fetch mode
-        await this.processWithSessionFetch(opts.data)
+      // HMAC verification is now REQUIRED
+      if (!isHmacVerificationEnabled()) {
+        appLogger.error({ briqpaySessionId }, 'BRIQPAY_WEBHOOK_SECRET is not configured. Webhooks are disabled.')
+        throw new Error('Webhooks disabled: BRIQPAY_WEBHOOK_SECRET missing')
       }
+
+      if (!opts.signatureHeader || !opts.rawBody) {
+        appLogger.error({ briqpaySessionId }, 'Missing required signature header or raw body for HMAC verification')
+        throw new Error('Webhook verification failed: Missing required signature data')
+      }
+
+      await this.processWithHmacVerification(opts)
     } catch (e) {
       this.handleNotificationError(e, opts.data)
     }
@@ -89,13 +86,9 @@ export class BriqpayNotificationService {
     const { sessionId: briqpaySessionId, event, status, captureId: briqpayCaptureId, refundId: briqpayRefundId } = data
 
     const secret = getWebhookSecret()
+    // Secret presence is already checked in processNotification, but TypeScript needs this
     if (!secret || !signatureHeader || !rawBody) {
-      appLogger.warn(
-        { briqpaySessionId, hasSecret: !!secret, hasHeader: !!signatureHeader, hasRawBody: !!rawBody },
-        'Missing required data for HMAC verification, falling back to session fetch',
-      )
-      await this.processWithSessionFetch(data)
-      return
+      throw new Error('Missing required data for HMAC verification')
     }
 
     // Verify the webhook signature
@@ -108,54 +101,119 @@ export class BriqpayNotificationService {
       throw new Error(`Webhook verification failed: ${verificationResult.error}`)
     }
 
-    appLogger.info({ briqpaySessionId, event, status }, 'Webhook HMAC verified - processing with trusted payload')
+    appLogger.info(
+      { briqpaySessionId, event, status },
+      'Webhook HMAC verified - processing with trusted payload (no session fetch)',
+    )
 
-    // 1. Try to use transaction data from payload if available
-    let briqpaySession: MediumBriqpayResponse | undefined
-    if (data.transaction) {
-      appLogger.info({ briqpaySessionId }, 'Using transaction data from webhook payload')
-      briqpaySession = {
-        sessionId: briqpaySessionId,
-        htmlSnippet: '', // Not needed for notifications
-        data: {
-          transactions: [
-            {
-              transactionId: data.transaction.transactionId,
-              status: data.transaction.status as TRANSACTION_STATUS,
-              amountIncVat: data.transaction.amountIncVat,
-              amountExVat: data.transaction.amountExVat,
-              currency: data.transaction.currency,
-              createdAt: data.transaction.createdAt,
-              reservationId: data.transaction.reservationId,
-              pspId: data.transaction.pspId,
-              pspDisplayName: data.transaction.pspDisplayName,
-              pspIntegrationName: data.transaction.pspIntegrationName,
-              email: data.transaction.email,
-              phoneNumber: data.transaction.phoneNumber,
-            },
-          ],
+    // 1. Mandatory transaction data from payload
+    if (!data.transaction) {
+      appLogger.error({ briqpaySessionId, event }, 'Webhook payload missing mandatory transaction data')
+      throw new Error('Webhook processing failed: Missing transaction data in payload')
+    }
+
+    const briqpaySession: MediumBriqpayResponse = {
+      sessionId: briqpaySessionId,
+      htmlSnippet: '', // Not needed for notifications
+      data: {
+        order: {
+          amountIncVat: data.transaction.amountIncVat,
+          amountExVat: data.transaction.amountExVat,
+          currency: data.transaction.currency,
+          cart: [],
         },
+        transactions: [
+          {
+            transactionId: data.transaction.transactionId,
+            status: data.transaction.status as TRANSACTION_STATUS,
+            amountIncVat: data.transaction.amountIncVat,
+            amountExVat: data.transaction.amountExVat,
+            currency: data.transaction.currency,
+            createdAt: data.transaction.createdAt,
+            reservationId: data.transaction.reservationId,
+            pspId: data.transaction.pspId,
+            pspDisplayName: data.transaction.pspDisplayName,
+            pspIntegrationName: data.transaction.pspIntegrationName,
+            email: data.transaction.email,
+            phoneNumber: data.transaction.phoneNumber,
+          },
+        ],
+      },
+    }
+
+    // Provide capture/refund arrays expected by existing handlers when those events are received.
+    // This allows downstream logic to use the webhook payload as source of truth without fetching the session.
+    if (event === BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS && briqpayCaptureId) {
+      briqpaySession.data = {
+        ...briqpaySession.data,
+        captures: [
+          {
+            captureId: briqpayCaptureId,
+            status: data.transaction.status as TRANSACTION_STATUS,
+            amountIncVat: data.transaction.amountIncVat,
+            amountExVat: data.transaction.amountExVat,
+            currency: data.transaction.currency,
+            createdAt: data.transaction.createdAt,
+            reservationId: data.transaction.reservationId,
+            pspId: data.transaction.pspId,
+            pspDisplayName: data.transaction.pspDisplayName,
+            pspIntegrationName: data.transaction.pspIntegrationName,
+            email: data.transaction.email,
+            phoneNumber: data.transaction.phoneNumber,
+            cart: [],
+          },
+        ],
       }
     }
 
-    // 2. Fetch session only if not in payload or if we need more data (like pspMetadata for custom fields)
-    // For now, we still fetch it if we want to ensure full custom field ingestion,
-    // but the goal is to rely on payload for status updates.
-    if (!briqpaySession) {
-      briqpaySession = await this.fetchAndValidateSession(briqpaySessionId)
+    if (event === BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS && briqpayRefundId) {
+      briqpaySession.data = {
+        ...briqpaySession.data,
+        refunds: [
+          {
+            refundId: briqpayRefundId,
+            status: data.transaction.status as TRANSACTION_STATUS,
+            amountIncVat: data.transaction.amountIncVat,
+            amountExVat: data.transaction.amountExVat,
+            currency: data.transaction.currency,
+            createdAt: data.transaction.createdAt,
+            reservationId: data.transaction.reservationId,
+            pspId: data.transaction.pspId,
+            pspDisplayName: data.transaction.pspDisplayName,
+            pspIntegrationName: data.transaction.pspIntegrationName,
+            cart: [],
+          },
+        ],
+      }
     }
+
+    // Convert trusted webhook status to the format expected by existing handlers
+    const trustedStatuses = this.buildTrustedStatuses(status, event, briqpayCaptureId, briqpayRefundId)
 
     // Find the payment
     const payment = await this.ctPaymentService.findPaymentsByInterfaceId({
       interfaceId: briqpaySessionId,
     })
 
-    // Convert trusted webhook status to the format expected by existing handlers
-    // This allows us to reuse all existing handler code
-    const trustedStatuses = this.buildTrustedStatuses(status, event, briqpayCaptureId, briqpayRefundId)
-
     // Reuse existing routing logic with trusted statuses
     await this.routeEventToHandler(event, payment, briqpaySession, trustedStatuses, briqpayCaptureId, briqpayRefundId)
+  }
+
+  /**
+   * Extracts actual statuses from the Briqpay session response.
+   * This is a helper for the routing logic that still expects this structure.
+   */
+  private extractActualStatuses(
+    briqpaySession: MediumBriqpayResponse,
+    briqpayCaptureId?: string,
+    briqpayRefundId?: string,
+  ) {
+    return {
+      orderStatus: getActualOrderStatus(briqpaySession),
+      authorizationStatus: getActualAuthorizationStatus(briqpaySession),
+      captureStatus: briqpayCaptureId ? getActualCaptureStatus(briqpaySession, briqpayCaptureId) : undefined,
+      refundStatus: briqpayRefundId ? getActualRefundStatus(briqpaySession, briqpayRefundId) : undefined,
+    }
   }
 
   /**
@@ -192,101 +250,6 @@ export class BriqpayNotificationService {
       captureStatus: event === BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS && briqpayCaptureId ? transactionStatus : undefined,
       refundStatus: event === BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS && briqpayRefundId ? transactionStatus : undefined,
     }
-  }
-
-  /**
-   * Processes webhook using session-fetch mode (original behavior).
-   * Fetches actual status from Briqpay API to prevent spoofing.
-   */
-  private async processWithSessionFetch(data: NotificationRequestSchemaDTO): Promise<void> {
-    const { sessionId: briqpaySessionId, event, captureId: briqpayCaptureId, refundId: briqpayRefundId } = data
-
-    // Note: We intentionally ignore data.status from the webhook payload.
-    // The actual status is fetched from Briqpay API to prevent spoofing and race conditions.
-    appLogger.info(
-      { ...data },
-      'Processing notification via session fetch (webhook status will be verified against Briqpay API)',
-    )
-
-    const briqpaySession = await this.fetchAndValidateSession(briqpaySessionId)
-
-    const actualStatuses = this.extractActualStatuses(briqpaySession, briqpayCaptureId, briqpayRefundId)
-    this.logActualStatuses(briqpaySessionId, event, data.status, actualStatuses, briqpaySession)
-
-    const payment = await this.ctPaymentService.findPaymentsByInterfaceId({
-      interfaceId: briqpaySessionId,
-    })
-
-    await this.routeEventToHandler(event, payment, briqpaySession, actualStatuses, briqpayCaptureId, briqpayRefundId)
-  }
-
-  /**
-   * Fetches and validates the Briqpay session from the API.
-   * This is the source of truth for status - webhook payloads are not trusted.
-   */
-  private async fetchAndValidateSession(briqpaySessionId: string): Promise<MediumBriqpayResponse> {
-    const briqpaySession = await Briqpay.getSession(briqpaySessionId).catch((error) => {
-      appLogger.warn(
-        { briqpaySessionId, error: error instanceof Error ? error.message : error },
-        'Failed to fetch session from Briqpay - potential spoofing attempt or invalid session',
-      )
-      return undefined
-    })
-
-    if (!briqpaySession || briqpaySession.sessionId !== briqpaySessionId) {
-      appLogger.error(
-        { briqpaySessionId, receivedSessionId: briqpaySession?.sessionId },
-        'Webhook validation failed - session mismatch or not found',
-      )
-      throw new Error('Webhook validation failed: Invalid session')
-    }
-
-    return briqpaySession
-  }
-
-  /**
-   * Extracts actual statuses from the Briqpay session response.
-   * Uses data.transactions for authorization, data.captures for captures, data.refunds for refunds.
-   */
-  private extractActualStatuses(
-    briqpaySession: MediumBriqpayResponse,
-    briqpayCaptureId?: string,
-    briqpayRefundId?: string,
-  ) {
-    return {
-      orderStatus: getActualOrderStatus(briqpaySession),
-      authorizationStatus: getActualAuthorizationStatus(briqpaySession),
-      captureStatus: briqpayCaptureId ? getActualCaptureStatus(briqpaySession, briqpayCaptureId) : undefined,
-      refundStatus: briqpayRefundId ? getActualRefundStatus(briqpaySession, briqpayRefundId) : undefined,
-    }
-  }
-
-  /**
-   * Logs the actual statuses fetched from Briqpay API for debugging.
-   */
-  private logActualStatuses(
-    briqpaySessionId: string,
-    webhookEvent: BRIQPAY_WEBHOOK_EVENT,
-    webhookStatus: BRIQPAY_WEBHOOK_STATUS,
-    actualStatuses: ReturnType<typeof this.extractActualStatuses>,
-    briqpaySession: MediumBriqpayResponse,
-  ): void {
-    appLogger.info(
-      {
-        briqpaySessionId,
-        webhookEvent,
-        webhookStatus, // Log what webhook claimed (for debugging)
-        actualOrderStatus: actualStatuses.orderStatus,
-        actualAuthorizationStatus: actualStatuses.authorizationStatus,
-        actualCaptureStatus: actualStatuses.captureStatus,
-        actualRefundStatus: actualStatuses.refundStatus,
-        moduleStatus: briqpaySession.moduleStatus,
-        transactionsCount: briqpaySession.data?.transactions?.length ?? 0,
-        capturesCount: briqpaySession.data?.captures?.length ?? 0,
-        refundsCount: briqpaySession.data?.refunds?.length ?? 0,
-      },
-      'Fetched actual status from Briqpay API',
-    )
   }
 
   /**
@@ -381,7 +344,7 @@ export class BriqpayNotificationService {
   private async processCaptureStatusEvent(
     payment: Payment[],
     briqpaySession: MediumBriqpayResponse,
-    actualCaptureStatus: ReturnType<typeof getActualCaptureStatus>,
+    actualCaptureStatus: TRANSACTION_STATUS | undefined,
     briqpayCaptureId?: string,
   ): Promise<void> {
     if (!briqpayCaptureId) {
@@ -424,7 +387,7 @@ export class BriqpayNotificationService {
   private async processRefundStatusEvent(
     payment: Payment[],
     briqpaySession: MediumBriqpayResponse,
-    actualRefundStatus: ReturnType<typeof getActualRefundStatus>,
+    actualRefundStatus: TRANSACTION_STATUS | undefined,
     briqpayRefundId?: string,
   ): Promise<void> {
     if (!briqpayRefundId) {
@@ -462,19 +425,15 @@ export class BriqpayNotificationService {
   }
 
   /**
-   * Handles errors during notification processing.
+   * Handles notification errors by logging and potentially taking corrective action.
    */
-  private handleNotificationError(e: unknown, notificationData: NotificationRequestSchemaDTO): void {
-    if (e instanceof Errorx && e.code === 'ResourceNotFound') {
-      appLogger.info(
-        { notification: JSON.stringify(notificationData) },
-        'Payment not found hence accepting the notification',
-      )
-      return
-    }
-
-    appLogger.error({ error: e }, 'Error processing notification')
-    throw e
+  private handleNotificationError(e: unknown, data: NotificationRequestSchemaDTO): void {
+    const error = e instanceof Error ? e : new Error(String(e))
+    appLogger.error(
+      { error: error.message, sessionId: data.sessionId, event: data.event },
+      'Error processing notification',
+    )
+    throw error
   }
 
   private updatePendingAuthorization = async (payment: Payment[], briqpaySessionId: string) => {

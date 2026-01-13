@@ -22,7 +22,7 @@ export class BriqpaySessionService {
 
     let updatedCart = ctCart
     if (!ctCart.custom) {
-      appLogger.info({ briqpaySessionId }, 'Setting custom type for: ')
+      appLogger.info({ briqpaySessionId }, 'Setting custom type for cart')
       const cartResponse = await apiRoot
         .carts()
         .withId({ ID: ctCart.id })
@@ -47,7 +47,7 @@ export class BriqpaySessionService {
 
     // Only update it if we have a new session
     if (existingBriqpaySessionId !== briqpaySessionId) {
-      appLogger.info({ briqpaySessionId }, 'Updating custom type field for: ')
+      appLogger.info({ briqpaySessionId }, 'Updating custom type field for cart')
       await apiRoot
         .carts()
         .withId({ ID: ctCart.id })
@@ -57,7 +57,7 @@ export class BriqpaySessionService {
             actions: [
               {
                 action: 'setCustomField',
-                name: 'briqpaySessionId',
+                name: briqpaySessionIdCustomFieldKey,
                 value: briqpaySessionId,
               },
             ],
@@ -74,7 +74,8 @@ export class BriqpaySessionService {
     futureOrderNumber?: string,
     clientOrigin?: string,
   ): Promise<MediumBriqpayResponse> {
-    const existingSessionId = ctCart.custom?.fields?.['briqpaySessionId'] as string
+    const briqpaySessionIdCustomFieldKey = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
+    const existingSessionId = ctCart.custom?.fields?.[briqpaySessionIdCustomFieldKey] as string
     appLogger.info({ existingSessionId }, 'Existing session ID:')
 
     try {

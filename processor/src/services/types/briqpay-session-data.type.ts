@@ -64,17 +64,7 @@ export interface BriqpayFullSessionResponse {
  * Only includes fields that have actual values (no undefined/null)
  */
 export interface ExtractedBriqpayCustomFields {
-  briqpayPspMetaDataCustomerFacingReference?: string
-  briqpayPspMetaDataDescription?: string
-  briqpayPspMetaDataType?: string
-  briqpayPspMetaDataPayerEmail?: string
-  briqpayPspMetaDataPayerFirstName?: string
-  briqpayPspMetaDataPayerLastName?: string
-  briqpayTransactionDataReservationId?: string
-  briqpayTransactionDataSecondaryReservationId?: string
-  briqpayTransactionDataPspId?: string
-  briqpayTransactionDataPspDisplayName?: string
-  briqpayTransactionDataPspIntegrationName?: string
+  [key: string]: string | undefined
 }
 
 /**
