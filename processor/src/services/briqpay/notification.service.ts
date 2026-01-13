@@ -110,8 +110,40 @@ export class BriqpayNotificationService {
 
     appLogger.info({ briqpaySessionId, event, status }, 'Webhook HMAC verified - processing with trusted payload')
 
-    // Fetch session for amount/currency data (still needed for transaction amounts)
-    const briqpaySession = await this.fetchAndValidateSession(briqpaySessionId)
+    // 1. Try to use transaction data from payload if available
+    let briqpaySession: MediumBriqpayResponse | undefined
+    if (data.transaction) {
+      appLogger.info({ briqpaySessionId }, 'Using transaction data from webhook payload')
+      briqpaySession = {
+        sessionId: briqpaySessionId,
+        htmlSnippet: '', // Not needed for notifications
+        data: {
+          transactions: [
+            {
+              transactionId: data.transaction.transactionId,
+              status: data.transaction.status as TRANSACTION_STATUS,
+              amountIncVat: data.transaction.amountIncVat,
+              amountExVat: data.transaction.amountExVat,
+              currency: data.transaction.currency,
+              createdAt: data.transaction.createdAt,
+              reservationId: data.transaction.reservationId,
+              pspId: data.transaction.pspId,
+              pspDisplayName: data.transaction.pspDisplayName,
+              pspIntegrationName: data.transaction.pspIntegrationName,
+              email: data.transaction.email,
+              phoneNumber: data.transaction.phoneNumber,
+            },
+          ],
+        },
+      }
+    }
+
+    // 2. Fetch session only if not in payload or if we need more data (like pspMetadata for custom fields)
+    // For now, we still fetch it if we want to ensure full custom field ingestion,
+    // but the goal is to rely on payload for status updates.
+    if (!briqpaySession) {
+      briqpaySession = await this.fetchAndValidateSession(briqpaySessionId)
+    }
 
     // Find the payment
     const payment = await this.ctPaymentService.findPaymentsByInterfaceId({

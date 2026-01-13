@@ -3,9 +3,9 @@ import { apiRoot } from '../../libs/commercetools/api-root'
 import {
   BriqpayFullSessionResponse,
   BriqpayPspMetadata,
-  BriqpayTransaction,
   ExtractedBriqpayCustomFields,
 } from '../types/briqpay-session-data.type'
+import { MediumBriqpayResponse } from '../types/briqpay-payment.type'
 import { briqpayCustomTypeKey } from '../../custom-types/custom-types'
 
 /**
@@ -92,11 +92,13 @@ export class BriqpaySessionDataService {
    *
    * For transactions, uses the first transaction in the array (primary transaction)
    */
-  public extractCustomFields(sessionData: BriqpayFullSessionResponse): ExtractedBriqpayCustomFields {
+  public extractCustomFields(
+    sessionData: BriqpayFullSessionResponse | MediumBriqpayResponse,
+  ): ExtractedBriqpayCustomFields {
     const result: ExtractedBriqpayCustomFields = {}
 
-    // Extract PSP Metadata fields
-    const pspMetadata: BriqpayPspMetadata | undefined = sessionData.data?.pspMetadata
+    // Extract PSP Metadata fields (only present in BriqpayFullSessionResponse)
+    const pspMetadata: BriqpayPspMetadata | undefined = (sessionData as BriqpayFullSessionResponse).data?.pspMetadata
     if (pspMetadata) {
       this.setIfPresent(result, 'briqpayPspMetaDataCustomerFacingReference', pspMetadata.customerFacingReference)
       this.setIfPresent(result, 'briqpayPspMetaDataDescription', pspMetadata.description)
@@ -107,7 +109,7 @@ export class BriqpaySessionDataService {
     }
 
     // Extract Transaction Data fields from the first (primary) transaction
-    const transactions: BriqpayTransaction[] | undefined = sessionData.data?.transactions
+    const transactions = sessionData.data?.transactions
     appLogger.info(
       {
         hasTransactions: !!transactions,
@@ -127,11 +129,14 @@ export class BriqpaySessionDataService {
     if (transactions && transactions.length > 0) {
       const primaryTransaction = transactions[0]
       this.setIfPresent(result, 'briqpayTransactionDataReservationId', primaryTransaction.reservationId)
-      this.setIfPresent(
-        result,
-        'briqpayTransactionDataSecondaryReservationId',
-        primaryTransaction.secondaryReservationId,
-      )
+      // secondaryReservationId is only in some responses/payloads
+      if ('secondaryReservationId' in primaryTransaction) {
+        this.setIfPresent(
+          result,
+          'briqpayTransactionDataSecondaryReservationId',
+          (primaryTransaction as any).secondaryReservationId,
+        )
+      }
       this.setIfPresent(result, 'briqpayTransactionDataPspId', primaryTransaction.pspId)
       this.setIfPresent(result, 'briqpayTransactionDataPspDisplayName', primaryTransaction.pspDisplayName)
       this.setIfPresent(result, 'briqpayTransactionDataPspIntegrationName', primaryTransaction.pspIntegrationName)

@@ -118,6 +118,32 @@ export const NotificationRequestSchema = Type.Object({
   ),
   autoCaptured: Type.Optional(Type.Boolean()),
   isPreExistingCapture: Type.Optional(Type.Boolean()),
+  transaction: Type.Optional(
+    Type.Object({
+      transactionId: Type.String(),
+      status: Type.String(),
+      amountIncVat: Type.Number(),
+      amountExVat: Type.Optional(Type.Number()),
+      currency: Type.String(),
+      createdAt: Type.Optional(Type.String()),
+      expiresAt: Type.Optional(Type.String()),
+      reservationId: Type.Optional(Type.String()),
+      secondaryReservationId: Type.Optional(Type.String()),
+      pspId: Type.Optional(Type.String()),
+      pspDisplayName: Type.Optional(Type.String()),
+      pspIntegrationName: Type.Optional(Type.String()),
+      email: Type.Optional(Type.String()),
+      phoneNumber: Type.Optional(Type.String()),
+      reference: Type.Optional(Type.String()),
+      pspOrderManagementIds: Type.Optional(
+        Type.Object({
+          capture: Type.Optional(Type.Object({ apiTransactionId: Type.String() })),
+          refund: Type.Optional(Type.Object({ apiTransactionId: Type.String() })),
+          cancel: Type.Optional(Type.Object({ apiTransactionId: Type.String() })),
+        }),
+      ),
+    }),
+  ),
 })
 
 export type PaymentRequestSchemaDTO = Static<typeof PaymentRequestSchema>
