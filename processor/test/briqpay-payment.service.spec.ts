@@ -1003,6 +1003,7 @@ describe('briqpay-payment.service', () => {
 
   test('create payment successfully', async () => {
     const createPaymentOpts: CreatePaymentRequest = {
+      cartId: 'explicit-cart-id',
       data: {
         paymentMethod: {
           type: PaymentMethodType.BRIQPAY,
@@ -1011,7 +1012,9 @@ describe('briqpay-payment.service', () => {
         paymentOutcome: PaymentOutcome.APPROVED,
       },
     }
-    jest.spyOn(DefaultCartService.prototype, 'getCart').mockReturnValue(Promise.resolve(mockGetCartResult()))
+    const getCartSpy = jest
+      .spyOn(paymentSDK.ctCartService, 'getCart')
+      .mockReturnValue(Promise.resolve(mockGetCartResult()))
     jest.spyOn(DefaultPaymentService.prototype, 'createPayment').mockReturnValue(Promise.resolve(mockGetPaymentResult))
     jest.spyOn(DefaultCartService.prototype, 'addPayment').mockReturnValue(Promise.resolve(mockGetCartResult()))
     jest.spyOn(FastifyContext, 'getProcessorUrlFromContext').mockReturnValue('http://127.0.0.1')
@@ -1019,6 +1022,7 @@ describe('briqpay-payment.service', () => {
 
     const result = await briqpayPaymentService.createPayment(createPaymentOpts)
     expect(result?.paymentReference).toStrictEqual('123456')
+    expect(getCartSpy).toHaveBeenCalledWith({ id: 'explicit-cart-id' })
   })
 
   describe('handleTransaction', () => {
@@ -1415,6 +1419,7 @@ describe('briqpay-payment.service', () => {
 
   test('calls handleOrderPending on ORDER_PENDING event with no payment existing', async () => {
     const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValueOnce({} as any)
+    const getCartSpy = jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(mockGetCartResult())
 
     // Mock Briqpay.getSession to return ORDER_PENDING status (source of truth)
     jest
@@ -1427,6 +1432,7 @@ describe('briqpay-payment.service', () => {
 
     const data: NotificationRequestSchemaDTO = {
       sessionId: 'abc123',
+      cartId: 'webhook-cart-id',
       event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
       status: BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING,
       transaction: {
@@ -1440,6 +1446,7 @@ describe('briqpay-payment.service', () => {
     await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(createSpy).toHaveBeenCalledTimes(1)
+    expect(getCartSpy).toHaveBeenCalledWith({ id: 'webhook-cart-id' })
   })
 
   test('calls handleOrderRejected on ORDER_REJECTED event', async () => {
@@ -1734,6 +1741,7 @@ describe('briqpay-payment.service', () => {
 
   test('calls handleOrderApproved on ORDER_APPROVED_NOT_CAPTURED event with no payment existing', async () => {
     const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValueOnce({} as any)
+    const getCartSpy = jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(mockGetCartResult())
 
     // Mock Briqpay.getSession to return ORDER_APPROVED_NOT_CAPTURED status (source of truth)
     jest
@@ -1746,6 +1754,7 @@ describe('briqpay-payment.service', () => {
 
     const data: NotificationRequestSchemaDTO = {
       sessionId: 'abc123',
+      cartId: 'webhook-cart-id-2',
       event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
       status: BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED,
       transaction: {
@@ -1759,6 +1768,7 @@ describe('briqpay-payment.service', () => {
     await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
     expect(createSpy).toHaveBeenCalledTimes(1)
+    expect(getCartSpy).toHaveBeenCalledWith({ id: 'webhook-cart-id-2' })
   })
 
   test('calls handleCapturePending on capture PENDING event', async () => {
@@ -2576,7 +2586,7 @@ describe('briqpay-payment.service', () => {
         custom: {
           type: { typeId: 'type', id: 'briqpay-session-id' },
           fields: {
-            briqpaySessionId: 'abc123',
+            [briqpaySessionIdCustomType.name]: 'abc123',
           },
         },
       })
@@ -2617,7 +2627,7 @@ describe('briqpay-payment.service', () => {
         custom: {
           type: { typeId: 'type', id: 'briqpay-session-id' },
           fields: {
-            briqpaySessionId: 'different-session-id',
+            [briqpaySessionIdCustomType.name]: 'different-session-id',
           },
         },
       })
@@ -2636,7 +2646,7 @@ describe('briqpay-payment.service', () => {
         custom: {
           type: { typeId: 'type', id: 'briqpay-session-id' },
           fields: {
-            briqpaySessionId: 'abc123',
+            [briqpaySessionIdCustomType.name]: 'abc123',
           },
         },
       })
@@ -2662,7 +2672,7 @@ describe('briqpay-payment.service', () => {
         custom: {
           type: { typeId: 'type', id: 'briqpay-session-id' },
           fields: {
-            briqpaySessionId: 'abc123',
+            [briqpaySessionIdCustomType.name]: 'abc123',
           },
         },
       })
@@ -2683,7 +2693,7 @@ describe('briqpay-payment.service', () => {
         custom: {
           type: { typeId: 'type', id: 'briqpay-session-id' },
           fields: {
-            briqpaySessionId: 'abc123',
+            [briqpaySessionIdCustomType.name]: 'abc123',
           },
         },
       })
@@ -2791,6 +2801,228 @@ describe('briqpay-payment.service', () => {
           rawBody: undefined,
         }),
       ).rejects.toThrow('Webhook verification failed: Missing required signature data')
+    })
+  })
+
+  describe('nested transaction payload support', () => {
+    test('extracts transaction data from nested capture object', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+      // Mock Briqpay.getSession to return capture with APPROVED status (source of truth)
+      jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
+        createMockBriqpaySession({
+          orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+          captures: [
+            { captureId: 'capture-123', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 5000, currency: 'EUR' },
+          ],
+        }),
+      )
+
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId')
+        .mockImplementation(async ({ interfaceId }) => {
+          if (interfaceId === 'abc123') {
+            return [
+              {
+                id: 'payment-id-1',
+                key: 'payment-key',
+                interfaceId: '123',
+                paymentMethodInfo: {
+                  method: 'Briqpay',
+                  paymentInterface: 'Briqpay',
+                },
+                amountPlanned: {
+                  centAmount: 5000,
+                  currencyCode: 'EUR',
+                  type: 'centPrecision',
+                  fractionDigits: 2,
+                },
+                transactions: [
+                  {
+                    id: 'auth-tx-1',
+                    type: 'Authorization',
+                    interactionId: 'abc123',
+                    state: 'Success',
+                    amount: {
+                      centAmount: 5000,
+                      currencyCode: 'EUR',
+                      type: 'centPrecision',
+                      fractionDigits: 2,
+                    },
+                    timestamp: '2024-01-01T00:00:00.000Z',
+                  },
+                ],
+                interfaceInteractions: [],
+                custom: undefined,
+                version: 1,
+                createdAt: '2024-01-01T00:00:00.000Z',
+                lastModifiedAt: '2024-01-01T00:00:00.000Z',
+                paymentStatus: {
+                  interfaceCode: 'APPROVED',
+                  interfaceText: 'Awaiting confirmation',
+                },
+              },
+            ]
+          }
+          throw new Error('Not Found')
+        })
+
+      const data: NotificationRequestSchemaDTO = {
+        sessionId: 'abc123',
+        event: BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS,
+        status: BRIQPAY_WEBHOOK_STATUS.APPROVED,
+        captureId: 'capture-123',
+        // Top-level transaction is missing, but present inside capture
+        capture: {
+          captureId: 'capture-123',
+          transaction: {
+            transactionId: 'tx-capture-1',
+            status: TRANSACTION_STATUS.APPROVED,
+            amountIncVat: 5000,
+            currency: 'EUR',
+          },
+        },
+      }
+      const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+      await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
+
+      expect(updateSpy).toHaveBeenCalledWith({
+        id: 'payment-id-1',
+        transaction: expect.objectContaining({
+          type: 'Charge',
+          interactionId: 'capture-123',
+          state: 'Success',
+          amount: expect.objectContaining({
+            centAmount: 5000,
+            currencyCode: 'EUR',
+          }),
+        }),
+      })
+    })
+
+    test('extracts transaction data from nested refund object', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
+
+      // Mock Briqpay.getSession to return refund with APPROVED status
+      jest.spyOn(Briqpay, 'getSession').mockResolvedValueOnce(
+        createMockBriqpaySession({
+          orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+          refunds: [
+            { refundId: 'refund-123', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 2000, currency: 'EUR' },
+          ],
+        }),
+      )
+
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId')
+        .mockImplementation(async ({ interfaceId }) => {
+          if (interfaceId === 'abc123') {
+            return [
+              {
+                id: 'payment-id-1',
+                key: 'payment-key',
+                interfaceId: '123',
+                paymentMethodInfo: {
+                  method: 'Briqpay',
+                  paymentInterface: 'Briqpay',
+                },
+                amountPlanned: {
+                  centAmount: 5000,
+                  currencyCode: 'EUR',
+                  type: 'centPrecision',
+                  fractionDigits: 2,
+                },
+                transactions: [
+                  {
+                    id: 'auth-tx-1',
+                    type: 'Authorization',
+                    interactionId: 'abc123',
+                    state: 'Success',
+                    amount: {
+                      centAmount: 5000,
+                      currencyCode: 'EUR',
+                      type: 'centPrecision',
+                      fractionDigits: 2,
+                    },
+                    timestamp: '2024-01-01T00:00:00.000Z',
+                  },
+                  {
+                    id: 'charge-tx-1',
+                    type: 'Charge',
+                    interactionId: 'capture-123',
+                    state: 'Success',
+                    amount: {
+                      centAmount: 5000,
+                      currencyCode: 'EUR',
+                      type: 'centPrecision',
+                      fractionDigits: 2,
+                    },
+                    timestamp: '2024-01-01T00:00:00.000Z',
+                  },
+                ],
+                interfaceInteractions: [],
+                custom: undefined,
+                version: 1,
+                createdAt: '2024-01-01T00:00:00.000Z',
+                lastModifiedAt: '2024-01-01T00:00:00.000Z',
+                paymentStatus: {
+                  interfaceCode: 'APPROVED',
+                  interfaceText: 'Awaiting confirmation',
+                },
+              },
+            ]
+          }
+          throw new Error('Not Found')
+        })
+
+      const data: NotificationRequestSchemaDTO = {
+        sessionId: 'abc123',
+        event: BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS,
+        status: BRIQPAY_WEBHOOK_STATUS.APPROVED,
+        refundId: 'refund-123',
+        // Top-level transaction is missing, but present inside refund
+        refund: {
+          refundId: 'refund-123',
+          transaction: {
+            transactionId: 'tx-refund-1',
+            status: TRANSACTION_STATUS.APPROVED,
+            amountIncVat: 2000,
+            currency: 'EUR',
+          },
+        },
+      }
+      const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+      await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
+
+      expect(updateSpy).toHaveBeenCalledWith({
+        id: 'payment-id-1',
+        transaction: expect.objectContaining({
+          type: 'Refund',
+          interactionId: 'refund-123',
+          state: 'Success',
+          amount: expect.objectContaining({
+            centAmount: 2000,
+            currencyCode: 'EUR',
+          }),
+        }),
+      })
+    })
+
+    test('throws error if transaction data is missing entirely', async () => {
+      process.env.BRIQPAY_WEBHOOK_SECRET = 'test-secret'
+
+      const data: NotificationRequestSchemaDTO = {
+        sessionId: 'abc123',
+        event: BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS,
+        status: BRIQPAY_WEBHOOK_STATUS.APPROVED,
+        captureId: 'capture-123',
+        // No transaction anywhere
+      }
+      const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+
+      await expect(briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })).rejects.toThrow(
+        'Webhook processing failed: Missing transaction data in payload',
+      )
     })
   })
 })

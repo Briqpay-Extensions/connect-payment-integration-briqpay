@@ -7,6 +7,7 @@ export type BriqpayPaymentServiceOptions = {
 }
 
 export type CreatePaymentRequest = {
+  cartId?: string
   data: PaymentRequestSchemaDTO
 }
 

@@ -96,6 +96,31 @@ export const DecisionResponseSchema = Type.Object({
   decision: Type.Enum(BRIQPAY_DECISION),
 })
 
+const NotificationTransactionSchema = Type.Object({
+  transactionId: Type.String(),
+  status: Type.String(),
+  amountIncVat: Type.Number(),
+  amountExVat: Type.Optional(Type.Number()),
+  currency: Type.String(),
+  createdAt: Type.Optional(Type.String()),
+  expiresAt: Type.Optional(Type.String()),
+  reservationId: Type.Optional(Type.String()),
+  secondaryReservationId: Type.Optional(Type.String()),
+  pspId: Type.Optional(Type.String()),
+  pspDisplayName: Type.Optional(Type.String()),
+  pspIntegrationName: Type.Optional(Type.String()),
+  email: Type.Optional(Type.String()),
+  phoneNumber: Type.Optional(Type.String()),
+  reference: Type.Optional(Type.String()),
+  pspOrderManagementIds: Type.Optional(
+    Type.Object({
+      capture: Type.Optional(Type.Object({ apiTransactionId: Type.String() })),
+      refund: Type.Optional(Type.Object({ apiTransactionId: Type.String() })),
+      cancel: Type.Optional(Type.Object({ apiTransactionId: Type.String() })),
+    }),
+  ),
+})
+
 export const NotificationRequestSchema = Type.Object({
   event: Type.Enum(BRIQPAY_WEBHOOK_EVENT),
   status: Type.Enum(BRIQPAY_WEBHOOK_STATUS),
@@ -116,32 +141,35 @@ export const NotificationRequestSchema = Type.Object({
       pattern: SessionIdPattern.source,
     }),
   ),
+  cartId: Type.Optional(
+    Type.String({
+      maxLength: 128,
+      pattern: SessionIdPattern.source,
+    }),
+  ),
   autoCaptured: Type.Optional(Type.Boolean()),
   isPreExistingCapture: Type.Optional(Type.Boolean()),
-  transaction: Type.Optional(
+  transaction: Type.Optional(NotificationTransactionSchema),
+  capture: Type.Optional(
     Type.Object({
-      transactionId: Type.String(),
-      status: Type.String(),
-      amountIncVat: Type.Number(),
-      amountExVat: Type.Optional(Type.Number()),
-      currency: Type.String(),
-      createdAt: Type.Optional(Type.String()),
-      expiresAt: Type.Optional(Type.String()),
-      reservationId: Type.Optional(Type.String()),
-      secondaryReservationId: Type.Optional(Type.String()),
-      pspId: Type.Optional(Type.String()),
-      pspDisplayName: Type.Optional(Type.String()),
-      pspIntegrationName: Type.Optional(Type.String()),
-      email: Type.Optional(Type.String()),
-      phoneNumber: Type.Optional(Type.String()),
-      reference: Type.Optional(Type.String()),
-      pspOrderManagementIds: Type.Optional(
-        Type.Object({
-          capture: Type.Optional(Type.Object({ apiTransactionId: Type.String() })),
-          refund: Type.Optional(Type.Object({ apiTransactionId: Type.String() })),
-          cancel: Type.Optional(Type.Object({ apiTransactionId: Type.String() })),
+      captureId: Type.Optional(
+        Type.String({
+          maxLength: 128,
+          pattern: SessionIdPattern.source,
         }),
       ),
+      transaction: Type.Optional(NotificationTransactionSchema),
+    }),
+  ),
+  refund: Type.Optional(
+    Type.Object({
+      refundId: Type.Optional(
+        Type.String({
+          maxLength: 128,
+          pattern: SessionIdPattern.source,
+        }),
+      ),
+      transaction: Type.Optional(NotificationTransactionSchema),
     }),
   ),
 })

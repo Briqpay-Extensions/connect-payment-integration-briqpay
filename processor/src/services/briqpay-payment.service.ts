@@ -243,7 +243,8 @@ export class BriqpayPaymentService extends AbstractPaymentService {
 
     // SECURITY: Validate that the session belongs to the cart from the authenticated context
     const ctCart = await this.ctCartService.getCart({ id: cartId })
-    const cartSessionId = ctCart.custom?.fields?.['briqpaySessionId'] as string | undefined
+    const briqpaySessionIdCustomFieldKey = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
+    const cartSessionId = ctCart.custom?.fields?.[briqpaySessionIdCustomFieldKey] as string | undefined
 
     if (!cartSessionId) {
       appLogger.error({ cartId, sessionId }, 'Cart does not have a Briqpay session associated')

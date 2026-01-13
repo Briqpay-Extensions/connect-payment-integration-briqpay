@@ -1,7 +1,7 @@
-export const briqpayCustomTypeKey = 'briqpay-session-id'
+export const briqpayCustomTypeKey = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
 
 export const briqpaySessionIdCustomType = {
-  name: 'briqpay-session-id',
+  name: process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id',
 }
 
 export interface BriqpayFieldDefinition {

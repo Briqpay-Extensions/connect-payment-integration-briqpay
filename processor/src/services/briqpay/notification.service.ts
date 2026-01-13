@@ -83,7 +83,14 @@ export class BriqpayNotificationService {
     rawBody?: string
   }): Promise<void> {
     const { data, signatureHeader, rawBody } = opts
-    const { sessionId: briqpaySessionId, event, status, captureId: briqpayCaptureId, refundId: briqpayRefundId } = data
+    const {
+      sessionId: briqpaySessionId,
+      event,
+      status,
+      captureId: briqpayCaptureId,
+      refundId: briqpayRefundId,
+      cartId,
+    } = data
 
     const secret = getWebhookSecret()
     // Secret presence is already checked in processNotification, but TypeScript needs this
@@ -107,7 +114,15 @@ export class BriqpayNotificationService {
     )
 
     // 1. Mandatory transaction data from payload
-    if (!data.transaction) {
+    let transactionData = data.transaction
+
+    if (!transactionData && event === BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS && data.capture?.transaction) {
+      transactionData = data.capture.transaction
+    } else if (!transactionData && event === BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS && data.refund?.transaction) {
+      transactionData = data.refund.transaction
+    }
+
+    if (!transactionData) {
       appLogger.error({ briqpaySessionId, event }, 'Webhook payload missing mandatory transaction data')
       throw new Error('Webhook processing failed: Missing transaction data in payload')
     }
@@ -117,25 +132,25 @@ export class BriqpayNotificationService {
       htmlSnippet: '', // Not needed for notifications
       data: {
         order: {
-          amountIncVat: data.transaction.amountIncVat,
-          amountExVat: data.transaction.amountExVat,
-          currency: data.transaction.currency,
+          amountIncVat: transactionData.amountIncVat,
+          amountExVat: transactionData.amountExVat,
+          currency: transactionData.currency,
           cart: [],
         },
         transactions: [
           {
-            transactionId: data.transaction.transactionId,
-            status: data.transaction.status as TRANSACTION_STATUS,
-            amountIncVat: data.transaction.amountIncVat,
-            amountExVat: data.transaction.amountExVat,
-            currency: data.transaction.currency,
-            createdAt: data.transaction.createdAt,
-            reservationId: data.transaction.reservationId,
-            pspId: data.transaction.pspId,
-            pspDisplayName: data.transaction.pspDisplayName,
-            pspIntegrationName: data.transaction.pspIntegrationName,
-            email: data.transaction.email,
-            phoneNumber: data.transaction.phoneNumber,
+            transactionId: transactionData.transactionId,
+            status: transactionData.status as TRANSACTION_STATUS,
+            amountIncVat: transactionData.amountIncVat,
+            amountExVat: transactionData.amountExVat,
+            currency: transactionData.currency,
+            createdAt: transactionData.createdAt,
+            reservationId: transactionData.reservationId,
+            pspId: transactionData.pspId,
+            pspDisplayName: transactionData.pspDisplayName,
+            pspIntegrationName: transactionData.pspIntegrationName,
+            email: transactionData.email,
+            phoneNumber: transactionData.phoneNumber,
           },
         ],
       },
@@ -149,17 +164,17 @@ export class BriqpayNotificationService {
         captures: [
           {
             captureId: briqpayCaptureId,
-            status: data.transaction.status as TRANSACTION_STATUS,
-            amountIncVat: data.transaction.amountIncVat,
-            amountExVat: data.transaction.amountExVat,
-            currency: data.transaction.currency,
-            createdAt: data.transaction.createdAt,
-            reservationId: data.transaction.reservationId,
-            pspId: data.transaction.pspId,
-            pspDisplayName: data.transaction.pspDisplayName,
-            pspIntegrationName: data.transaction.pspIntegrationName,
-            email: data.transaction.email,
-            phoneNumber: data.transaction.phoneNumber,
+            status: transactionData.status as TRANSACTION_STATUS,
+            amountIncVat: transactionData.amountIncVat,
+            amountExVat: transactionData.amountExVat,
+            currency: transactionData.currency,
+            createdAt: transactionData.createdAt,
+            reservationId: transactionData.reservationId,
+            pspId: transactionData.pspId,
+            pspDisplayName: transactionData.pspDisplayName,
+            pspIntegrationName: transactionData.pspIntegrationName,
+            email: transactionData.email,
+            phoneNumber: transactionData.phoneNumber,
             cart: [],
           },
         ],
@@ -172,15 +187,15 @@ export class BriqpayNotificationService {
         refunds: [
           {
             refundId: briqpayRefundId,
-            status: data.transaction.status as TRANSACTION_STATUS,
-            amountIncVat: data.transaction.amountIncVat,
-            amountExVat: data.transaction.amountExVat,
-            currency: data.transaction.currency,
-            createdAt: data.transaction.createdAt,
-            reservationId: data.transaction.reservationId,
-            pspId: data.transaction.pspId,
-            pspDisplayName: data.transaction.pspDisplayName,
-            pspIntegrationName: data.transaction.pspIntegrationName,
+            status: transactionData.status as TRANSACTION_STATUS,
+            amountIncVat: transactionData.amountIncVat,
+            amountExVat: transactionData.amountExVat,
+            currency: transactionData.currency,
+            createdAt: transactionData.createdAt,
+            reservationId: transactionData.reservationId,
+            pspId: transactionData.pspId,
+            pspDisplayName: transactionData.pspDisplayName,
+            pspIntegrationName: transactionData.pspIntegrationName,
             cart: [],
           },
         ],
@@ -196,7 +211,15 @@ export class BriqpayNotificationService {
     })
 
     // Reuse existing routing logic with trusted statuses
-    await this.routeEventToHandler(event, payment, briqpaySession, trustedStatuses, briqpayCaptureId, briqpayRefundId)
+    await this.routeEventToHandler(
+      event,
+      payment,
+      briqpaySession,
+      trustedStatuses,
+      briqpayCaptureId,
+      briqpayRefundId,
+      cartId,
+    )
   }
 
   /**
@@ -262,10 +285,11 @@ export class BriqpayNotificationService {
     actualStatuses: ReturnType<typeof this.extractActualStatuses>,
     briqpayCaptureId?: string,
     briqpayRefundId?: string,
+    cartId?: string,
   ): Promise<void> {
     switch (event) {
       case BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS:
-        await this.processOrderStatusEvent(payment, briqpaySession, actualStatuses)
+        await this.processOrderStatusEvent(payment, briqpaySession, actualStatuses, cartId)
         break
       case BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS:
         await this.processCaptureStatusEvent(payment, briqpaySession, actualStatuses.captureStatus, briqpayCaptureId)
@@ -284,6 +308,7 @@ export class BriqpayNotificationService {
     payment: Payment[],
     briqpaySession: MediumBriqpayResponse,
     actualStatuses: ReturnType<typeof this.extractActualStatuses>,
+    cartId?: string,
   ): Promise<void> {
     const { orderStatus, authorizationStatus } = actualStatuses
 
@@ -297,8 +322,8 @@ export class BriqpayNotificationService {
       )
 
       const authHandlers: Partial<Record<BRIQPAY_WEBHOOK_STATUS, () => Promise<void>>> = {
-        [BRIQPAY_WEBHOOK_STATUS.PENDING]: () => this.handleAuthorizationPending(payment, briqpaySession),
-        [BRIQPAY_WEBHOOK_STATUS.APPROVED]: () => this.handleAuthorizationApproved(payment, briqpaySession),
+        [BRIQPAY_WEBHOOK_STATUS.PENDING]: () => this.handleAuthorizationPending(payment, briqpaySession, cartId),
+        [BRIQPAY_WEBHOOK_STATUS.APPROVED]: () => this.handleAuthorizationApproved(payment, briqpaySession, cartId),
         [BRIQPAY_WEBHOOK_STATUS.REJECTED]: () => this.handleAuthorizationRejected(payment, briqpaySession),
       }
 
@@ -322,9 +347,9 @@ export class BriqpayNotificationService {
     appLogger.info({ orderStatus, orderWebhookStatus }, 'Processing order status from moduleStatus (fallback)')
 
     const orderHandlers: Partial<Record<BRIQPAY_WEBHOOK_STATUS, () => Promise<void>>> = {
-      [BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING]: () => this.handleAuthorizationPending(payment, briqpaySession),
+      [BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING]: () => this.handleAuthorizationPending(payment, briqpaySession, cartId),
       [BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED]: () =>
-        this.handleAuthorizationApproved(payment, briqpaySession),
+        this.handleAuthorizationApproved(payment, briqpaySession, cartId),
     }
 
     const handler = orderHandlers[orderWebhookStatus]
@@ -459,7 +484,11 @@ export class BriqpayNotificationService {
    * Handles Authorization Pending status.
    * Maps to CT Transaction Type: Authorization with state: Pending
    */
-  private handleAuthorizationPending = async (payment: Payment[], briqpaySession: MediumBriqpayResponse) => {
+  private handleAuthorizationPending = async (
+    payment: Payment[],
+    briqpaySession: MediumBriqpayResponse,
+    cartId?: string,
+  ) => {
     const briqpaySessionId = briqpaySession.sessionId
     const transaction = getTransaction(briqpaySession)
 
@@ -475,6 +504,7 @@ export class BriqpayNotificationService {
     // If no payment exists but a hook is sent, create a payment
     if (!payment.length) {
       await this.operationService.createPayment({
+        cartId,
         data: {
           paymentMethod: PaymentMethodType.BRIQPAY as unknown as PaymentRequestSchemaDTO['paymentMethod'],
           briqpaySessionId,
@@ -505,7 +535,11 @@ export class BriqpayNotificationService {
    * Handles Authorization Approved status.
    * Maps to CT Transaction Type: Authorization with state: Success
    */
-  private handleAuthorizationApproved = async (payment: Payment[], briqpaySession: MediumBriqpayResponse) => {
+  private handleAuthorizationApproved = async (
+    payment: Payment[],
+    briqpaySession: MediumBriqpayResponse,
+    cartId?: string,
+  ) => {
     const briqpaySessionId = briqpaySession.sessionId
     const transaction = getTransaction(briqpaySession)
 
@@ -516,6 +550,7 @@ export class BriqpayNotificationService {
     // If no payment exists but a hook is sent, create a payment
     if (!payment.length) {
       await this.operationService.createPayment({
+        cartId,
         data: {
           paymentMethod: PaymentMethodType.BRIQPAY as unknown as PaymentRequestSchemaDTO['paymentMethod'],
           briqpaySessionId,

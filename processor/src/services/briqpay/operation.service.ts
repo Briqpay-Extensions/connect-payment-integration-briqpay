@@ -248,8 +248,9 @@ export class BriqpayOperationService {
   }
 
   public async createPayment(request: CreatePaymentRequest): Promise<PaymentResponseSchemaDTO> {
+    const cartId = request.cartId || getCartIdFromContext()
     const ctCart = await this.ctCartService.getCart({
-      id: getCartIdFromContext(),
+      id: cartId,
     })
 
     const ctPayment = await this.ctPaymentService.createPayment({
@@ -284,7 +285,8 @@ export class BriqpayOperationService {
       paymentId: ctPayment.id,
     })
 
-    const pspReference = freshCart.custom?.fields?.['briqpaySessionId']
+    const briqpaySessionIdCustomFieldKey = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
+    const pspReference = freshCart.custom?.fields?.[briqpaySessionIdCustomFieldKey]
 
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: ctPayment.id,
