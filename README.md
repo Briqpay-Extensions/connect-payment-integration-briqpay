@@ -32,9 +32,29 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
 
 2. **Create commercetools API client** with the following scopes (your case may vary):
 
-   - **Manage**: `manage_orders`, `manage_payments`, `manage_subscriptions`, `manage_sessions`, `manage_shopping_lists`, `manage_checkout_payment_intents`
-   - **View**: `view_connectors`, `view_customers`, `view_categories`, `view_connectors_deployments`, `view_published_products`, `view_sessions`
-   - **Tokens**: `view_api_clients`
+   - **Manage**:
+     - `manage_orders`
+     - `manage_sessions`
+     - `manage_types`
+     - `manage_payments`
+     - `manage_checkout_transactions`
+     - `manage_checkout_payment_intents`
+   - **View**:
+     - `view_key_value_documents`
+     - `view_states`
+     - `view_types`
+     - `view_product_selections`
+     - `view_attribute_groups`
+     - `view_shopping_lists`
+     - `view_shipping_methods`
+     - `view_categories`
+     - `view_discount_codes`
+     - `view_products`
+     - `view_cart_discounts`
+     - `view_stores`
+     - `view_tax_categories`
+     - `view_order_edits`
+     - `view_sessions`
 
 3. **Set commercetools configuration values**:
 
@@ -91,9 +111,29 @@ The Briqpay integration connector contains two modules:
 
 Create an API client responsible for payment management in your commercetools project. Details of the API client are taken as input as environment variables/configuration for connect such as `CTP_PROJECT_KEY`, `CTP_CLIENT_ID`, `CTP_CLIENT_SECRET`. The API client should have the following scopes:
 
-- `manage_payments` `manage_orders` `view_sessions` `view_api_clients`
-- `manage_checkout_payment_intents` `introspect_oauth_tokens`
-- `manage_types` `view_types`
+- **Manage**:
+  - `manage_orders`
+  - `manage_sessions`
+  - `manage_types`
+  - `manage_payments`
+  - `manage_checkout_transactions`
+  - `manage_checkout_payment_intents`
+- **View**:
+  - `view_key_value_documents`
+  - `view_states`
+  - `view_types`
+  - `view_product_selections`
+  - `view_attribute_groups`
+  - `view_shopping_lists`
+  - `view_shipping_methods`
+  - `view_categories`
+  - `view_discount_codes`
+  - `view_products`
+  - `view_cart_discounts`
+  - `view_stores`
+  - `view_tax_categories`
+  - `view_order_edits`
+  - `view_sessions`
 
 #### 2. commercetools Platform URLs
 
@@ -448,7 +488,7 @@ deployAs:
           description: commercetools project key
           required: true
         - key: CTP_CLIENT_ID
-          description: commercetools client ID with manage_payments, manage_orders, view_sessions, view_api_clients, manage_checkout_payment_intents, introspect_oauth_tokens, manage_types and view_types scopes
+          description: commercetools client ID
           required: true
         - key: CTP_AUTH_URL
           description: commercetools Auth URL
@@ -680,14 +720,29 @@ curl --location 'http://localhost:8080/operations/status' \
 
 Required API Client Scopes:
 
-- `manage_payments` - Payment management
-- `manage_orders` - Order management
-- `view_sessions` - Session viewing
-- `view_api_clients` - API client viewing
-- `manage_checkout_payment_intents` - Checkout payment intents
-- `introspect_oauth_tokens` - OAuth token introspection
-- `manage_types` - Custom type management
-- `view_types` - Custom type viewing
+- **Manage**:
+  - `manage_orders`
+  - `manage_sessions`
+  - `manage_types`
+  - `manage_payments`
+  - `manage_checkout_transactions`
+  - `manage_checkout_payment_intents`
+- **View**:
+  - `view_key_value_documents`
+  - `view_states`
+  - `view_types`
+  - `view_product_selections`
+  - `view_attribute_groups`
+  - `view_shopping_lists`
+  - `view_shipping_methods`
+  - `view_categories`
+  - `view_discount_codes`
+  - `view_products`
+  - `view_cart_discounts`
+  - `view_stores`
+  - `view_tax_categories`
+  - `view_order_edits`
+  - `view_sessions`
 
 ### Environment Variables
 

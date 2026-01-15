@@ -67,7 +67,7 @@ export class Briqpay extends BaseComponent {
     briqpayScript.type = "text/javascript";
     briqpayScript.src = "https://api.briqpay.com/briq.min.js";
     briqpayScript.onload = this.onBriqpayScriptLoad.bind(this);
-    document.querySelector("head").appendChild(briqpayScript);
+    document.head.appendChild(briqpayScript);
   }
 
   private onBriqpayScriptLoad() {
@@ -76,7 +76,7 @@ export class Briqpay extends BaseComponent {
 
   private subscribeToEvents() {
     window._briqpay.subscribe("session_complete", () => {
-      void this.submit();
+      this.submit().catch(() => {});
     });
 
     window._briqpay.subscribe("make_decision", this.handleDecision.bind(this));
@@ -99,8 +99,8 @@ export class Briqpay extends BaseComponent {
     const promiseForResponse = new Promise((resolve) => {
       document.addEventListener(
         "briqpayDecisionResponse",
-        function (e: CustomEvent) {
-          resolve(e.detail);
+        (e: Event) => {
+          resolve((e as CustomEvent).detail);
         },
         { once: true }
       );
@@ -125,7 +125,6 @@ export class Briqpay extends BaseComponent {
     return (
       customDecisionResponse &&
       typeof customDecisionResponse === "object" &&
-      customDecisionResponse !== null &&
       "decision" in customDecisionResponse
     );
   }
@@ -156,9 +155,11 @@ export class Briqpay extends BaseComponent {
   }
 
   private addToDocument(selector: string) {
-    document
-      .querySelector(selector)
-      .insertAdjacentHTML("afterbegin", this._getTemplate());
+    const container = document.querySelector(selector);
+    if (!container) {
+      throw new Error(`Container with selector '${selector}' not found`);
+    }
+    container.insertAdjacentHTML("afterbegin", this._getTemplate());
   }
 
   async submit() {

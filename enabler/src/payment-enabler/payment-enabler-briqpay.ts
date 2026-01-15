@@ -23,24 +23,28 @@ export type BaseOptions = {
   locale?: string;
   snippet: string;
   briqpaySessionId: string;
-  onComplete: (result: PaymentResult) => void;
-  onError: (error: unknown, context?: { paymentReference?: string }) => void;
+  onComplete: (_result: PaymentResult) => void;
+  onError: (_error: unknown, _context?: { paymentReference?: string }) => void;
 };
 
 export class BriqpayPaymentEnabler implements PaymentEnabler {
   setupData: Promise<{ baseOptions: BaseOptions }>;
 
-  private constructor(setupData: Promise<{ baseOptions: BaseOptions }>) {
+  protected constructor(setupData: Promise<{ baseOptions: BaseOptions }>) {
     this.setupData = setupData;
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  static async create(options: EnablerOptions): Promise<BriqpayPaymentEnabler> {
+  static create(options: EnablerOptions): Promise<BriqpayPaymentEnabler> {
+    const setupData = BriqpayPaymentEnabler._Setup(options);
+    return Promise.resolve(new BriqpayPaymentEnabler(setupData));
+  }
+
+  static createSync(options: EnablerOptions): BriqpayPaymentEnabler {
     const setupData = BriqpayPaymentEnabler._Setup(options);
     return new BriqpayPaymentEnabler(setupData);
   }
 
-  private static _Setup = async (
+  protected static _Setup = async (
     options: EnablerOptions
   ): Promise<{ baseOptions: BaseOptions }> => {
     const configResponse = await fetch(options.processorUrl + "/config", {
@@ -79,9 +83,14 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
   ): Promise<PaymentComponentBuilder | never> {
     const { baseOptions } = await this.setupData;
 
-    const supportedMethods = {};
+    const supportedMethods: Record<
+      string,
+      new (baseOptions: BaseOptions) => PaymentComponentBuilder
+    > = {};
 
-    if (!Object.keys(supportedMethods).includes(type)) {
+    const Builder = supportedMethods[type as keyof typeof supportedMethods];
+
+    if (!Builder) {
       throw new Error(
         `Component type not supported: ${type}. Supported types: ${Object.keys(
           supportedMethods
@@ -89,7 +98,7 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
       );
     }
 
-    return new supportedMethods[type](baseOptions);
+    return new Builder(baseOptions);
   }
 
   async createDropinBuilder(
@@ -97,11 +106,15 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
   ): Promise<PaymentDropinBuilder | never> {
     const { baseOptions } = await this.setupData;
 
-    const supportedMethods = {
-      embedded: DropinEmbeddedBuilder,
+    const supportedMethods: Partial<
+      Record<DropinType, new (baseOptions: BaseOptions) => PaymentDropinBuilder>
+    > = {
+      [DropinType.embedded]: DropinEmbeddedBuilder,
     };
 
-    if (!Object.keys(supportedMethods).includes(type)) {
+    const Builder = supportedMethods[type as keyof typeof supportedMethods];
+
+    if (!Builder) {
       throw new Error(
         `Component type not supported: ${type}. Supported types: ${Object.keys(
           supportedMethods
@@ -109,6 +122,13 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
       );
     }
 
-    return new supportedMethods[type](baseOptions);
+    return new Builder(baseOptions);
   }
 }
+
+export type {
+  DropinType,
+  EnablerOptions,
+  PaymentComponentBuilder,
+  PaymentDropinBuilder,
+};

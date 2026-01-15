@@ -123,10 +123,48 @@ export class BriqpayNotificationService {
     }
 
     if (!transactionData) {
-      appLogger.error({ briqpaySessionId, event }, 'Webhook payload missing mandatory transaction data')
+      appLogger.error({ briqpaySessionId, event, data }, 'Webhook payload missing mandatory transaction data')
       throw new Error('Webhook processing failed: Missing transaction data in payload')
     }
 
+    const briqpaySession = this.constructSessionFromPayload(
+      briqpaySessionId,
+      transactionData,
+      event,
+      briqpayCaptureId,
+      briqpayRefundId,
+    )
+
+    // Convert trusted webhook status to the format expected by existing handlers
+    const trustedStatuses = this.buildTrustedStatuses(status, event, briqpayCaptureId, briqpayRefundId)
+
+    // Find the payment
+    const payment = await this.ctPaymentService.findPaymentsByInterfaceId({
+      interfaceId: briqpaySessionId,
+    })
+
+    // Reuse existing routing logic with trusted statuses
+    await this.routeEventToHandler(
+      event,
+      payment,
+      briqpaySession,
+      trustedStatuses,
+      briqpayCaptureId,
+      briqpayRefundId,
+      cartId,
+    )
+  }
+
+  /**
+   * Constructs a partial Briqpay session object from the webhook payload.
+   */
+  private constructSessionFromPayload(
+    briqpaySessionId: string,
+    transactionData: NonNullable<NotificationRequestSchemaDTO['transaction']>,
+    event: BRIQPAY_WEBHOOK_EVENT,
+    briqpayCaptureId?: string,
+    briqpayRefundId?: string,
+  ): MediumBriqpayResponse {
     const briqpaySession: MediumBriqpayResponse = {
       sessionId: briqpaySessionId,
       htmlSnippet: '', // Not needed for notifications
@@ -202,24 +240,7 @@ export class BriqpayNotificationService {
       }
     }
 
-    // Convert trusted webhook status to the format expected by existing handlers
-    const trustedStatuses = this.buildTrustedStatuses(status, event, briqpayCaptureId, briqpayRefundId)
-
-    // Find the payment
-    const payment = await this.ctPaymentService.findPaymentsByInterfaceId({
-      interfaceId: briqpaySessionId,
-    })
-
-    // Reuse existing routing logic with trusted statuses
-    await this.routeEventToHandler(
-      event,
-      payment,
-      briqpaySession,
-      trustedStatuses,
-      briqpayCaptureId,
-      briqpayRefundId,
-      cartId,
-    )
+    return briqpaySession
   }
 
   /**

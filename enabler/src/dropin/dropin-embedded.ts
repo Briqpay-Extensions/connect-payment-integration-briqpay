@@ -35,8 +35,8 @@ declare global {
   interface Window {
     _briqpay: {
       subscribe: (
-        event: string,
-        callback: (data: Record<string, unknown>) => void
+        _event: string,
+        _callback: (_data: Record<string, unknown>) => void
       ) => void;
       v3: {
         suspend: () => void;
@@ -61,7 +61,7 @@ export class DropinComponents implements DropinComponent {
   }
 
   init(): void {
-    void this.dropinOptions.onDropinReady?.();
+    this.dropinOptions.onDropinReady?.().catch(() => {});
   }
 
   mount(selector: string) {
@@ -74,7 +74,7 @@ export class DropinComponents implements DropinComponent {
     briqpayScript.type = "text/javascript";
     briqpayScript.src = "https://api.briqpay.com/briq.min.js";
     briqpayScript.onload = this.onBriqpayScriptLoad.bind(this);
-    document.querySelector("head").appendChild(briqpayScript);
+    document.head.appendChild(briqpayScript);
   }
   private onBriqpayScriptLoad() {
     this.subscribeToEvents();
@@ -82,7 +82,7 @@ export class DropinComponents implements DropinComponent {
 
   private subscribeToEvents() {
     window._briqpay.subscribe("session_complete", () => {
-      void this.submit();
+      this.submit().catch(() => {});
     });
 
     window._briqpay.subscribe("make_decision", this.handleDecision.bind(this));
@@ -110,8 +110,8 @@ export class DropinComponents implements DropinComponent {
     const promiseForResponse = new Promise((resolve) => {
       document.addEventListener(
         "briqpayDecisionResponse",
-        function (e: CustomEvent) {
-          resolve(e.detail);
+        function (e: Event) {
+          resolve((e as CustomEvent).detail);
         },
         { once: true }
       );
@@ -136,7 +136,6 @@ export class DropinComponents implements DropinComponent {
     return (
       customDecisionResponse &&
       typeof customDecisionResponse === "object" &&
-      customDecisionResponse !== null &&
       "decision" in customDecisionResponse
     );
   }
@@ -167,9 +166,11 @@ export class DropinComponents implements DropinComponent {
   }
 
   private addToDocument(selector: string) {
-    document
-      .querySelector(selector)
-      .insertAdjacentHTML("afterbegin", this.baseOptions.snippet);
+    const container = document.querySelector(selector);
+    if (!container) {
+      throw new Error(`Container with selector '${selector}' not found`);
+    }
+    container.insertAdjacentHTML("afterbegin", this.baseOptions.snippet);
   }
 
   async submit(): Promise<void> {

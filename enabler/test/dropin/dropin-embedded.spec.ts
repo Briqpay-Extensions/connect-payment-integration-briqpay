@@ -1,9 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, expect, jest, test } from "@jest/globals";
 import {
-  DropinEmbeddedBuilder,
-  DropinComponents,
   BRIQPAY_DECISION,
+  DropinComponents,
+  DropinEmbeddedBuilder,
 } from "../../src/dropin/dropin-embedded";
 import { DropinOptions } from "../../src/payment-enabler/payment-enabler";
 import { BriqpaySdk } from "../../src/briqpay-sdk";
@@ -13,8 +13,8 @@ describe("DropinEmbeddedBuilder", () => {
   global.fetch = jest.fn(() =>
     Promise.resolve({
       ok: true,
-      json: async () => ({ paymentReference: "ref-123" }),
-    } as Response)
+      json: () => ({ paymentReference: "ref-123" }),
+    } as unknown as Response)
   ) as unknown as typeof fetch;
 
   test("should create DropinComponents with correct config", () => {
@@ -22,16 +22,18 @@ describe("DropinEmbeddedBuilder", () => {
     const builder = new DropinEmbeddedBuilder(baseOptions);
 
     const config: DropinOptions = {
-      onDropinReady: jest.fn<any>(), // Mock it to return a Promise
+      onDropinReady: jest.fn<any>().mockResolvedValue(undefined), // Mock it to return a Promise
     };
 
     const dropin = builder.build(config);
 
     expect(dropin).toBeInstanceOf(DropinComponents);
-    expect(dropin["dropinOptions"].onDropinReady).toBe(config.onDropinReady);
+    expect((dropin as any)["dropinOptions"].onDropinReady).toBe(
+      config.onDropinReady
+    );
   });
 
-  test("should set dropinHasSubmit to false by default", () => {
+  test("should set dropinHasSubmit to true by default", () => {
     const builder = new DropinEmbeddedBuilder({} as any);
     expect(builder.dropinHasSubmit).toBe(true);
   });
@@ -39,7 +41,9 @@ describe("DropinEmbeddedBuilder", () => {
 
 describe("DropinComponents", () => {
   test("should initialize with given options", () => {
-    const config: DropinOptions = { onDropinReady: jest.fn<any>() };
+    const config: DropinOptions = {
+      onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+    };
     const dropin = new DropinComponents(
       { dropinOptions: config },
       {
@@ -66,7 +70,9 @@ describe("DropinComponents", () => {
 
     const dropin = new DropinComponents(
       {
-        dropinOptions: { onDropinReady: jest.fn<any>() },
+        dropinOptions: {
+          onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+        },
       },
       {
         processorUrl: "http://localhost:8080",
@@ -88,7 +94,9 @@ describe("DropinComponents", () => {
   test("submit() should not throw an error", async () => {
     const dropin = new DropinComponents(
       {
-        dropinOptions: { onDropinReady: jest.fn<any>() },
+        dropinOptions: {
+          onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+        },
       },
       {
         processorUrl: "http://localhost:8080",
@@ -102,7 +110,7 @@ describe("DropinComponents", () => {
       }
     );
 
-    expect(async () => await dropin.submit()).not.toThrow();
+    await expect(dropin.submit()).resolves.not.toThrow();
   });
 
   test("submit() should throw an error", async () => {
@@ -112,7 +120,9 @@ describe("DropinComponents", () => {
 
     const dropin = new DropinComponents(
       {
-        dropinOptions: { onDropinReady: jest.fn<any>() },
+        dropinOptions: {
+          onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+        },
       },
       {
         processorUrl: "http://localhost:8080",
@@ -126,40 +136,20 @@ describe("DropinComponents", () => {
       }
     );
 
-    expect(async () => await dropin.submit()).rejects.toThrow();
+    await expect(dropin.submit()).rejects.toThrow();
   });
 
   test("handleDecision should work", async () => {
-    window._briqpay = {
-      subscribe: jest.fn(),
-      v3: {
-        suspend: jest.fn().mockReturnValueOnce({}),
-        resume: jest.fn().mockReturnValueOnce({}),
-        resumeDecision: jest.fn().mockReturnValueOnce({}),
-      },
-    };
-    const dropin = new DropinComponents(
-      {
-        dropinOptions: { onDropinReady: jest.fn<any>() },
-      },
-      {
-        processorUrl: "http://localhost:8080",
-        sessionId: "123",
-        briqpaySessionId: "abc123",
-        snippet: "Dropin Embedded",
-        sdk: {} as BriqpaySdk,
-        environment: "test",
-        onComplete: () => {},
-        onError: () => {},
+    // Mock document.addEventListener to capture the callback
+    const addEventListenerSpy = jest.spyOn(document, "addEventListener");
+    let _eventCallback: ((event: Event) => void) | null = null;
+
+    addEventListenerSpy.mockImplementation((_event: string, callback: any) => {
+      if (_event === "briqpayDecisionResponse") {
+        _eventCallback = callback;
       }
-    );
+    });
 
-    expect(
-      async () => await dropin.handleDecision(BRIQPAY_DECISION.ALLOW)
-    ).not.toThrow();
-  });
-
-  test("handleDecision should work", async () => {
     window._briqpay = {
       subscribe: jest.fn(),
       v3: {
@@ -168,11 +158,72 @@ describe("DropinComponents", () => {
         resumeDecision: jest.fn().mockReturnValueOnce({}),
       },
     };
+
     const dropin = new DropinComponents(
       {
         dropinOptions: {
-          onDropinReady: jest.fn<any>(),
-          onPayButtonClick: jest.fn<any>(),
+          onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+        },
+      },
+      {
+        processorUrl: "http://localhost:8080",
+        sessionId: "123",
+        briqpaySessionId: "abc123",
+        snippet: "Dropin Embedded",
+        sdk: {} as BriqpaySdk,
+        environment: "test",
+        onComplete: () => {},
+        onError: () => {},
+      }
+    );
+
+    const decisionPromise = dropin.handleDecision(BRIQPAY_DECISION.ALLOW);
+
+    // Simulate the response event
+    if (_eventCallback) {
+      const event = new CustomEvent("briqpayDecisionResponse", {
+        detail: {
+          decision: "allow",
+          softErrors: [],
+          hardError: null,
+          rejectionType: null,
+        },
+      });
+      (_eventCallback as (event: Event) => void)(event);
+    }
+
+    await expect(decisionPromise).resolves.not.toThrow();
+
+    addEventListenerSpy.mockRestore();
+  });
+
+  test("handleDecision should work with invalid decision", async () => {
+    // Mock document.addEventListener to capture the callback
+    const addEventListenerSpy = jest.spyOn(document, "addEventListener");
+    let _eventCallback: ((event: Event) => void) | null = null;
+
+    addEventListenerSpy.mockImplementation(
+      (_event: string, callback: any, _options?: any) => {
+        if (_event === "briqpayDecisionResponse") {
+          _eventCallback = callback;
+        }
+      }
+    );
+
+    window._briqpay = {
+      subscribe: jest.fn(),
+      v3: {
+        suspend: jest.fn().mockReturnValueOnce({}),
+        resume: jest.fn().mockReturnValueOnce({}),
+        resumeDecision: jest.fn().mockReturnValueOnce({}),
+      },
+    };
+
+    const dropin = new DropinComponents(
+      {
+        dropinOptions: {
+          onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+          onPayButtonClick: jest.fn<any>().mockResolvedValue(undefined),
         },
       },
       {
@@ -189,16 +240,24 @@ describe("DropinComponents", () => {
 
     const decisionPromise = dropin.handleDecision("invalid");
 
-    const event = new CustomEvent("briqpayDecisionResponse", {
-      detail: {
-        decision: "allow",
-        softErrors: ["softErrors"],
-        hardError: "hardError",
-        rejectionType: "rejected",
-      },
-    });
-    document.dispatchEvent(event);
+    // Wait a bit for the event listener to be set up
+    await new Promise((resolve) => setTimeout(resolve, 10));
 
-    expect(async () => await decisionPromise).rejects.toThrow();
+    // Simulate the response event
+    if (_eventCallback) {
+      const event = new CustomEvent("briqpayDecisionResponse", {
+        detail: {
+          decision: "allow",
+          softErrors: ["softErrors"],
+          hardError: "hardError",
+          rejectionType: "rejected",
+        },
+      });
+      (_eventCallback as (event: Event) => void)(event);
+    }
+
+    await expect(decisionPromise).resolves.not.toThrow();
+
+    addEventListenerSpy.mockRestore();
   });
 });

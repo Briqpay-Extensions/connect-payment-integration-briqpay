@@ -192,14 +192,29 @@ Copy `.env.template` to `.env` and configure the following variables:
 
 The API client must have the following scopes:
 
-- `manage_payments`
-- `view_sessions`
-- `view_api_clients`
-- `manage_orders`
-- `introspect_oauth_tokens`
-- `manage_checkout_payment_intents`
-- `manage_types`
-- `view_types`
+- **Manage**:
+  - `manage_orders`
+  - `manage_sessions`
+  - `manage_types`
+  - `manage_payments`
+  - `manage_checkout_transactions`
+  - `manage_checkout_payment_intents`
+- **View**:
+  - `view_key_value_documents`
+  - `view_states`
+  - `view_types`
+  - `view_product_selections`
+  - `view_attribute_groups`
+  - `view_shopping_lists`
+  - `view_shipping_methods`
+  - `view_categories`
+  - `view_discount_codes`
+  - `view_products`
+  - `view_cart_discounts`
+  - `view_stores`
+  - `view_tax_categories`
+  - `view_order_edits`
+  - `view_sessions`
 
 ## API Endpoints
 
