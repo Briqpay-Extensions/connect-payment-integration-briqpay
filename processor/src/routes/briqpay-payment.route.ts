@@ -14,6 +14,7 @@ import {
 } from '../dtos/briqpay-payment.dto'
 import { BriqpayPaymentService } from '../services/briqpay-payment.service'
 import { appLogger } from '../payment-sdk'
+import { isHmacVerificationEnabled } from '../libs/briqpay/webhook-verification'
 
 type PaymentRoutesOptions = {
   paymentService: BriqpayPaymentService
@@ -100,7 +101,25 @@ export const paymentRoutes = (fastify: FastifyInstance, opts: FastifyPluginOptio
     '/notifications',
     {
       // Authentication will be done through HMAC verification if BRIQPAY_WEBHOOK_SECRET is configured
-      preHandler: [],
+      preHandler: [
+        async (request, reply) => {
+          if (!isHmacVerificationEnabled()) {
+            appLogger.error({}, 'Webhook verification is not configured (missing BRIQPAY_WEBHOOK_SECRET)')
+            return reply.status(503).send('Webhook verification is not configured')
+          }
+
+          const signatureHeader = request.headers['x-briq-signature'] as string | undefined
+          const rawBody = (request as unknown as { rawBody?: string }).rawBody
+
+          if (!signatureHeader || !rawBody) {
+            appLogger.warn(
+              { hasSignature: !!signatureHeader, hasRawBody: !!rawBody },
+              'Webhook signature header or raw body missing',
+            )
+            return reply.status(401).send('Webhook signature required')
+          }
+        },
+      ],
     },
     async (request, reply) => {
       // Get the signature header for HMAC verification (if configured)

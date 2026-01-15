@@ -71,7 +71,7 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
 
    - `BRIQPAY_USERNAME`
    - `BRIQPAY_SECRET`
-   - `BRIQPAY_WEBHOOK_SECRET` - **Mandatory** for secure webhook processing (HMAC verification)
+   - `BRIQPAY_WEBHOOK_SECRET` - **Mandatory** for secure webhook processing (HMAC verification) (get your webhook secret at https://app.briqpay.com/dashboard/developers/webhooks)
    - `BRIQPAY_BASE_URL`
    - `BRIQPAY_TERMS_URL`
    - `BRIQPAY_CONFIRMATION_URL`
@@ -503,11 +503,11 @@ deployAs:
           required: true
           default: https://session.europe-west1.gcp.commercetools.com
         - key: CTP_JWKS_URL
-          description: JWKs url for JWT validation
+          description: JWKs url (example - https://mc-api.europe-west1.gcp.commercetools.com/.well-known/jwks.json)
           required: true
           default: https://mc-api.europe-west1.gcp.commercetools.com/.well-known/jwks.json
         - key: CTP_JWT_ISSUER
-          description: JWT Issuer for jwt validation
+          description: JWT Issuer for jwt validation (example - https://mc-api.europe-west1.gcp.commercetools.com)
           required: true
           default: https://mc-api.europe-west1.gcp.commercetools.com
         - key: BRIQPAY_USERNAME
@@ -572,7 +572,7 @@ deployAs:
           required: false
           default: briqpay-transaction-data-psp-integration-name
         - key: ALLOWED_ORIGINS
-          description: Comma-separated list of allowed CORS origins
+          description: Comma-separated list of allowed CORS origins (e.g., https://your-store.com,https://admin.your-store.com)
           required: false
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
@@ -580,6 +580,9 @@ deployAs:
           required: true
         - key: BRIQPAY_SECRET
           description: Your Briqpay API secret
+          required: true
+        - key: BRIQPAY_WEBHOOK_SECRET
+          description: Briqpay webhook signing secret for HMAC verification. This is required for secure webhook processing using HMAC-SHA256 signatures.
           required: true
 ```
 

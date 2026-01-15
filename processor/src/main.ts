@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import { validateEnvironment } from './config/env-validation'
+import { appLogger } from './payment-sdk'
 import { setupFastify } from './server/server'
 
 void (async () => {
@@ -8,8 +9,7 @@ void (async () => {
   try {
     validateEnvironment()
   } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('Environment validation failed:', error)
+    appLogger.error({ error: error instanceof Error ? error.message : error }, 'Environment validation failed')
     process.exit(1)
   }
 

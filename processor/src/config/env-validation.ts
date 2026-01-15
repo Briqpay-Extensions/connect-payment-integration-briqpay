@@ -74,6 +74,11 @@ const REQUIRED_ENV_VARS: EnvVarConfig[] = [
     validator: (value) => value.startsWith('https://'),
     errorMessage: 'BRIQPAY_BASE_URL must use HTTPS',
   },
+  {
+    name: 'BRIQPAY_WEBHOOK_SECRET',
+    required: true,
+    sensitive: true,
+  },
 
   // URLs
   {
@@ -102,13 +107,6 @@ const OPTIONAL_ENV_VARS: EnvVarConfig[] = [
       return origins.every(isSecureOrLocalUrl)
     },
     errorMessage: 'ALLOWED_ORIGINS must be HTTPS URLs (HTTP only allowed for localhost/127.0.0.1/private network IPs)',
-  },
-
-  // Briqpay webhook HMAC verification (optional but recommended)
-  {
-    name: 'BRIQPAY_WEBHOOK_SECRET',
-    required: false,
-    sensitive: true,
   },
 ]
 

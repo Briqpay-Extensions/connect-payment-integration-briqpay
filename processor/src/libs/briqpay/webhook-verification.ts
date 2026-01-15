@@ -16,6 +16,40 @@ export interface WebhookVerificationResult {
   error?: string
 }
 
+const MAX_RECENT_SIGNATURES = 5000
+const recentSignatures = new Map<string, number>()
+
+function buildReplayKey(timestamp: string, signature: string): string {
+  return crypto.createHash('sha256').update(`${timestamp}.${signature}`).digest('hex')
+}
+
+function cleanupReplayCache(now: number, toleranceMs: number): void {
+  for (const [key, seenAt] of recentSignatures) {
+    if (now - seenAt > toleranceMs) {
+      recentSignatures.delete(key)
+    }
+  }
+}
+
+function isReplayDetected(signatureKey: string, timestampMs: number, now: number, toleranceMs: number): boolean {
+  cleanupReplayCache(now, toleranceMs)
+
+  if (recentSignatures.has(signatureKey)) {
+    return true
+  }
+
+  recentSignatures.set(signatureKey, timestampMs)
+
+  if (recentSignatures.size > MAX_RECENT_SIGNATURES) {
+    const oldestKey = recentSignatures.keys().next().value as string | undefined
+    if (oldestKey) {
+      recentSignatures.delete(oldestKey)
+    }
+  }
+
+  return false
+}
+
 /**
  * Parses the x-briq-signature header.
  * Format: t=<timestamp>,s1=<signature>
@@ -139,6 +173,12 @@ export function verifyBriqpayWebhook(
     if (!isValid) {
       appLogger.warn({}, 'Webhook signature mismatch')
       return { isValid: false, error: 'Signature validation failed' }
+    }
+
+    const replayKey = buildReplayKey(timestamp, receivedSignature)
+    if (isReplayDetected(replayKey, timestampMs, now, toleranceMs)) {
+      appLogger.warn({ timestampMs }, 'Webhook replay detected')
+      return { isValid: false, error: 'Replay detected' }
     }
 
     appLogger.info({ timestampMs }, 'Webhook signature verified successfully')

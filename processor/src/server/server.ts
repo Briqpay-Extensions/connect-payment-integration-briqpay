@@ -29,9 +29,22 @@ export const setupFastify = async () => {
   // Enable CORS with secure configuration
   // SECURITY: Restrict origins in production, allow all only in development
   const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',').map((o) => o.trim()) || []
+  const hasAllowedOrigins = allowedOrigins.length > 0
   await server.register(cors, {
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Correlation-ID', 'X-Request-ID', 'X-Session-ID'],
-    origin: allowedOrigins.length > 0 ? allowedOrigins : true, // true allows all in dev, configure ALLOWED_ORIGINS in prod
+    origin: (origin, callback) => {
+      if (!origin) {
+        callback(null, true)
+        return
+      }
+
+      if (!hasAllowedOrigins) {
+        callback(null, false)
+        return
+      }
+
+      callback(null, allowedOrigins.includes(origin))
+    },
     credentials: true,
   })
 
