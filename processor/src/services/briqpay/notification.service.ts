@@ -87,10 +87,13 @@ export class BriqpayNotificationService {
       sessionId: briqpaySessionId,
       event,
       status,
-      captureId: briqpayCaptureId,
-      refundId: briqpayRefundId,
+      captureId: captureIdFromPayload,
+      refundId: refundIdFromPayload,
       cartId,
     } = data
+
+    const briqpayCaptureId = captureIdFromPayload ?? data.capture?.captureId
+    const briqpayRefundId = refundIdFromPayload ?? data.refund?.refundId
 
     const secret = getWebhookSecret()
     // Secret presence is already checked in processNotification, but TypeScript needs this
@@ -114,13 +117,13 @@ export class BriqpayNotificationService {
     )
 
     // 1. Mandatory transaction data from payload
-    let transactionData = data.transaction
-
-    if (!transactionData && event === BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS && data.capture?.transaction) {
-      transactionData = data.capture.transaction
-    } else if (!transactionData && event === BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS && data.refund?.transaction) {
-      transactionData = data.refund.transaction
-    }
+    const transactionData = this.extractTransactionDataFromPayload(
+      data,
+      event,
+      briqpayCaptureId,
+      briqpayRefundId,
+      status,
+    )
 
     if (!transactionData) {
       appLogger.error({ briqpaySessionId, event, data }, 'Webhook payload missing mandatory transaction data')
@@ -153,6 +156,139 @@ export class BriqpayNotificationService {
       briqpayRefundId,
       cartId,
     )
+  }
+
+  private extractTransactionDataFromPayload(
+    data: NotificationRequestSchemaDTO,
+    event: BRIQPAY_WEBHOOK_EVENT,
+    briqpayCaptureId?: string,
+    briqpayRefundId?: string,
+    webhookStatus?: BRIQPAY_WEBHOOK_STATUS,
+  ): NotificationRequestSchemaDTO['transaction'] | undefined {
+    if (data.transaction) {
+      return data.transaction
+    }
+
+    if (event === BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS) {
+      if (data.capture?.transaction) {
+        return data.capture.transaction
+      }
+
+      return this.mapTransactionFromCapture(data.capture, briqpayCaptureId, webhookStatus)
+    }
+
+    if (event === BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS) {
+      if (data.refund?.transaction) {
+        return data.refund.transaction
+      }
+
+      return this.mapTransactionFromRefund(data.refund, briqpayRefundId, webhookStatus)
+    }
+
+    return undefined
+  }
+
+  private getValidatedTransactionFields(fields: {
+    amountIncVat?: number
+    currency?: string
+    status?: string
+    transactionId?: string
+  }): { amountIncVat: number; currency: string; status: string; transactionId: string } | undefined {
+    const { amountIncVat, currency, status, transactionId } = fields
+
+    if (typeof amountIncVat !== 'number') {
+      return undefined
+    }
+
+    if (!currency || typeof currency !== 'string') {
+      return undefined
+    }
+
+    if (!status || typeof status !== 'string') {
+      return undefined
+    }
+
+    if (!transactionId || typeof transactionId !== 'string') {
+      return undefined
+    }
+
+    return {
+      amountIncVat,
+      currency,
+      status,
+      transactionId,
+    }
+  }
+
+  private mapTransactionFromCapture(
+    capture: NotificationRequestSchemaDTO['capture'],
+    briqpayCaptureId?: string,
+    webhookStatus?: BRIQPAY_WEBHOOK_STATUS,
+  ): NotificationRequestSchemaDTO['transaction'] | undefined {
+    if (!capture) {
+      return undefined
+    }
+
+    const transactionId = capture.transactionId ?? capture.parentTransactionId ?? capture.captureId ?? briqpayCaptureId
+    const status = capture.status ?? webhookStatus
+    const essentials = this.getValidatedTransactionFields({
+      amountIncVat: capture.amountIncVat,
+      currency: capture.currency,
+      status,
+      transactionId,
+    })
+
+    if (!essentials) {
+      return undefined
+    }
+
+    return {
+      ...essentials,
+      amountExVat: capture.amountExVat,
+      createdAt: capture.createdAt,
+      reservationId: capture.reservationId,
+      pspId: capture.pspId,
+      pspDisplayName: capture.pspDisplayName,
+      pspIntegrationName: capture.pspIntegrationName,
+      email: capture.email,
+      phoneNumber: capture.phoneNumber,
+    }
+  }
+
+  private mapTransactionFromRefund(
+    refund: NotificationRequestSchemaDTO['refund'],
+    briqpayRefundId?: string,
+    webhookStatus?: BRIQPAY_WEBHOOK_STATUS,
+  ): NotificationRequestSchemaDTO['transaction'] | undefined {
+    if (!refund) {
+      return undefined
+    }
+
+    const transactionId =
+      refund.transactionId ?? refund.parentTransactionId ?? refund.parentCaptureId ?? refund.refundId ?? briqpayRefundId
+    const status = refund.status ?? webhookStatus
+    const essentials = this.getValidatedTransactionFields({
+      amountIncVat: refund.amountIncVat,
+      currency: refund.currency,
+      status,
+      transactionId,
+    })
+
+    if (!essentials) {
+      return undefined
+    }
+
+    return {
+      ...essentials,
+      amountExVat: refund.amountExVat,
+      createdAt: refund.createdAt,
+      reservationId: refund.reservationId,
+      pspId: refund.pspId,
+      pspDisplayName: refund.pspDisplayName,
+      pspIntegrationName: refund.pspIntegrationName,
+      email: refund.email,
+      phoneNumber: refund.phoneNumber,
+    }
   }
 
   /**

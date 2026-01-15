@@ -121,6 +121,54 @@ const NotificationTransactionSchema = Type.Object({
   ),
 })
 
+const NotificationCaptureSchema = Type.Object({
+  captureId: Type.Optional(
+    Type.String({
+      maxLength: 128,
+      pattern: SessionIdPattern.source,
+    }),
+  ),
+  transactionId: Type.Optional(Type.String()),
+  status: Type.Optional(Type.String()),
+  amountIncVat: Type.Optional(Type.Number()),
+  amountExVat: Type.Optional(Type.Number()),
+  currency: Type.Optional(Type.String()),
+  createdAt: Type.Optional(Type.String()),
+  parentTransactionId: Type.Optional(Type.String()),
+  reservationId: Type.Optional(Type.String()),
+  autoCaptured: Type.Optional(Type.Boolean()),
+  pspId: Type.Optional(Type.String()),
+  pspDisplayName: Type.Optional(Type.String()),
+  pspIntegrationName: Type.Optional(Type.String()),
+  email: Type.Optional(Type.String()),
+  phoneNumber: Type.Optional(Type.String()),
+  transaction: Type.Optional(NotificationTransactionSchema),
+})
+
+const NotificationRefundSchema = Type.Object({
+  refundId: Type.Optional(
+    Type.String({
+      maxLength: 128,
+      pattern: SessionIdPattern.source,
+    }),
+  ),
+  transactionId: Type.Optional(Type.String()),
+  status: Type.Optional(Type.String()),
+  amountIncVat: Type.Optional(Type.Number()),
+  amountExVat: Type.Optional(Type.Number()),
+  currency: Type.Optional(Type.String()),
+  createdAt: Type.Optional(Type.String()),
+  parentCaptureId: Type.Optional(Type.String()),
+  parentTransactionId: Type.Optional(Type.String()),
+  reservationId: Type.Optional(Type.String()),
+  pspId: Type.Optional(Type.String()),
+  pspDisplayName: Type.Optional(Type.String()),
+  pspIntegrationName: Type.Optional(Type.String()),
+  email: Type.Optional(Type.String()),
+  phoneNumber: Type.Optional(Type.String()),
+  transaction: Type.Optional(NotificationTransactionSchema),
+})
+
 export const NotificationRequestSchema = Type.Object({
   event: Type.Enum(BRIQPAY_WEBHOOK_EVENT),
   status: Type.Enum(BRIQPAY_WEBHOOK_STATUS),
@@ -150,28 +198,8 @@ export const NotificationRequestSchema = Type.Object({
   autoCaptured: Type.Optional(Type.Boolean()),
   isPreExistingCapture: Type.Optional(Type.Boolean()),
   transaction: Type.Optional(NotificationTransactionSchema),
-  capture: Type.Optional(
-    Type.Object({
-      captureId: Type.Optional(
-        Type.String({
-          maxLength: 128,
-          pattern: SessionIdPattern.source,
-        }),
-      ),
-      transaction: Type.Optional(NotificationTransactionSchema),
-    }),
-  ),
-  refund: Type.Optional(
-    Type.Object({
-      refundId: Type.Optional(
-        Type.String({
-          maxLength: 128,
-          pattern: SessionIdPattern.source,
-        }),
-      ),
-      transaction: Type.Optional(NotificationTransactionSchema),
-    }),
-  ),
+  capture: Type.Optional(NotificationCaptureSchema),
+  refund: Type.Optional(NotificationRefundSchema),
 })
 
 export type PaymentRequestSchemaDTO = Static<typeof PaymentRequestSchema>
