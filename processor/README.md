@@ -195,27 +195,27 @@ The API client must have the following scopes:
 > Please refer to the [commercetools documentation regarding scopes](https://docs.commercetools.com/api/scopes), names may change and names might be different from what you see in the GUI.
 
 - **Manage**:
-  - `manage_orders:briqpay-plugin`
-  - `manage_sessions:briqpay-plugin`
-  - `manage_types:briqpay-plugin`
-  - `manage_payments:briqpay-plugin`
-  - `manage_checkout_transactions:briqpay-plugin`
-  - `manage_checkout_payment_intents:briqpay-plugin`
-  - `manage_key_value_documents:briqpay-plugin`
+  - `manage_orders`
+  - `manage_sessions`
+  - `manage_types`
+  - `manage_payments`
+  - `manage_checkout_transactions`
+  - `manage_checkout_payment_intents`
+  - `manage_key_value_documents`
 - **View**:
-  - `view_key_value_documents:briqpay-plugin` (View Custom Objects)
-  - `view_states:briqpay-plugin`
-  - `view_product_selections:briqpay-plugin`
-  - `view_attribute_groups:briqpay-plugin`
-  - `view_shopping_lists:briqpay-plugin`
-  - `view_shipping_methods:briqpay-plugin`
-  - `view_categories:briqpay-plugin`
-  - `view_discount_codes:briqpay-plugin`
-  - `view_products:briqpay-plugin`
-  - `view_cart_discounts:briqpay-plugin`
-  - `view_stores:briqpay-plugin`
-  - `view_tax_categories:briqpay-plugin`
-  - `view_order_edits:briqpay-plugin`
+  - `view_key_value_documents` (View Custom Objects)
+  - `view_states`
+  - `view_product_selections`
+  - `view_attribute_groups`
+  - `view_shopping_lists`
+  - `view_shipping_methods`
+  - `view_categories`
+  - `view_discount_codes`
+  - `view_products`
+  - `view_cart_discounts`
+  - `view_stores`
+  - `view_tax_categories`
+  - `view_order_edits`
 
 ## API Endpoints
 

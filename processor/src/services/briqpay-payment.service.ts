@@ -131,6 +131,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
             'introspect_oauth_tokens',
             'manage_checkout_payment_intents',
             'manage_types',
+            'manage_checkout_sessions',
           ],
           ctAuthorizationService: paymentSDK.ctAuthorizationService,
           projectKey: getConfig().projectKey,
