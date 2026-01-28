@@ -14,6 +14,33 @@ function toFieldDefinition(field: BriqpayFieldDefinition) {
 }
 
 /**
+ * Wraps an async operation with proper error logging.
+ * Logs the error with appLogger before re-throwing so it appears in CT dashboard.
+ */
+async function withErrorLogging<T>(
+  operation: () => Promise<T>,
+  context: { action: string; key?: string; typeId?: string },
+): Promise<T> {
+  try {
+    return await operation()
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    const errorStack = error instanceof Error ? error.stack : undefined
+
+    appLogger.error(
+      {
+        ...context,
+        error: errorMessage,
+        stack: errorStack,
+      },
+      `Failed to ${context.action}: ${errorMessage}`,
+    )
+
+    throw error
+  }
+}
+
+/**
  * Finds a custom type by key AND resourceTypeId.
  *
  * In commercetools, the unique identifier for a Type is the combination of `key` + `resourceTypeIds`,
@@ -28,50 +55,109 @@ function toFieldDefinition(field: BriqpayFieldDefinition) {
  * @returns The matching Type if found, null otherwise
  */
 async function findTypeByKeyAndResourceType(key: string, resourceTypeId: string): Promise<Type | null> {
-  const response = await apiClient
-    .types()
-    .get({
-      queryArgs: {
-        where: `key="${key}" and resourceTypeIds contains "${resourceTypeId}"`,
-        limit: 1,
-      },
-    })
-    .execute()
+  appLogger.info(
+    { key, resourceTypeId },
+    `Searching for custom type with key "${key}" and resourceTypeId "${resourceTypeId}"`,
+  )
 
-  return (response.body.results[0] ?? null) as Type | null
+  return withErrorLogging(
+    async () => {
+      const response = await apiClient
+        .types()
+        .get({
+          queryArgs: {
+            where: `key="${key}" and resourceTypeIds contains "${resourceTypeId}"`,
+            limit: 1,
+          },
+        })
+        .execute()
+
+      const foundType = response.body.results[0] ?? null
+
+      if (foundType) {
+        appLogger.info(
+          { key, resourceTypeId, typeId: foundType.id, foundResourceTypeIds: foundType.resourceTypeIds },
+          `Found custom type with id ${foundType.id} matching key "${key}" and resourceTypeId "${resourceTypeId}"`,
+        )
+      } else {
+        appLogger.info(
+          { key, resourceTypeId },
+          `No custom type found with key "${key}" and resourceTypeId "${resourceTypeId}"`,
+        )
+      }
+
+      return foundType as Type | null
+    },
+    { action: 'find type by key and resourceTypeId', key },
+  )
 }
 
 async function createType(key: string): Promise<Type> {
-  const response = await apiClient
-    .types()
-    .post({
-      body: {
-        key,
-        name: {
-          en: 'Briqpay Data',
-        },
-        resourceTypeIds: ['order'],
-        fieldDefinitions: briqpayFieldDefinitions.map(toFieldDefinition),
-      },
-    })
-    .execute()
-  const customType = response.body
+  const fieldDefinitions = briqpayFieldDefinitions.map(toFieldDefinition)
 
-  if (!customType) {
-    throw new Error(`Custom type with key ${key} was not created`)
-  }
+  appLogger.info(
+    { key, resourceTypeIds: ['order'], fieldCount: fieldDefinitions.length },
+    `Creating new custom type with key "${key}" for resourceTypeId "order"`,
+  )
 
-  return customType as Type
+  return withErrorLogging(
+    async () => {
+      const response = await apiClient
+        .types()
+        .post({
+          body: {
+            key,
+            name: {
+              en: 'Briqpay Data',
+            },
+            resourceTypeIds: ['order'],
+            fieldDefinitions,
+          },
+        })
+        .execute()
+
+      const customType = response.body
+
+      if (!customType) {
+        throw new Error(`Custom type with key ${key} was not created - empty response body`)
+      }
+
+      appLogger.info(
+        { key, typeId: customType.id, version: customType.version },
+        `Successfully created custom type with id ${customType.id} (key: ${key})`,
+      )
+
+      return customType as Type
+    },
+    { action: 'create custom type', key },
+  )
 }
 
+/**
+ * Adds missing field definitions to an existing custom type.
+ *
+ * IMPORTANT: Uses `.withId({ ID })` instead of `.withKey({ key })` because in commercetools,
+ * the key alone is NOT unique - it's the combination of `key + resourceTypeIds` that makes
+ * a type unique. Using `.withKey()` could accidentally update the wrong type if another
+ * connector (e.g., ingrid-shipping) uses the same key for a different resource type.
+ *
+ * @param customType - The custom type to update (must have a valid id)
+ * @param missingFields - The field definitions to add
+ * @returns The updated custom type
+ */
 async function addMissingFieldDefinitions(customType: Type, missingFields: BriqpayFieldDefinition[]): Promise<Type> {
   if (missingFields.length === 0) {
     return customType
   }
 
   appLogger.info(
-    { customTypeKey: customType.key, missingFields: missingFields.map((f) => f.name) },
-    `Adding ${missingFields.length} missing field(s) on custom type with key ${customType.key}`,
+    {
+      customTypeId: customType.id,
+      customTypeKey: customType.key,
+      resourceTypeIds: customType.resourceTypeIds,
+      missingFields: missingFields.map((f) => f.name),
+    },
+    `Adding ${missingFields.length} missing field(s) on custom type with id ${customType.id} (key: ${customType.key})`,
   )
 
   const actions: TypeAddFieldDefinitionAction[] = missingFields.map((field) => ({
@@ -79,24 +165,29 @@ async function addMissingFieldDefinitions(customType: Type, missingFields: Briqp
     fieldDefinition: toFieldDefinition(field),
   }))
 
-  const response = await apiClient
-    .types()
-    .withKey({ key: customType.key })
-    .post({
-      body: {
-        version: customType.version,
-        actions,
-      },
-    })
-    .execute()
+  return withErrorLogging(
+    async () => {
+      const response = await apiClient
+        .types()
+        .withId({ ID: customType.id }) // Use ID instead of key to avoid ambiguity
+        .post({
+          body: {
+            version: customType.version,
+            actions,
+          },
+        })
+        .execute()
 
-  const updatedCustomType = response.body
+      const updatedCustomType = response.body
 
-  if (!updatedCustomType) {
-    throw new Error(`Custom type with key ${customType.key} is not updated`)
-  }
+      if (!updatedCustomType) {
+        throw new Error(`Custom type with id ${customType.id} (key: ${customType.key}) was not updated`)
+      }
 
-  return updatedCustomType as Type
+      return updatedCustomType as Type
+    },
+    { action: 'add field definitions', key: customType.key, typeId: customType.id },
+  )
 }
 
 /**

@@ -34,28 +34,27 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
 
    > Please refer to the [commercetools documentation regarding scopes](https://docs.commercetools.com/api/scopes), names may change and names might be different from what you see in the GUI.
    - **Manage**:
-     - `manage_orders`
-     - `manage_sessions`
-     - `manage_types`
-     - `manage_payments`
-     - `manage_checkout_transactions`
-     - `manage_checkout_payment_intents`
+     - `manage_orders:briqpay-plugin`
+     - `manage_sessions:briqpay-plugin`
+     - `manage_types:briqpay-plugin`
+     - `manage_payments:briqpay-plugin`
+     - `manage_checkout_transactions:briqpay-plugin`
+     - `manage_checkout_payment_intents:briqpay-plugin`
+     - `manage_key_value_documents:briqpay-plugin`
    - **View**:
-     - `view_key_value_documents` (View Custom Objects)
-     - `view_states`
-     - `view_types`
-     - `view_product_selections`
-     - `view_attribute_groups`
-     - `view_shopping_lists`
-     - `view_shipping_methods`
-     - `view_categories`
-     - `view_discount_codes`
-     - `view_products`
-     - `view_cart_discounts`
-     - `view_stores`
-     - `view_tax_categories`
-     - `view_order_edits`
-     - `view_sessions`
+     - `view_key_value_documents:briqpay-plugin` (View Custom Objects)
+     - `view_states:briqpay-plugin`
+     - `view_product_selections:briqpay-plugin`
+     - `view_attribute_groups:briqpay-plugin`
+     - `view_shopping_lists:briqpay-plugin`
+     - `view_shipping_methods:briqpay-plugin`
+     - `view_categories:briqpay-plugin`
+     - `view_discount_codes:briqpay-plugin`
+     - `view_products:briqpay-plugin`
+     - `view_cart_discounts:briqpay-plugin`
+     - `view_stores:briqpay-plugin`
+     - `view_tax_categories:briqpay-plugin`
+     - `view_order_edits:briqpay-plugin`
 
 3. **Set commercetools configuration values**:
    - `CTP_PROJECT_KEY`
@@ -110,28 +109,27 @@ The Briqpay integration connector contains two modules:
 Create an API client responsible for payment management in your commercetools project. Details of the API client are taken as input as environment variables/configuration for connect such as `CTP_PROJECT_KEY`, `CTP_CLIENT_ID`, `CTP_CLIENT_SECRET`. The API client should have the following scopes:
 
 - **Manage**:
-  - `manage_orders`
-  - `manage_sessions`
-  - `manage_types`
-  - `manage_payments`
-  - `manage_checkout_transactions`
-  - `manage_checkout_payment_intents`
+  - `manage_orders:briqpay-plugin`
+  - `manage_sessions:briqpay-plugin`
+  - `manage_types:briqpay-plugin`
+  - `manage_payments:briqpay-plugin`
+  - `manage_checkout_transactions:briqpay-plugin`
+  - `manage_checkout_payment_intents:briqpay-plugin`
+  - `manage_key_value_documents:briqpay-plugin`
 - **View**:
-  - `view_key_value_documents` (View Custom Objects)
-  - `view_states`
-  - `view_types`
-  - `view_product_selections`
-  - `view_attribute_groups`
-  - `view_shopping_lists`
-  - `view_shipping_methods`
-  - `view_categories`
-  - `view_discount_codes`
-  - `view_products`
-  - `view_cart_discounts`
-  - `view_stores`
-  - `view_tax_categories`
-  - `view_order_edits`
-  - `view_sessions`
+  - `view_key_value_documents:briqpay-plugin` (View Custom Objects)
+  - `view_states:briqpay-plugin`
+  - `view_product_selections:briqpay-plugin`
+  - `view_attribute_groups:briqpay-plugin`
+  - `view_shopping_lists:briqpay-plugin`
+  - `view_shipping_methods:briqpay-plugin`
+  - `view_categories:briqpay-plugin`
+  - `view_discount_codes:briqpay-plugin`
+  - `view_products:briqpay-plugin`
+  - `view_cart_discounts:briqpay-plugin`
+  - `view_stores:briqpay-plugin`
+  - `view_tax_categories:briqpay-plugin`
+  - `view_order_edits:briqpay-plugin`
 
 #### 2. commercetools Platform URLs
 
@@ -721,28 +719,27 @@ curl --location 'http://localhost:8080/operations/status' \
 Required API Client Scopes:
 
 - **Manage**:
-  - `manage_orders`
-  - `manage_sessions`
-  - `manage_types`
-  - `manage_payments`
-  - `manage_checkout_transactions`
-  - `manage_checkout_payment_intents`
+  - `manage_orders:briqpay-plugin`
+  - `manage_sessions:briqpay-plugin`
+  - `manage_types:briqpay-plugin`
+  - `manage_payments:briqpay-plugin`
+  - `manage_checkout_transactions:briqpay-plugin`
+  - `manage_checkout_payment_intents:briqpay-plugin`
+  - `manage_key_value_documents:briqpay-plugin`
 - **View**:
-  - `view_key_value_documents` (View Custom Objects)
-  - `view_states`
-  - `view_types`
-  - `view_product_selections`
-  - `view_attribute_groups`
-  - `view_shopping_lists`
-  - `view_shipping_methods`
-  - `view_categories`
-  - `view_discount_codes`
-  - `view_products`
-  - `view_cart_discounts`
-  - `view_stores`
-  - `view_tax_categories`
-  - `view_order_edits`
-  - `view_sessions`
+  - `view_key_value_documents:briqpay-plugin` (View Custom Objects)
+  - `view_states:briqpay-plugin`
+  - `view_product_selections:briqpay-plugin`
+  - `view_attribute_groups:briqpay-plugin`
+  - `view_shopping_lists:briqpay-plugin`
+  - `view_shipping_methods:briqpay-plugin`
+  - `view_categories:briqpay-plugin`
+  - `view_discount_codes:briqpay-plugin`
+  - `view_products:briqpay-plugin`
+  - `view_cart_discounts:briqpay-plugin`
+  - `view_stores:briqpay-plugin`
+  - `view_tax_categories:briqpay-plugin`
+  - `view_order_edits:briqpay-plugin`
 
 ### Environment Variables
 

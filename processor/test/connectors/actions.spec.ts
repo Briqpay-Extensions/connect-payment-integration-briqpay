@@ -6,10 +6,12 @@ const mockExecute = jest.fn()
 const mockPost = jest.fn(() => ({ execute: mockExecute }))
 const mockGet = jest.fn(() => ({ execute: mockExecute }))
 const mockWithKey = jest.fn(() => ({ post: mockPost, get: mockGet }))
+const mockWithId = jest.fn(() => ({ post: mockPost, get: mockGet }))
 const mockTypes = jest.fn(() => ({
   get: mockGet,
   post: mockPost,
   withKey: mockWithKey,
+  withId: mockWithId,
 }))
 
 jest.mock('../../src/payment-sdk', () => ({
@@ -163,11 +165,11 @@ describe('actions', () => {
       const result = await createBriqpayCustomType(mockTypeKey)
 
       expect(result).toEqual(existingType)
-      // Should not call post since type already has all fields
-      expect(mockWithKey).not.toHaveBeenCalled()
+      // Should not call withId since type already has all fields (no update needed)
+      expect(mockWithId).not.toHaveBeenCalled()
     })
 
-    test('should add missing field definitions to existing type', async () => {
+    test('should add missing field definitions to existing type using ID (not key)', async () => {
       const existingTypeWithMissingFields = createMockType({
         fieldDefinitions: [
           {
@@ -190,8 +192,8 @@ describe('actions', () => {
         } as never),
       } as any)
 
-      // Update call (post must accept opts: { body: unknown } per WithKeyChain)
-      mockWithKey.mockReturnValue({
+      // Update call uses withId (not withKey) to avoid the ingrid-shipping key collision issue
+      mockWithId.mockReturnValue({
         post: jest.fn((_opts: { body: unknown }) => ({
           execute: jest.fn().mockResolvedValue({
             body: updatedType,
@@ -201,7 +203,10 @@ describe('actions', () => {
 
       const result = await createBriqpayCustomType(mockTypeKey)
 
-      expect(mockWithKey as jest.Mock).toHaveBeenCalledWith({ key: mockTypeKey })
+      // Critical: should use withId with the type's ID, NOT withKey
+      // This prevents updating the wrong type when multiple types share the same key
+      expect(mockWithId as jest.Mock).toHaveBeenCalledWith({ ID: 'type-123' })
+      expect(mockWithKey).not.toHaveBeenCalled() // Ensure withKey is NOT used
       expect(result.version).toBe(2)
     })
 
@@ -252,11 +257,11 @@ describe('actions', () => {
 
       await createBriqpayCustomType(mockTypeKey)
 
-      // withKey should not be called for updates since all fields exist
-      expect(mockWithKey).not.toHaveBeenCalled()
+      // withId should not be called for updates since all fields exist
+      expect(mockWithId).not.toHaveBeenCalled()
     })
 
-    test('should add multiple missing fields in single update action', async () => {
+    test('should add multiple missing fields in single update action using ID', async () => {
       const existingTypeWithNoFields = createMockType({
         fieldDefinitions: [],
       })
@@ -275,14 +280,18 @@ describe('actions', () => {
         } as never),
       }))
 
-      mockWithKey.mockReturnValue({
+      // Uses withId to update by ID (not withKey which could match wrong type)
+      mockWithId.mockReturnValue({
         post: mockPostWithActions,
       } as any)
 
       await createBriqpayCustomType(mockTypeKey)
 
-      expect(mockWithKey as jest.Mock).toHaveBeenCalledWith({ key: mockTypeKey })
-      // Verify the post was called with addFieldDefinition actions (cast so mock is typed as accepting 1 arg)
+      // Critical: uses withId with the type ID, NOT withKey
+      expect(mockWithId as jest.Mock).toHaveBeenCalledWith({ ID: 'type-123' })
+      expect(mockWithKey).not.toHaveBeenCalled()
+
+      // Verify the post was called with addFieldDefinition actions
       expect(mockPostWithActions as jest.Mock<(opts: { body: unknown }) => unknown>).toHaveBeenCalledWith(
         expect.objectContaining({
           body: expect.objectContaining({
