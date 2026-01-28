@@ -146,7 +146,8 @@ export class DropinComponents implements DropinComponent {
 
     const request: BriqpayDecisionRequest = {
       decision:
-        (decision?.toLowerCase() as BRIQPAY_DECISION) || BRIQPAY_DECISION.ALLOW,
+        (decision?.toLowerCase() as BRIQPAY_DECISION) ||
+        BRIQPAY_DECISION._ALLOW,
       ...(softErrors && { softErrors }),
       ...(hardError && { hardError }),
       ...(rejectionType && { rejectionType }),

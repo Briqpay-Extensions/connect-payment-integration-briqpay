@@ -13,7 +13,7 @@ class MockComponent extends BaseComponent {
   constructor(
     paymentMethod: PaymentMethod,
     baseOptions: BaseOptions,
-    _componentOptions: ComponentOptions
+    _componentOptions: ComponentOptions,
   ) {
     super(paymentMethod, baseOptions);
     this.paymentMethod = paymentMethod;
@@ -42,11 +42,11 @@ describe("BaseComponent", () => {
   };
 
   beforeEach(() => {
-    component = new MockComponent(PaymentMethod.briqpay, baseOptions, {});
+    component = new MockComponent(PaymentMethod._briqpay, baseOptions, {});
   });
 
   test("should initialize with provided options", () => {
-    expect(component.paymentMethod).toEqual(PaymentMethod.briqpay);
+    expect(component.paymentMethod).toEqual(PaymentMethod._briqpay);
   });
 
   // Additional tests here

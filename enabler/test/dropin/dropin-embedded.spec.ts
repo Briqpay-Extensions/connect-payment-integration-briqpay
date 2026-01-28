@@ -14,7 +14,7 @@ describe("DropinEmbeddedBuilder", () => {
     Promise.resolve({
       ok: true,
       json: () => ({ paymentReference: "ref-123" }),
-    } as unknown as Response)
+    } as unknown as Response),
   ) as unknown as typeof fetch;
 
   test("should create DropinComponents with correct config", () => {
@@ -29,7 +29,7 @@ describe("DropinEmbeddedBuilder", () => {
 
     expect(dropin).toBeInstanceOf(DropinComponents);
     expect((dropin as any)["dropinOptions"].onDropinReady).toBe(
-      config.onDropinReady
+      config.onDropinReady,
     );
   });
 
@@ -55,7 +55,7 @@ describe("DropinComponents", () => {
         environment: "test",
         onComplete: () => {},
         onError: () => {},
-      }
+      },
     );
 
     dropin.init();
@@ -83,7 +83,7 @@ describe("DropinComponents", () => {
         environment: "test",
         onComplete: () => {},
         onError: () => {},
-      }
+      },
     );
 
     dropin.mount("#" + div.id);
@@ -107,7 +107,7 @@ describe("DropinComponents", () => {
         environment: "test",
         onComplete: () => {},
         onError: () => {},
-      }
+      },
     );
 
     await expect(dropin.submit()).resolves.not.toThrow();
@@ -115,7 +115,7 @@ describe("DropinComponents", () => {
 
   test("submit() should throw an error", async () => {
     (global.fetch as jest.Mock).mockImplementationOnce(() =>
-      Promise.reject(new Error("Fetch failed"))
+      Promise.reject(new Error("Fetch failed")),
     );
 
     const dropin = new DropinComponents(
@@ -133,7 +133,7 @@ describe("DropinComponents", () => {
         environment: "test",
         onComplete: () => {},
         onError: () => {},
-      }
+      },
     );
 
     await expect(dropin.submit()).rejects.toThrow();
@@ -174,10 +174,10 @@ describe("DropinComponents", () => {
         environment: "test",
         onComplete: () => {},
         onError: () => {},
-      }
+      },
     );
 
-    const decisionPromise = dropin.handleDecision(BRIQPAY_DECISION.ALLOW);
+    const decisionPromise = dropin.handleDecision(BRIQPAY_DECISION._ALLOW);
 
     // Simulate the response event
     if (_eventCallback) {
@@ -207,7 +207,7 @@ describe("DropinComponents", () => {
         if (_event === "briqpayDecisionResponse") {
           _eventCallback = callback;
         }
-      }
+      },
     );
 
     window._briqpay = {
@@ -235,7 +235,7 @@ describe("DropinComponents", () => {
         environment: "test",
         onComplete: () => {},
         onError: () => {},
-      }
+      },
     );
 
     const decisionPromise = dropin.handleDecision("invalid");
