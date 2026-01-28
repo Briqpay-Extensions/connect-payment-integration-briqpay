@@ -34,7 +34,7 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
 
    > Please refer to the [commercetools documentation regarding scopes](https://docs.commercetools.com/api/scopes), names may change and names might be different from what you see in the GUI.
    - **Manage**:
-     - `manage_orders`
+     - `manage_orders` - Also grants permission to manage Carts
      - `manage_sessions`
      - `manage_types`
      - `manage_payments`
@@ -44,6 +44,7 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
    - **View**:
      - `view_key_value_documents` (View Custom Objects)
      - `view_states`
+     - `view_types`
      - `view_product_selections`
      - `view_attribute_groups`
      - `view_shopping_lists`
@@ -52,6 +53,7 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
      - `view_discount_codes`
      - `view_products`
      - `view_cart_discounts`
+     - `view_orders`
      - `view_stores`
      - `view_tax_categories`
      - `view_order_edits`
@@ -116,9 +118,11 @@ Create an API client responsible for payment management in your commercetools pr
   - `manage_checkout_transactions`
   - `manage_checkout_payment_intents`
   - `manage_key_value_documents`
+  - `manage_carts` - Required for storing Briqpay session ID on cart
 - **View**:
   - `view_key_value_documents` (View Custom Objects)
   - `view_states`
+  - `view_types`
   - `view_product_selections`
   - `view_attribute_groups`
   - `view_shopping_lists`
@@ -127,6 +131,7 @@ Create an API client responsible for payment management in your commercetools pr
   - `view_discount_codes`
   - `view_products`
   - `view_cart_discounts`
+  - `view_orders`
   - `view_stores`
   - `view_tax_categories`
   - `view_order_edits`
@@ -719,7 +724,7 @@ curl --location 'http://localhost:8080/operations/status' \
 Required API Client Scopes:
 
 - **Manage**:
-  - `manage_orders`
+  - `manage_orders` - Also grants permission to manage Carts
   - `manage_sessions`
   - `manage_types`
   - `manage_payments`
@@ -729,6 +734,7 @@ Required API Client Scopes:
 - **View**:
   - `view_key_value_documents` (View Custom Objects)
   - `view_states`
+  - `view_types`
   - `view_product_selections`
   - `view_attribute_groups`
   - `view_shopping_lists`
@@ -737,6 +743,7 @@ Required API Client Scopes:
   - `view_discount_codes`
   - `view_products`
   - `view_cart_discounts`
+  - `view_orders`
   - `view_stores`
   - `view_tax_categories`
   - `view_order_edits`

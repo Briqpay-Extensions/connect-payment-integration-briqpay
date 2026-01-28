@@ -37,7 +37,7 @@ export interface PaymentEnabler {
    * @throws {Error} If the payment component builder cannot be created.
    */
   createComponentBuilder: (
-    type: string
+    _type: string,
   ) => Promise<PaymentComponentBuilder | never>;
 
   /**
@@ -47,7 +47,7 @@ export interface PaymentEnabler {
    * @throws {Error} If the payment drop-in builder cannot be created.
    */
   createDropinBuilder: (
-    type: DropinType
+    _type: DropinType,
   ) => Promise<PaymentDropinBuilder | never>;
 }
 
@@ -59,7 +59,7 @@ export interface PaymentComponent {
    * Mounts the payment component to the specified selector.
    * @param selector - The selector where the component will be mounted.
    */
-  mount(selector: string): void;
+  mount(_selector: string): void;
 
   /**
    * Submits the payment.
@@ -142,14 +142,14 @@ export type EnablerOptions = {
    * A callback function that is called when the payment is completed.
    * @param result - The result of the payment.
    */
-  onComplete?: (result: PaymentResult) => void;
+  onComplete?: (_result: PaymentResult) => void;
 
   /**
    * A callback function that is called when an error occurs during the payment process.
    * @param error - The error that occurred.
    * @param paymentReference - The payment reference.
    */
-  onError?: (error: unknown, context?: { paymentReference?: string }) => void;
+  onError?: (_error: unknown, _context?: { paymentReference?: string }) => void;
 };
 
 /**
@@ -162,7 +162,7 @@ export type ComponentOptions = Record<string, unknown>;
  */
 export enum PaymentMethod {
   /* BRIQPAY */
-  briqpay = "briqpay",
+  _briqpay = "briqpay",
 }
 
 /**
@@ -199,11 +199,11 @@ export enum DropinType {
   /*
    * The embedded drop-in type which is rendered within the page.
    */
-  embedded = "embedded",
+  _embedded = "embedded",
   /*
    * The hosted payment page (HPP) drop-in type which redirects the user to a hosted payment page.
    */
-  hpp = "hpp",
+  _hpp = "hpp",
 }
 
 /**
@@ -219,7 +219,7 @@ export interface DropinComponent {
    * Mounts the drop-in component to the specified selector.
    * @param selector - The selector where the drop-in component will be mounted.
    */
-  mount(selector: string): void;
+  mount(_selector: string): void;
 }
 
 /**
@@ -236,7 +236,7 @@ export type DropinOptions = {
    * A callback function that is called when the pay button is clicked.
    * @returns A Promise indicating whether the payment should proceed.
    */
-  onPayButtonClick?: (sdk: BriqpaySdk) => Promise<void>;
+  onPayButtonClick?: (_sdk: BriqpaySdk) => Promise<void>;
 };
 
 /**
@@ -253,5 +253,5 @@ export interface PaymentDropinBuilder {
    * @param config - The configuration options for the drop-in component.
    * @returns The built drop-in component.
    */
-  build(config: DropinOptions): DropinComponent;
+  build(_config: DropinOptions): DropinComponent;
 }

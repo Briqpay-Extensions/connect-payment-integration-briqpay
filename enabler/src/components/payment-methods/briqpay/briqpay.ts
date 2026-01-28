@@ -11,13 +11,13 @@ import {
 import { BaseOptions } from "../../../payment-enabler/payment-enabler-briqpay.ts";
 
 enum BRIQPAY_DECISION {
-  ALLOW = "allow",
-  REJECT = "reject",
+  _ALLOW = "allow",
+  _REJECT = "reject",
 }
 
 enum BRIQPAY_REJECT_TYPE {
-  REJECT_WITH_ERROR = "reject_session_with_error",
-  NOTIFY_USER = "notify_user",
+  _REJECT_WITH_ERROR = "reject_session_with_error",
+  _NOTIFY_USER = "notify_user",
 }
 
 type BriqpayDecisionRequest = {
@@ -35,8 +35,8 @@ declare global {
   interface Window {
     _briqpay: {
       subscribe: (
-        event: string,
-        callback: (data: Record<string, unknown>) => void
+        _event: string,
+        _callback: (_data: Record<string, unknown>) => void,
       ) => void;
       v3: {
         suspend: () => void;
@@ -52,14 +52,14 @@ export class Briqpay extends BaseComponent {
   private briqpaySessionId: string;
 
   constructor(baseOptions: BaseOptions) {
-    super(PaymentMethod.briqpay, baseOptions);
+    super(PaymentMethod._briqpay, baseOptions);
     this.snippet = baseOptions.snippet;
     this.briqpaySessionId = baseOptions.briqpaySessionId;
   }
 
-  mount(selector: string) {
+  mount(_selector: string) {
     this.loadBriqpayScript();
-    this.addToDocument(selector);
+    this.addToDocument(_selector);
   }
 
   private loadBriqpayScript() {
@@ -79,7 +79,9 @@ export class Briqpay extends BaseComponent {
       this.submit().catch(() => {});
     });
 
-    window._briqpay.subscribe("make_decision", this.handleDecision.bind(this));
+    window._briqpay.subscribe("make_decision", (data) =>
+      this.handleDecision(data),
+    );
   }
 
   public async handleDecision(data: unknown) {
@@ -102,7 +104,7 @@ export class Briqpay extends BaseComponent {
         (e: Event) => {
           resolve((e as CustomEvent).detail);
         },
-        { once: true }
+        { once: true },
       );
     });
 
@@ -116,7 +118,7 @@ export class Briqpay extends BaseComponent {
       new Promise((resolve) =>
         setTimeout(() => {
           resolve({ decision: true });
-        }, 10000)
+        }, 10000),
       ),
     ]);
   }
@@ -135,7 +137,8 @@ export class Briqpay extends BaseComponent {
 
     const request: BriqpayDecisionRequest = {
       decision:
-        (decision?.toLowerCase() as BRIQPAY_DECISION) || BRIQPAY_DECISION.ALLOW,
+        (decision?.toLowerCase() as BRIQPAY_DECISION) ||
+        BRIQPAY_DECISION._ALLOW,
       ...(softErrors && { softErrors }),
       ...(hardError && { hardError }),
       ...(rejectionType && { rejectionType }),
@@ -154,10 +157,10 @@ export class Briqpay extends BaseComponent {
     });
   }
 
-  private addToDocument(selector: string) {
-    const container = document.querySelector(selector);
+  private addToDocument(_selector: string) {
+    const container = document.querySelector(_selector);
     if (!container) {
-      throw new Error(`Container with selector '${selector}' not found`);
+      throw new Error(`Container with selector '${_selector}' not found`);
     }
     container.insertAdjacentHTML("afterbegin", this._getTemplate());
   }
@@ -168,7 +171,7 @@ export class Briqpay extends BaseComponent {
         paymentMethod: {
           type: this.paymentMethod,
         },
-        paymentOutcome: PaymentOutcome.PENDING,
+        paymentOutcome: PaymentOutcome._PENDING,
       };
       const response = await fetch(this.processorUrl + "/payments", {
         method: "POST",
@@ -206,9 +209,9 @@ export class Briqpay extends BaseComponent {
 export class BriqpayBuilder implements PaymentComponentBuilder {
   public componentHasSubmit = true;
 
-  constructor(private baseOptions: BaseOptions) {}
+  constructor(private _baseOptions: BaseOptions) {}
 
   build(): PaymentComponent {
-    return new Briqpay(this.baseOptions);
+    return new Briqpay(this._baseOptions);
   }
 }

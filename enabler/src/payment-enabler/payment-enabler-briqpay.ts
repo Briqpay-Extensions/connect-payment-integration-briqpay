@@ -45,7 +45,7 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
   }
 
   protected static _Setup = async (
-    options: EnablerOptions
+    options: EnablerOptions,
   ): Promise<{ baseOptions: BaseOptions }> => {
     const configResponse = await fetch(options.processorUrl + "/config", {
       method: "GET",
@@ -79,22 +79,22 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
   };
 
   async createComponentBuilder(
-    type: string
+    _type: string,
   ): Promise<PaymentComponentBuilder | never> {
     const { baseOptions } = await this.setupData;
 
     const supportedMethods: Record<
       string,
-      new (baseOptions: BaseOptions) => PaymentComponentBuilder
+      new (_baseOptions: BaseOptions) => PaymentComponentBuilder
     > = {};
 
-    const Builder = supportedMethods[type as keyof typeof supportedMethods];
+    const Builder = supportedMethods[_type as keyof typeof supportedMethods];
 
     if (!Builder) {
       throw new Error(
-        `Component type not supported: ${type}. Supported types: ${Object.keys(
-          supportedMethods
-        ).join(", ")}`
+        `Component type not supported: ${_type}. Supported types: ${Object.keys(
+          supportedMethods,
+        ).join(", ")}`,
       );
     }
 
@@ -102,23 +102,26 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
   }
 
   async createDropinBuilder(
-    type: DropinType
+    _type: DropinType,
   ): Promise<PaymentDropinBuilder | never> {
     const { baseOptions } = await this.setupData;
 
     const supportedMethods: Partial<
-      Record<DropinType, new (baseOptions: BaseOptions) => PaymentDropinBuilder>
+      Record<
+        DropinType,
+        new (_baseOptions: BaseOptions) => PaymentDropinBuilder
+      >
     > = {
-      [DropinType.embedded]: DropinEmbeddedBuilder,
+      [DropinType._embedded]: DropinEmbeddedBuilder,
     };
 
-    const Builder = supportedMethods[type as keyof typeof supportedMethods];
+    const Builder = supportedMethods[_type as keyof typeof supportedMethods];
 
     if (!Builder) {
       throw new Error(
-        `Component type not supported: ${type}. Supported types: ${Object.keys(
-          supportedMethods
-        ).join(", ")}`
+        `Component type not supported: ${_type}. Supported types: ${Object.keys(
+          supportedMethods,
+        ).join(", ")}`,
       );
     }
 

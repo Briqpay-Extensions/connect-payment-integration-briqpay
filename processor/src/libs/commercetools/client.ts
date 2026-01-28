@@ -7,28 +7,37 @@ import {
 import { config } from '../../config/config'
 import packageJSON from '../../../package.json'
 
+/**
+ * Scopes required by the processor for Commercetools API access.
+ * These must match the scopes configured on the API client in Merchant Center.
+ *
+ * Note: Cart management (create, update, delete) is bundled under `manage_orders`.
+ * See: https://docs.commercetools.com/api/scopes#cart-and-order-management
+ */
 const connectScopes = [
+  // Manage scopes
   'manage_orders',
-  'view_key_value_documents',
+  'manage_sessions',
+  'manage_types',
+  'manage_payments',
+  'manage_checkout_transactions',
+  'manage_checkout_payment_intents',
+  'manage_key_value_documents',
+  // View scopes
   'view_states',
+  'view_types',
   'view_product_selections',
   'view_attribute_groups',
   'view_shopping_lists',
   'view_shipping_methods',
-  'manage_sessions',
-  'manage_types',
-  'manage_checkout_payment_intents',
   'view_categories',
-  'manage_key_value_documents',
   'view_discount_codes',
   'view_products',
   'view_cart_discounts',
-  'manage_payments',
+  'view_orders',
   'view_stores',
-  'manage_checkout_transactions',
   'view_tax_categories',
   'view_order_edits',
-  'manage_checkout_sessions',
 ]
 
 const authMiddlewareOptions: AuthMiddlewareOptions = {

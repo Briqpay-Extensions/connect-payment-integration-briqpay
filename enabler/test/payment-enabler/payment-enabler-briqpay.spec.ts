@@ -14,7 +14,7 @@ describe("BriqpayPaymentEnabler", () => {
           briqpaySessionId: "abc123",
           environment: "test",
         }),
-      } as Response)
+      } as Response),
     ) as typeof fetch;
   });
 
@@ -27,7 +27,7 @@ describe("BriqpayPaymentEnabler", () => {
     });
 
     await expect(enabler.createComponentBuilder("unsupported")).rejects.toThrow(
-      /Component type not supported/
+      /Component type not supported/,
     );
   });
 
@@ -40,7 +40,7 @@ describe("BriqpayPaymentEnabler", () => {
     });
 
     await expect(enabler.createComponentBuilder("unsupported")).rejects.toThrow(
-      /Component type not supported/
+      /Component type not supported/,
     );
   });
 
@@ -52,7 +52,7 @@ describe("BriqpayPaymentEnabler", () => {
       onError: jest.fn(),
     });
 
-    const builder = await enabler.createDropinBuilder(DropinType.embedded);
+    const builder = await enabler.createDropinBuilder(DropinType._embedded);
     expect(builder).toBeDefined();
     expect(builder.constructor.name).toBe("DropinEmbeddedBuilder");
   });
@@ -67,13 +67,13 @@ describe("BriqpayPaymentEnabler", () => {
 
     await expect(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      enabler.createDropinBuilder("unsupported" as any)
+      enabler.createDropinBuilder("_unsupported" as any),
     ).rejects.toThrow(/Component type not supported/);
   });
 
   test("should propagate error if fetch fails", async () => {
     (global.fetch as jest.Mock).mockImplementationOnce(() =>
-      Promise.reject(new Error("Fetch failed"))
+      Promise.reject(new Error("Fetch failed")),
     );
 
     const enabler = await BriqpayPaymentEnabler.create({
@@ -83,8 +83,8 @@ describe("BriqpayPaymentEnabler", () => {
       onError: jest.fn(),
     });
 
-    await expect(enabler.createComponentBuilder("briqpay")).rejects.toThrow(
-      "Fetch failed"
+    await expect(enabler.createComponentBuilder("_briqpay")).rejects.toThrow(
+      "Fetch failed",
     );
   });
 
@@ -94,7 +94,7 @@ describe("BriqpayPaymentEnabler", () => {
       sessionId: "sess-123",
     });
 
-    const builder = await enabler.createDropinBuilder(DropinType.embedded);
+    const builder = await enabler.createDropinBuilder(DropinType._embedded);
     expect(builder).toBeDefined();
   });
 });

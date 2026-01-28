@@ -123,16 +123,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       log: appLogger,
       checks: [
         healthCheckCommercetoolsPermissions({
-          requiredPermissions: [
-            'manage_payments',
-            'view_sessions',
-            'view_api_clients',
-            'manage_orders',
-            'introspect_oauth_tokens',
-            'manage_checkout_payment_intents',
-            'manage_types',
-            'manage_checkout_sessions',
-          ],
+          requiredPermissions: ['manage_orders', 'manage_payments', 'manage_types', 'manage_sessions', 'view_orders'],
           ctAuthorizationService: paymentSDK.ctAuthorizationService,
           projectKey: getConfig().projectKey,
         }),

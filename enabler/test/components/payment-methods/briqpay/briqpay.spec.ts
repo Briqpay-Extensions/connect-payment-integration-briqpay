@@ -15,10 +15,10 @@ import { PaymentComponent } from "../../../../src/payment-enabler/payment-enable
 describe("Briqpay", () => {
   let component: PaymentComponent;
   let sessionCompleteCallback: (
-    data: Record<string, unknown>
+    data: Record<string, unknown>,
   ) => Promise<void> | void;
   let makeDecisionCallback: (
-    data: Record<string, unknown>
+    data: Record<string, unknown>,
   ) => Promise<void> | void;
 
   const baseOptions: BaseOptions = {
@@ -37,7 +37,7 @@ describe("Briqpay", () => {
     Promise.resolve({
       ok: true,
       json: () => ({ paymentReference: "ref-123" }),
-    } as unknown as Response)
+    } as unknown as Response),
   ) as unknown as typeof fetch;
 
   beforeEach(() => {
@@ -80,7 +80,7 @@ describe("Briqpay", () => {
       subscribe: jest.fn(
         (event: string, callback: (data: Record<string, unknown>) => void) => {
           subscribeCallbacks[event] = callback;
-        }
+        },
       ),
     };
 
@@ -184,7 +184,7 @@ describe("Briqpay", () => {
           detail: expect.objectContaining({
             data: mockDecisionData,
           }),
-        })
+        }),
       );
 
       // Verify fetch was called with correct data
@@ -197,7 +197,7 @@ describe("Briqpay", () => {
             "X-Session-Id": "sess-123",
           },
           body: expect.stringContaining("briq-sess-123"),
-        })
+        }),
       );
 
       // Verify resumeDecision was called
@@ -221,9 +221,9 @@ describe("Briqpay", () => {
           paymentMethod: {
             type: "briqpay",
           },
-          paymentOutcome: PaymentOutcome.PENDING,
+          paymentOutcome: PaymentOutcome._PENDING,
         }),
-      })
+      }),
     );
 
     // Check onComplete was called with success
@@ -236,13 +236,13 @@ describe("Briqpay", () => {
   test("submit() calls onError on failure", async () => {
     // Override fetch to simulate an error
     global.fetch = jest.fn(() =>
-      Promise.reject(new Error("Network error"))
+      Promise.reject(new Error("Network error")),
     ) as unknown as typeof fetch;
 
     await component.submit();
 
     expect(baseOptions.onError).toHaveBeenCalledWith(
-      "An error occurred. Please try again."
+      "An error occurred. Please try again.",
     );
   });
 

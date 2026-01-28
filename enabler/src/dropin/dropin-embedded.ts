@@ -11,13 +11,13 @@ import {
 import { BaseOptions } from "../payment-enabler/payment-enabler-briqpay";
 
 export enum BRIQPAY_DECISION {
-  ALLOW = "allow",
-  REJECT = "reject",
+  _ALLOW = "allow",
+  _REJECT = "reject",
 }
 
 enum BRIQPAY_REJECT_TYPE {
-  REJECT_WITH_ERROR = "reject_session_with_error",
-  NOTIFY_USER = "notify_user",
+  _REJECT_WITH_ERROR = "reject_session_with_error",
+  _NOTIFY_USER = "notify_user",
 }
 
 type BriqpayDecisionRequest = {
@@ -36,7 +36,7 @@ declare global {
     _briqpay: {
       subscribe: (
         _event: string,
-        _callback: (_data: Record<string, unknown>) => void
+        _callback: (_data: Record<string, unknown>) => void,
       ) => void;
       v3: {
         suspend: () => void;
@@ -50,11 +50,11 @@ declare global {
 export class DropinComponents implements DropinComponent {
   private dropinOptions: DropinOptions;
   private baseOptions: BaseOptions;
-  private paymentMethod = PaymentMethod.briqpay;
+  private paymentMethod = PaymentMethod._briqpay;
 
   constructor(
     opts: { dropinOptions: DropinOptions },
-    _baseOptions: BaseOptions
+    _baseOptions: BaseOptions,
   ) {
     this.dropinOptions = opts.dropinOptions;
     this.baseOptions = _baseOptions;
@@ -113,7 +113,7 @@ export class DropinComponents implements DropinComponent {
         function (e: Event) {
           resolve((e as CustomEvent).detail);
         },
-        { once: true }
+        { once: true },
       );
     });
 
@@ -127,7 +127,7 @@ export class DropinComponents implements DropinComponent {
       new Promise((resolve) =>
         setTimeout(() => {
           resolve({ decision: true });
-        }, 10000)
+        }, 10000),
       ),
     ]);
   }
@@ -179,7 +179,7 @@ export class DropinComponents implements DropinComponent {
         paymentMethod: {
           type: this.paymentMethod,
         },
-        paymentOutcome: PaymentOutcome.PENDING,
+        paymentOutcome: PaymentOutcome._PENDING,
       };
       await fetch(this.baseOptions.processorUrl + "/payments", {
         method: "POST",
@@ -204,12 +204,12 @@ export class DropinEmbeddedBuilder implements PaymentDropinBuilder {
     this.baseOptions = _baseOptions;
   }
 
-  build(config: DropinOptions): DropinComponent {
+  build(_config: DropinOptions): DropinComponent {
     const dropin = new DropinComponents(
       {
-        dropinOptions: config,
+        dropinOptions: _config,
       },
-      this.baseOptions
+      this.baseOptions,
     );
 
     dropin.init();

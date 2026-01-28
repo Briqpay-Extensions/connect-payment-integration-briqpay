@@ -1,9 +1,9 @@
 import { Static, Type } from "@sinclair/typebox";
 
 export enum PaymentOutcome {
-  APPROVED = "approved",
-  REJECTED = "rejected",
-  PENDING = "pending",
+  _APPROVED = "approved",
+  _REJECTED = "rejected",
+  _PENDING = "pending",
 }
 
 export const PaymentOutcomeSchema = Type.Enum(PaymentOutcome);
