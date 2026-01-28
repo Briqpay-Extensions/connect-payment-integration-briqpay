@@ -120,4 +120,18 @@ export default [
       'no-sequences': 'error',
     },
   },
+  {
+    files: ['test/**/*.ts'],
+    languageOptions: {
+      globals: { ...globals.node, ...globals.jest },
+      parser: tsParser,
+    },
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', ignoreRestSiblings: true },
+      ],
+    },
+  },
 ]

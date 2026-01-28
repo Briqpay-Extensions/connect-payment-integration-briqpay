@@ -192,6 +192,8 @@ Copy `.env.template` to `.env` and configure the following variables:
 
 The API client must have the following scopes:
 
+> Please refer to the [commercetools documentation regarding scopes](https://docs.commercetools.com/api/scopes), names may change and names might be different from what you see in the GUI.
+
 - **Manage**:
   - `manage_orders`
   - `manage_sessions`
@@ -200,7 +202,7 @@ The API client must have the following scopes:
   - `manage_checkout_transactions`
   - `manage_checkout_payment_intents`
 - **View**:
-  - `view_key_value_documents`
+  - `view_key_value_documents` (View Custom Objects)
   - `view_states`
   - `view_types`
   - `view_product_selections`

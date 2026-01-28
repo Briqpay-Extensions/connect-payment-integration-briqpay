@@ -8,6 +8,8 @@ export const config = {
   authUrl: process.env.CTP_AUTH_URL || 'https://auth.europe-west1.gcp.commercetools.com',
   apiUrl: process.env.CTP_API_URL || 'https://api.europe-west1.gcp.commercetools.com',
   sessionUrl: process.env.CTP_SESSION_URL || 'https://session.europe-west1.gcp.commercetools.com/',
+  /** Checkout API base URL; used by the SDK for recurring payment job creation (e.g. POST {checkoutUrl}/{projectKey}/recurring-payment-jobs). */
+  checkoutUrl: process.env.CTP_CHECKOUT_URL || 'https://checkout.europe-west1.gcp.commercetools.com',
   healthCheckTimeout: parseInt(process.env.HEALTH_CHECK_TIMEOUT || '5000'),
 
   // Required by logger

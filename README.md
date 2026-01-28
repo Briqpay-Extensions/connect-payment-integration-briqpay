@@ -32,6 +32,7 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
 
 2. **Create commercetools API client** with the following scopes (your case may vary):
 
+   > Please refer to the [commercetools documentation regarding scopes](https://docs.commercetools.com/api/scopes), names may change and names might be different from what you see in the GUI.
    - **Manage**:
      - `manage_orders`
      - `manage_sessions`
@@ -40,7 +41,7 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
      - `manage_checkout_transactions`
      - `manage_checkout_payment_intents`
    - **View**:
-     - `view_key_value_documents`
+     - `view_key_value_documents` (View Custom Objects)
      - `view_states`
      - `view_types`
      - `view_product_selections`
@@ -57,7 +58,6 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
      - `view_sessions`
 
 3. **Set commercetools configuration values**:
-
    - `CTP_PROJECT_KEY`
    - `CTP_CLIENT_ID`
    - `CTP_CLIENT_SECRET`
@@ -68,7 +68,6 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
    - `CTP_JWT_ISSUER`
 
 4. **Create Briqpay API credentials** and set configuration values:
-
    - `BRIQPAY_USERNAME`
    - `BRIQPAY_SECRET`
    - `BRIQPAY_WEBHOOK_SECRET` - **Mandatory** for secure webhook processing (HMAC verification) (get your webhook secret at https://app.briqpay.com/dashboard/developers/webhooks)
@@ -77,7 +76,6 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
    - `BRIQPAY_CONFIRMATION_URL`
 
 5. **Optionally set custom type keys**:
-
    - `BRIQPAY_SESSION_CUSTOM_TYPE_KEY` - Default: `briqpay-session-id`
    - `BRIQPAY_PSP_META_DATA_CUSTOMER_FACING_REFERENCE_KEY` - Default: `briqpay-psp-meta-data-customer-facing-reference`
    - `BRIQPAY_PSP_META_DATA_DESCRIPTION_KEY` - Default: `briqpay-psp-meta-data-description`
@@ -119,7 +117,7 @@ Create an API client responsible for payment management in your commercetools pr
   - `manage_checkout_transactions`
   - `manage_checkout_payment_intents`
 - **View**:
-  - `view_key_value_documents`
+  - `view_key_value_documents` (View Custom Objects)
   - `view_states`
   - `view_types`
   - `view_product_selections`
@@ -359,7 +357,6 @@ flowchart TD
 - Webhook notifications from Briqpay are processed asynchronously. Ensure your webhook endpoint is publicly accessible and properly configured in the Briqpay dashboard.
 
 - The connector supports the following payment operations through the `/operations/payment-intents/:id` endpoint:
-
   - `capturePayment` - Capture an authorized payment
   - `cancelPayment` - Cancel an authorized payment
   - `refundPayment` - Refund a captured payment
@@ -731,7 +728,7 @@ Required API Client Scopes:
   - `manage_checkout_transactions`
   - `manage_checkout_payment_intents`
 - **View**:
-  - `view_key_value_documents`
+  - `view_key_value_documents` (View Custom Objects)
   - `view_states`
   - `view_types`
   - `view_product_selections`
@@ -790,7 +787,6 @@ VITE_PROCESSOR_URL=http://localhost:8080
    ```
 
 2. **Deploy via commercetools Connect**:
-
    - Use the provided `connect.yaml` configuration
    - The connector will be deployed as two applications:
      - `enabler` (assets application type)
@@ -1053,12 +1049,12 @@ class BriqpayService {
   async createSession(
     ctCart: Cart,
     amountPlanned: PaymentAmount,
-    hostname: string
+    hostname: string,
   ): Promise<BriqpayResponse>;
   async updateSession(
     sessionId: string,
     cart: Cart,
-    amount: Money
+    amount: Money,
   ): Promise<MediumBriqpayResponse>;
   async getSession(sessionId: string): Promise<MediumBriqpayResponse>;
 
@@ -1066,20 +1062,20 @@ class BriqpayService {
   async capture(
     ctCart: Cart,
     amountPlanned: PaymentAmount,
-    sessionId: string
+    sessionId: string,
   ): Promise<CaptureResponse>;
   async refund(
     ctCart: Cart,
     amountPlanned: PaymentAmount,
     sessionId: string,
-    captureId?: string
+    captureId?: string,
   ): Promise<RefundResponse>;
   async cancel(sessionId: string): Promise<{ status: PaymentOutcome }>;
 
   // Decision handling
   makeDecision(
     sessionId: string,
-    decisionRequest: BriqpayDecisionRequest
+    decisionRequest: BriqpayDecisionRequest,
   ): Promise<Response>;
 }
 ```
@@ -1100,13 +1096,13 @@ class BriqpaySessionService {
   async createOrUpdateBriqpaySession(
     ctCart: Cart,
     amountPlanned: PaymentAmount,
-    hostname: string
+    hostname: string,
   ): Promise<MediumBriqpayResponse>;
 
   // Updates cart with Briqpay session ID custom field
   async updateCartWithBriqpaySessionId(
     ctCart: Cart,
-    briqpaySessionId: string
+    briqpaySessionId: string,
   ): Promise<void>;
 }
 ```
@@ -1126,22 +1122,22 @@ Handles commercetools payment operations and state transitions:
 class BriqpayOperationService {
   // Capture an authorized payment
   async capturePayment(
-    request: CapturePaymentRequest
+    request: CapturePaymentRequest,
   ): Promise<PaymentProviderModificationResponse>;
 
   // Cancel an authorized payment
   async cancelPayment(
-    request: CancelPaymentRequest
+    request: CancelPaymentRequest,
   ): Promise<PaymentProviderModificationResponse>;
 
   // Refund a captured payment
   async refundPayment(
-    request: RefundPaymentRequest
+    request: RefundPaymentRequest,
   ): Promise<PaymentProviderModificationResponse>;
 
   // Reverse a payment
   async reversePayment(
-    request: ReversePaymentRequest
+    request: ReversePaymentRequest,
   ): Promise<PaymentProviderModificationResponse>;
 }
 ```

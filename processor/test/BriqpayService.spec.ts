@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import BriqpayService from '../src/libs/briqpay/BriqpayService'
 import { beforeEach, describe, expect, it, jest, afterEach } from '@jest/globals'
 import { mockGetCartResult } from './utils/mock-cart-data'

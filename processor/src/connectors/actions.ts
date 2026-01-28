@@ -13,13 +13,32 @@ function toFieldDefinition(field: BriqpayFieldDefinition) {
   }
 }
 
-async function checkIfCustomTypeExistsByKey(key: string) {
-  try {
-    const response = await apiClient.types().withKey({ key }).head().execute()
-    return response.statusCode === 200
-  } catch {
-    return false
-  }
+/**
+ * Finds a custom type by key AND resourceTypeId.
+ *
+ * In commercetools, the unique identifier for a Type is the combination of `key` + `resourceTypeIds`,
+ * NOT just the key alone. This means multiple types can exist with the same key but different
+ * resourceTypeIds (e.g., one for 'order', another for 'shipping').
+ *
+ * Using `.withKey({ key })` would return ANY type with that key, which could be from another
+ * connector that uses the same key for a different resource type.
+ *
+ * @param key - The custom type key to search for
+ * @param resourceTypeId - The resource type that the custom type must be associated with
+ * @returns The matching Type if found, null otherwise
+ */
+async function findTypeByKeyAndResourceType(key: string, resourceTypeId: string): Promise<Type | null> {
+  const response = await apiClient
+    .types()
+    .get({
+      queryArgs: {
+        where: `key="${key}" and resourceTypeIds contains "${resourceTypeId}"`,
+        limit: 1,
+      },
+    })
+    .execute()
+
+  return (response.body.results[0] ?? null) as Type | null
 }
 
 async function createType(key: string): Promise<Type> {
@@ -42,7 +61,7 @@ async function createType(key: string): Promise<Type> {
     throw new Error(`Custom type with key ${key} was not created`)
   }
 
-  return customType
+  return customType as Type
 }
 
 async function addMissingFieldDefinitions(customType: Type, missingFields: BriqpayFieldDefinition[]): Promise<Type> {
@@ -77,52 +96,77 @@ async function addMissingFieldDefinitions(customType: Type, missingFields: Briqp
     throw new Error(`Custom type with key ${customType.key} is not updated`)
   }
 
-  return updatedCustomType
+  return updatedCustomType as Type
 }
 
-export async function updateType(key: string): Promise<Type> {
-  const response = await apiClient.types().withKey({ key }).get().execute()
-  let customType = response.body
-
-  if (!customType.resourceTypeIds.includes('order')) {
-    appLogger.info({ key }, `Custom type with key ${key} does not have order resource type`)
-    customType = await createType(key)
-    return customType
-  }
-
+/**
+ * Ensures that a custom type has all required field definitions.
+ *
+ * This function assumes the custom type already has the correct resourceTypeIds,
+ * as that filtering should be done by `findTypeByKeyAndResourceType`.
+ *
+ * @param customType - The existing custom type to check and update
+ * @returns The custom type (updated if fields were added)
+ */
+async function ensureFieldDefinitions(customType: Type): Promise<Type> {
   const existingFieldNames = new Set(customType.fieldDefinitions.map((f) => f.name))
   const missingFields = briqpayFieldDefinitions.filter((field) => !existingFieldNames.has(field.name))
 
-  if (missingFields.length > 0) {
+  if (missingFields.length === 0) {
     appLogger.info(
-      { key, missingFields: missingFields.map((f) => f.name) },
-      `Custom type with key ${key} is missing ${missingFields.length} field(s)`,
+      { key: customType.key, fieldCount: customType.fieldDefinitions.length },
+      `Custom type with key ${customType.key} has all required fields`,
     )
-    customType = await addMissingFieldDefinitions(customType, missingFields)
+    return customType
   }
 
-  return customType
+  appLogger.info(
+    { key: customType.key, missingFields: missingFields.map((f) => f.name) },
+    `Custom type with key ${customType.key} is missing ${missingFields.length} field(s)`,
+  )
+
+  return addMissingFieldDefinitions(customType, missingFields)
 }
 
-export async function createBriqpayCustomType(key: string): Promise<Type | undefined> {
-  const briqpayCustomTypeExists = await checkIfCustomTypeExistsByKey(key)
+/**
+ * Creates or updates the Briqpay custom type for orders.
+ *
+ * This function handles the commercetools quirk where `key` alone is not unique -
+ * it's the combination of `key + resourceTypeIds` that makes a type unique.
+ *
+ * The flow:
+ * 1. Query for a type with the given key AND resourceTypeId='order'
+ * 2. If found, ensure all required field definitions exist
+ * 3. If not found, create a new type with the key and 'order' resourceTypeId
+ *
+ * This approach avoids conflicts with other connectors that may
+ * use the same key for different resource types (e.g., 'shipping').
+ *
+ * @param key - The custom type key to use
+ * @returns The created or updated custom type
+ */
+export async function createBriqpayCustomType(key: string): Promise<Type> {
+  const existingType = await findTypeByKeyAndResourceType(key, 'order')
 
-  let type: Type | undefined
-  if (briqpayCustomTypeExists) {
-    appLogger.info({ key }, `Custom type with key ${key}`)
-    type = await updateType(key)
+  let type: Type
+  if (existingType) {
+    appLogger.info(
+      { key, resourceTypeIds: existingType.resourceTypeIds },
+      `Found existing custom type with key ${key} and 'order' resource type`,
+    )
+    type = await ensureFieldDefinitions(existingType)
   } else {
-    appLogger.info({ key }, `Custom Type not found, creating with key ${key}`)
+    appLogger.info({ key }, `No custom type found with key ${key} and 'order' resource type, creating new one`)
     type = await createType(key)
   }
 
   appLogger.info(
     {
-      version: type!.version,
-      key: type!.key,
-      fieldCount: type!.fieldDefinitions.length,
+      version: type.version,
+      key: type.key,
+      fieldCount: type.fieldDefinitions.length,
     },
-    `Custom type version ${type!.version} with key ${type!.key} exists with ${type!.fieldDefinitions.length} Briqpay fields.`,
+    `Custom type version ${type.version} with key ${type.key} exists with ${type.fieldDefinitions.length} Briqpay fields.`,
   )
 
   return type

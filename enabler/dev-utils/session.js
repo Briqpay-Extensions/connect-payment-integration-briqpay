@@ -3,7 +3,10 @@ const projectKey = __VITE_CTP_PROJECT_KEY__;
 const fetchAdminToken = async () => {
   const myHeaders = new Headers();
 
-  myHeaders.append("Authorization", `Basic ${btoa(`${__VITE_CTP_CLIENT_ID__}:${__VITE_CTP_CLIENT_SECRET__}`)}`);
+  myHeaders.append(
+    "Authorization",
+    `Basic ${btoa(`${__VITE_CTP_CLIENT_ID__}:${__VITE_CTP_CLIENT_SECRET__}`)}`
+  );
   myHeaders.append("Content-Type", "application/x-www-form-urlencoded");
 
   var urlencoded = new URLSearchParams();
@@ -66,7 +69,5 @@ const getSessionId = async (cartId) => {
     console.error("Not able to create session:", url, data);
     throw new Error("Not able to create session");
   }
-
-  console.log("Session created:", data);
   return data.id;
 };

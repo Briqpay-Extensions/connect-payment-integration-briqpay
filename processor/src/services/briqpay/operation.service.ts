@@ -5,6 +5,7 @@ import {
   TransactionState,
   TransactionType,
 } from '@commercetools/connect-payments-sdk'
+import type { Cart as PlatformCart } from '@commercetools/platform-sdk'
 import {
   CancelPaymentRequest,
   CapturePaymentRequest,
@@ -51,7 +52,11 @@ export class BriqpayOperationService {
       throw new ValidationError('Commerce Tools does not support partial captures towards all payment providers')
     }
 
-    const briqpayCapture = await Briqpay.capture(ctCart, request.payment.amountPlanned, briqpaySessionId)
+    const briqpayCapture = await Briqpay.capture(
+      ctCart as PlatformCart,
+      request.payment.amountPlanned,
+      briqpaySessionId,
+    )
 
     // Update pending authorization to success if needed
     const pendingAuthorization = request.payment.transactions.find(
@@ -166,7 +171,7 @@ export class BriqpayOperationService {
       'Calling Briqpay refund API',
     )
     const briqpayRefund = await Briqpay.refund(
-      ctCart,
+      ctCart as PlatformCart,
       request.payment.amountPlanned,
       briqpaySessionId,
       existingCapture.interactionId,

@@ -1,10 +1,11 @@
 import { Cart, CommercetoolsCartService } from '@commercetools/connect-payments-sdk'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
+import type { Cart as PlatformCart } from '@commercetools/platform-sdk'
+import { LineItem } from '@commercetools/platform-sdk'
 import { appLogger } from '../../payment-sdk'
 import { CartItem, MediumBriqpayResponse } from '../types/briqpay-payment.type'
 import Briqpay from '../../libs/briqpay/BriqpayService'
 import { apiRoot } from '../../libs/commercetools/api-root'
-import { LineItem } from '@commercetools/platform-sdk'
 import { SessionError, ValidationError } from '../../libs/errors/briqpay-errors'
 
 export class BriqpaySessionService {
@@ -93,7 +94,7 @@ export class BriqpaySessionService {
 
       appLogger.info({}, 'Creating new session')
       const briqpaySession = await Briqpay.createSession(
-        ctCart,
+        ctCart as PlatformCart,
         amountPlanned,
         hostname,
         futureOrderNumber,
@@ -147,7 +148,7 @@ export class BriqpaySessionService {
       appLogger.info({}, 'Updating session with new cart data')
       const briqpaySession = (await Briqpay.updateSession(
         existingSessionId,
-        ctCart,
+        ctCart as PlatformCart,
         amountPlanned,
       )) as unknown as MediumBriqpayResponse
       appLogger.info({}, 'Updated session:')
@@ -158,7 +159,7 @@ export class BriqpaySessionService {
         'Failed to update Briqpay session, creating new one:',
       )
       const briqpaySession = await Briqpay.createSession(
-        ctCart,
+        ctCart as PlatformCart,
         amountPlanned,
         hostname,
         futureOrderNumber,
@@ -184,7 +185,7 @@ export class BriqpaySessionService {
     )
     try {
       const briqpaySession = await Briqpay.createSession(
-        ctCart,
+        ctCart as PlatformCart,
         amountPlanned,
         hostname,
         futureOrderNumber,
@@ -250,7 +251,7 @@ export class BriqpaySessionService {
 
     // Compare each cart item with session items
     for (const cartItem of cartItems) {
-      if (!this.isCartItemInSession(cartItem, sessionItems, locale)) {
+      if (!this.isCartItemInSession(cartItem as LineItem, sessionItems, locale)) {
         appLogger.info({}, 'No matching session item found for cart item')
         return false
       }

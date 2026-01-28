@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, test, expect, afterEach, jest, beforeEach } from '@jest/globals'
 import crypto from 'crypto'
 import { ConfigResponse, ModifyPayment, StatusResponse } from '../src/services/types/operation.type'
@@ -77,7 +76,8 @@ const createSignedWebhookRequest = (data: NotificationRequestSchemaDTO) => {
   }
 
   const rawBody = JSON.stringify(data)
-  const timestamp = Date.now().toString()
+  // Unique past timestamp per call (within 5min tolerance) so replay cache does not trigger across tests
+  const timestamp = (Date.now() - 15_000 - Math.floor(Math.random() * 50_000)).toString()
   const signedPayload = `${timestamp}.${rawBody}`
   const signature = crypto.createHmac('sha256', secret).update(signedPayload).digest('base64')
   const signatureHeader = `t=${timestamp},s1=${signature}`

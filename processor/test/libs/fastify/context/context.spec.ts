@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, test, expect, afterEach, jest, beforeEach } from '@jest/globals'
 import { SessionAuthentication, SessionPrincipal } from '@commercetools/connect-payments-sdk'
 import * as Context from '../../../../src/libs/fastify/context/context'
