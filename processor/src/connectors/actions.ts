@@ -66,7 +66,7 @@ async function findTypeByKeyAndResourceType(key: string, resourceTypeId: string)
         .types()
         .get({
           queryArgs: {
-            where: `key="${key}" and resourceTypeIds contains "${resourceTypeId}"`,
+            where: `key="${key}" and resourceTypeIds contains any ("${resourceTypeId}")`,
             limit: 1,
           },
         })
@@ -107,7 +107,7 @@ async function findAllTypesByResourceType(resourceTypeId: string): Promise<Type[
         .types()
         .get({
           queryArgs: {
-            where: `resourceTypeIds contains "${resourceTypeId}"`,
+            where: `resourceTypeIds contains any ("${resourceTypeId}")`,
             // Get all results, not just one
             limit: 500, // Reasonable upper limit for number of types
           },

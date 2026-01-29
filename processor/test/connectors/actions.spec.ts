@@ -233,7 +233,7 @@ describe('actions', () => {
       // Verify the where clause specifically filters by 'order' resourceTypeId
       expect(mockGet as jest.Mock).toHaveBeenCalledWith({
         queryArgs: {
-          where: `key="${mockTypeKey}" and resourceTypeIds contains "order"`,
+          where: `key="${mockTypeKey}" and resourceTypeIds contains any ("order")`,
           limit: 1,
         },
       })
