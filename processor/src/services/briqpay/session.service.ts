@@ -7,6 +7,7 @@ import { CartItem, MediumBriqpayResponse } from '../types/briqpay-payment.type'
 import Briqpay from '../../libs/briqpay/BriqpayService'
 import { apiRoot } from '../../libs/commercetools/api-root'
 import { SessionError, ValidationError } from '../../libs/errors/briqpay-errors'
+import { getBriqpayTypeKey } from '../../connectors/actions'
 
 export class BriqpaySessionService {
   constructor(private readonly ctCartService: CommercetoolsCartService) {}
@@ -18,12 +19,15 @@ export class BriqpaySessionService {
    * @param briqpaySessionId - Briqpay session id
    */
   public async updateCartWithBriqpaySessionId(ctCart: Cart, briqpaySessionId: string): Promise<void> {
-    const briqpaySessionIdCustomFieldKey = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
-    const existingBriqpaySessionId = ctCart.custom?.fields?.[briqpaySessionIdCustomFieldKey]
+    // Field name for the session ID field (may be prefixed if there was a conflict)
+    const briqpaySessionIdFieldName = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
+    const existingBriqpaySessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName]
 
     let updatedCart = ctCart
     if (!ctCart.custom) {
-      appLogger.info({ briqpaySessionId }, 'Setting custom type for cart')
+      // Get the actual type key (may be different from field name if we extended another type)
+      const typeKey = await getBriqpayTypeKey()
+      appLogger.info({ briqpaySessionId, typeKey }, 'Setting custom type for cart')
       const cartResponse = await apiRoot
         .carts()
         .withId({ ID: ctCart.id })
@@ -34,7 +38,7 @@ export class BriqpaySessionService {
               {
                 action: 'setCustomType',
                 type: {
-                  key: briqpaySessionIdCustomFieldKey,
+                  key: typeKey,
                   typeId: 'type',
                 },
               },
@@ -58,7 +62,7 @@ export class BriqpaySessionService {
             actions: [
               {
                 action: 'setCustomField',
-                name: briqpaySessionIdCustomFieldKey,
+                name: briqpaySessionIdFieldName,
                 value: briqpaySessionId,
               },
             ],

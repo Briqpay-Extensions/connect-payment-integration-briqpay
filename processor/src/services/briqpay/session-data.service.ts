@@ -6,7 +6,7 @@ import {
   ExtractedBriqpayCustomFields,
 } from '../types/briqpay-session-data.type'
 import { MediumBriqpayResponse } from '../types/briqpay-payment.type'
-import { briqpayCustomTypeKey } from '../../custom-types/custom-types'
+import { getBriqpayTypeKey } from '../../connectors/actions'
 
 /**
  * Service responsible for fetching full Briqpay session data and ingesting it
@@ -219,9 +219,10 @@ export class BriqpaySessionDataService {
     // Determine which custom type to use
     // 1. Use provided customTypeKey if any
     // 2. Use order's current custom type if it exists
-    // 3. Fallback to default Briqpay custom type
+    // 3. Fallback to dynamically resolved Briqpay custom type
     const currentTypeKey = (order.custom?.type as any)?.obj?.key || (order.custom?.type as any)?.key
-    const targetTypeKey = customTypeKey || currentTypeKey || briqpayCustomTypeKey
+    const fallbackTypeKey = await getBriqpayTypeKey()
+    const targetTypeKey = customTypeKey || currentTypeKey || fallbackTypeKey
 
     // Build the update actions for each custom field
     const actions = fieldEntries.map(([fieldName, value]) => ({

@@ -16,6 +16,12 @@ jest.mock('../../../src/payment-sdk', () => ({
   },
 }))
 
+// Mock actions module to avoid paymentSDK initialization issues
+jest.mock('../../../src/connectors/actions', () => ({
+  getBriqpayTypeKey: jest.fn().mockResolvedValue('briqpay-session-id'),
+  clearBriqpayTypeKeyCache: jest.fn(),
+}))
+
 // Mock Briqpay service
 jest.mock('../../../src/libs/briqpay/BriqpayService')
 

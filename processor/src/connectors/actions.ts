@@ -1,8 +1,18 @@
 import { appLogger, paymentSDK } from '../payment-sdk'
-import { type Type, type TypeAddFieldDefinitionAction } from '@commercetools/platform-sdk'
-import { type BriqpayFieldDefinition, briqpayFieldDefinitions } from '../custom-types/custom-types'
+import { type FieldDefinition, type Type, type TypeAddFieldDefinitionAction } from '@commercetools/platform-sdk'
+import {
+  briqpayCustomTypeKey,
+  type BriqpayFieldDefinition,
+  briqpayFieldDefinitions,
+} from '../custom-types/custom-types'
 
-const apiClient = paymentSDK.ctAPI.client
+// Lazy getter for apiClient to avoid initialization issues in tests
+function getApiClient() {
+  return paymentSDK.ctAPI.client
+}
+
+// Cache for the resolved type key at runtime
+let cachedBriqpayTypeKey: string | null = null
 
 function toFieldDefinition(field: BriqpayFieldDefinition) {
   return {
@@ -62,7 +72,7 @@ async function findTypeByKeyAndResourceType(key: string, resourceTypeId: string)
 
   return withErrorLogging(
     async () => {
-      const response = await apiClient
+      const response = await getApiClient()
         .types()
         .get({
           queryArgs: {
@@ -103,7 +113,7 @@ async function findAllTypesByResourceType(resourceTypeId: string): Promise<Type[
 
   return withErrorLogging(
     async () => {
-      const response = await apiClient
+      const response = await getApiClient()
         .types()
         .get({
           queryArgs: {
@@ -169,7 +179,7 @@ async function createType(key: string): Promise<Type> {
 
   return withErrorLogging(
     async () => {
-      const response = await apiClient
+      const response = await getApiClient()
         .types()
         .post({
           body: {
@@ -234,7 +244,7 @@ async function addMissingFieldDefinitions(customType: Type, missingFields: Briqp
 
   return withErrorLogging(
     async () => {
-      const response = await apiClient
+      const response = await getApiClient()
         .types()
         .withId({ ID: customType.id }) // Use ID instead of key to avoid ambiguity
         .post({
@@ -358,4 +368,71 @@ export async function createBriqpayCustomType(key: string): Promise<Type> {
   )
 
   return type
+}
+
+/**
+ * Gets the actual custom type key that contains Briqpay fields.
+ *
+ * This function is used at runtime to determine which type key to use when
+ * setting custom types on carts/orders. Since Briqpay may have extended an
+ * existing type (like ingrid-session) instead of creating its own type,
+ * we need to find which type actually has the Briqpay fields.
+ *
+ * The result is cached to avoid repeated API calls.
+ *
+ * @returns The key of the type that contains Briqpay fields
+ */
+export async function getBriqpayTypeKey(): Promise<string> {
+  // Return cached value if available
+  if (cachedBriqpayTypeKey) {
+    return cachedBriqpayTypeKey
+  }
+
+  const configuredKey = briqpayCustomTypeKey
+
+  // 1. First check if the configured Briqpay type exists
+  const briqpayType = await findTypeByKeyAndResourceType(configuredKey, 'order')
+
+  if (briqpayType) {
+    appLogger.info({ key: configuredKey }, `Found Briqpay custom type with configured key "${configuredKey}"`)
+    cachedBriqpayTypeKey = configuredKey
+    return cachedBriqpayTypeKey
+  }
+
+  // 2. If not, find any type with 'order' resourceTypeId that has Briqpay fields
+  const allOrderTypes = await findAllTypesByResourceType('order')
+
+  // The primary Briqpay field that must exist
+  const primaryBriqpayFieldName = briqpayFieldDefinitions[0]?.name || 'briqpay-session-id'
+
+  for (const orderType of allOrderTypes) {
+    const hasBriqpayFields = orderType.fieldDefinitions.some(
+      (field: FieldDefinition) => field.name === primaryBriqpayFieldName || field.name.startsWith('briqpay-'),
+    )
+
+    if (hasBriqpayFields) {
+      appLogger.info(
+        { foundKey: orderType.key, configuredKey },
+        `Found Briqpay fields in custom type "${orderType.key}" (configured key was "${configuredKey}")`,
+      )
+      cachedBriqpayTypeKey = orderType.key
+      return cachedBriqpayTypeKey
+    }
+  }
+
+  // 3. Fallback to configured key (post-deploy should have created it)
+  appLogger.warn(
+    { configuredKey },
+    `No custom type found with Briqpay fields, falling back to configured key "${configuredKey}"`,
+  )
+  cachedBriqpayTypeKey = configuredKey
+  return cachedBriqpayTypeKey
+}
+
+/**
+ * Clears the cached Briqpay type key.
+ * Useful for testing or when the type configuration changes.
+ */
+export function clearBriqpayTypeKeyCache(): void {
+  cachedBriqpayTypeKey = null
 }

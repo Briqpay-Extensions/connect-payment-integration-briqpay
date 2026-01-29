@@ -5,6 +5,12 @@ import {
   ExtractedBriqpayCustomFields,
 } from '../../../src/services/types/briqpay-session-data.type'
 
+// Mock actions module to avoid paymentSDK initialization issues
+jest.mock('../../../src/connectors/actions', () => ({
+  getBriqpayTypeKey: jest.fn().mockResolvedValue('briqpay-session-id'),
+  clearBriqpayTypeKeyCache: jest.fn(),
+}))
+
 // Mock apiRoot
 const mockOrderGet = jest.fn<
   () => Promise<{
