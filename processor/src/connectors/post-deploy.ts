@@ -1,30 +1,34 @@
 import 'dotenv/config'
 
-import { createBriqpayCustomType } from './actions'
-import { appLogger } from '../payment-sdk'
+import { createBriqpayCustomTypeForPostDeploy } from './post-deploy-actions'
+import { postDeployLogger } from './post-deploy-logger'
+
+const logger = postDeployLogger
 
 async function postDeploy() {
   const customTypeKey = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
 
-  appLogger.info(
+  logger.info(
     { customTypeKey, envVarSet: !!process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY },
     `Starting post-deploy: creating/updating custom type with key "${customTypeKey}"`,
   )
 
-  await createBriqpayCustomType(customTypeKey)
+  await createBriqpayCustomTypeForPostDeploy(customTypeKey)
 
-  appLogger.info({ customTypeKey }, `Post-deploy completed successfully`)
+  logger.info({ customTypeKey }, `Post-deploy completed successfully`)
 }
 
 async function runPostDeployScripts() {
   try {
+    logger.info({}, 'Post-deploy script starting...')
     await postDeploy()
+    logger.info({}, 'Post-deploy script completed successfully')
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
     const errorStack = error instanceof Error ? error.stack : undefined
 
-    // Log to appLogger so it appears in CT dashboard
-    appLogger.error(
+    // Log to console so it appears in CT dashboard
+    logger.error(
       {
         error: errorMessage,
         stack: errorStack,

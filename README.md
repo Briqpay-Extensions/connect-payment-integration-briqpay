@@ -118,7 +118,6 @@ Create an API client responsible for payment management in your commercetools pr
   - `manage_checkout_transactions`
   - `manage_checkout_payment_intents`
   - `manage_key_value_documents`
-  - `manage_carts` - Required for storing Briqpay session ID on cart
 - **View**:
   - `view_key_value_documents` (View Custom Objects)
   - `view_states`
