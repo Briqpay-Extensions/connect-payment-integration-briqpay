@@ -21,7 +21,7 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
 - Supports multiple payment methods through Briqpay (invoice, installments, etc.)
 - Real-time payment session synchronization between Briqpay and commercetools
 - Webhook support for asynchronous payment status updates (capture, refund, cancel)
-- Automatic custom type creation for storing Briqpay session data on orders (session ID, PSP metadata, transaction data)
+- Dynamic custom type extension for storing Briqpay session data on orders (extends existing order types or creates new ones)
 - Supports payment operations: authorize, capture, refund, cancel, and reverse
 - Includes local development utilities with Docker Compose setup
 - Jest testing framework with MSW for API mocking
@@ -89,6 +89,8 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
    - `BRIQPAY_TRANSACTION_DATA_PSP_ID_KEY` - Default: `briqpay-transaction-data-psp-id`
    - `BRIQPAY_TRANSACTION_DATA_PSP_DISPLAY_NAME_KEY` - Default: `briqpay-transaction-data-psp-display-name`
    - `BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY` - Default: `briqpay-transaction-data-psp-integration-name`
+
+   > **Note**: The connector dynamically extends existing custom types for the `order` resource type instead of always creating separate types. If field name conflicts exist, Briqpay fields are prefixed with `briqpay-` to avoid data loss.
 
 6. **Deploy on Connect**
 
@@ -796,7 +798,7 @@ VITE_PROCESSOR_URL=http://localhost:8080
      - `processor` (service application type)
 
 3. **Post-deployment hooks**:
-   - `postDeploy`: Automatically creates required custom types
+   - `postDeploy`: Automatically creates or extends custom types for Briqpay data storage
    - `preUndeploy`: Cleanup custom types on undeployment
 
 ### Docker Deployment
@@ -1175,24 +1177,30 @@ class BriqpayNotificationService {
 
 #### Custom Type Management
 
-The processor automatically creates and manages commercetools custom types:
+The processor dynamically extends existing commercetools custom types or creates new ones:
 
 ```typescript
-// Post-deployment hook creates custom type with multiple fields:
-export async function createBriqpayCustomType(typeKey: string) {
-  // Creates custom type on 'order' resource with fields:
-  // - briqpaySessionId: Session ID
-  // - briqpayPspMetaDataCustomerFacingReference: PSP customer reference
-  // - briqpayPspMetaDataDescription: PSP description
-  // - briqpayPspMetaDataType: PSP type
-  // - briqpayPspMetaDataPayerEmail: Payer email
-  // - briqpayPspMetaDataPayerFirstName: Payer first name
-  // - briqpayPspMetaDataPayerLastName: Payer last name
-  // - briqpayTransactionDataReservationId: Reservation ID
-  // - briqpayTransactionDataSecondaryReservationId: Secondary reservation ID
-  // - briqpayTransactionDataPspId: PSP ID
-  // - briqpayTransactionDataPspDisplayName: PSP display name
-  // - briqpayTransactionDataPspIntegrationName: PSP integration name
+// Post-deployment hook ensures Briqpay fields exist:
+export async function createBriqpayCustomType(key: string) {
+  // 1. Check if Briqpay's own type exists (backward compatibility)
+  // 2. If not, query ALL types for 'order' resource
+  // 3. Extend first found type with Briqpay fields
+  // 4. Handle field conflicts by prefixing (e.g., 'briqpay-sessionId')
+  // 5. Fallback to creating new Briqpay type if no order types exist
+
+  // Fields added to the target type:
+  // - briqpay-session-id: Session ID (or prefixed if conflict)
+  // - briqpay-psp-meta-data-customer-facing-reference: PSP customer reference
+  // - briqpay-psp-meta-data-description: PSP description
+  // - briqpay-psp-meta-data-type: PSP type
+  // - briqpay-psp-meta-data-payer-email: Payer email
+  // - briqpay-psp-meta-data-payer-first-name: Payer first name
+  // - briqpay-psp-meta-data-payer-last-name: Payer last name
+  // - briqpay-transaction-data-reservation-id: Reservation ID
+  // - briqpay-transaction-data-secondary-reservation-id: Secondary reservation ID
+  // - briqpay-transaction-data-psp-id: PSP ID
+  // - briqpay-transaction-data-psp-display-name: PSP display name
+  // - briqpay-transaction-data-psp-integration-name: PSP integration name
 }
 ```
 

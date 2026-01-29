@@ -22,7 +22,7 @@ The processor fetches cart and payment details from commercetools Composable Com
 - **Briqpay Session Management**: Create and update Briqpay payment sessions
 - **Payment Operations**: Capture, refund, cancel, and reverse payments
 - **Webhook Handling**: Process Briqpay notifications for order status, capture status, and refund status
-- **Custom Types**: Automatic creation of commercetools custom types for storing Briqpay session data on orders (session ID, PSP metadata, transaction data)
+- **Custom Types**: Dynamic extension of commercetools custom types for storing Briqpay session data on orders (extends existing types or creates new ones)
 - **Health Checks**: Status endpoint with health checks for both commercetools and Briqpay APIs
 
 ## Tech Stack
@@ -297,7 +297,7 @@ curl -X POST 'http://localhost:9002/jwt/token' \
 
 ### Post-Deploy Script
 
-Creates the Briqpay custom type in commercetools for storing session IDs on orders.
+Ensures Briqpay custom type fields exist in commercetools for storing session data on orders. The script dynamically extends existing custom types for the `order` resource type or creates a new one if none exist.
 
 ```bash
 # Build first
@@ -307,7 +307,14 @@ npm run build
 npm run connector:post-deploy
 ```
 
-The script creates a custom type with key `briqpay-session-id` (configurable via `BRIQPAY_SESSION_CUSTOM_TYPE_KEY`) on the `order` resource type. All field keys are also configurable via environment variables (see [Environment Variables](#environment-variables)). The default fields are:
+**Behavior:**
+- Queries all custom types associated with the `order` resource type
+- Extends the first found type by adding Briqpay fields (configurable via `BRIQPAY_*` environment variables)
+- If field name conflicts exist, Briqpay fields are prefixed with `briqpay-`
+- Only creates a new custom type if no existing `order` types are found
+
+**Field Configuration:**
+The default Briqpay fields (configurable via environment variables) are:
 
 - `briqpay-session-id` - Session ID
 - `briqpay-psp-meta-data-customer-facing-reference` - PSP customer reference

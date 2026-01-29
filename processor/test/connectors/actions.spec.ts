@@ -192,7 +192,7 @@ describe('actions', () => {
         } as never),
       } as any)
 
-      // Update call uses withId (not withKey) to avoid the ingrid-shipping key collision issue
+      // Update call uses withId (not withKey) to avoid another connector key collision issue
       mockWithId.mockReturnValue({
         post: jest.fn((_opts: { body: unknown }) => ({
           execute: jest.fn().mockResolvedValue({
@@ -210,8 +210,7 @@ describe('actions', () => {
       expect(result.version).toBe(2)
     })
 
-    test('should NOT return type from different resourceTypeId (e.g., ingrid-shipping scenario)', async () => {
-      // This is the key test - simulating the ingrid-shipping conflict
+    test('should NOT return type from different resourceTypeId', async () => {
       // The query should filter by resourceTypeIds, so a type with 'shipping' won't be returned
       const createdType = createMockType()
 

@@ -94,11 +94,15 @@ export class BriqpaySessionDataService {
    */
   public extractCustomFields(
     sessionData: BriqpayFullSessionResponse | MediumBriqpayResponse,
+    fieldMappings?: Record<string, string>,
   ): ExtractedBriqpayCustomFields {
     const result: ExtractedBriqpayCustomFields = {}
 
-    // Helper to get field name from environment or fallback
-    const getFieldName = (envKey: string, fallback: string) => process.env[envKey] || fallback
+    // Helper to get field name from environment, fallback, or mapping
+    const getFieldName = (envKey: string, fallback: string) => {
+      const defaultName = process.env[envKey] || fallback
+      return fieldMappings?.[defaultName] || defaultName
+    }
 
     // Extract PSP Metadata fields (only present in BriqpayFullSessionResponse)
     const pspMetadata: BriqpayPspMetadata | undefined = (sessionData as BriqpayFullSessionResponse).data?.pspMetadata
@@ -186,7 +190,11 @@ export class BriqpaySessionDataService {
    * @param orderId - The CommerceTools order ID
    * @param customFields - The extracted custom field values
    */
-  public async updateOrderCustomFields(orderId: string, customFields: ExtractedBriqpayCustomFields): Promise<void> {
+  public async updateOrderCustomFields(
+    orderId: string,
+    customFields: ExtractedBriqpayCustomFields,
+    customTypeKey?: string,
+  ): Promise<void> {
     const fieldEntries = Object.entries(customFields)
 
     if (fieldEntries.length === 0) {
@@ -199,6 +207,7 @@ export class BriqpaySessionDataService {
         orderId,
         fieldCount: fieldEntries.length,
         fields: Object.keys(customFields),
+        customTypeKey,
       },
       'Updating order custom fields with Briqpay session data',
     )
@@ -207,6 +216,13 @@ export class BriqpaySessionDataService {
     const orderResponse = await apiRoot.orders().withId({ ID: orderId }).get().execute()
     const order = orderResponse.body
 
+    // Determine which custom type to use
+    // 1. Use provided customTypeKey if any
+    // 2. Use order's current custom type if it exists
+    // 3. Fallback to default Briqpay custom type
+    const currentTypeKey = (order.custom?.type as any)?.obj?.key || (order.custom?.type as any)?.key
+    const targetTypeKey = customTypeKey || currentTypeKey || briqpayCustomTypeKey
+
     // Build the update actions for each custom field
     const actions = fieldEntries.map(([fieldName, value]) => ({
       action: 'setCustomField' as const,
@@ -214,9 +230,12 @@ export class BriqpaySessionDataService {
       value: value,
     }))
 
-    // If order doesn't have custom type set, we need to set it first
-    if (!order.custom) {
-      appLogger.info({ orderId }, 'Setting custom type on order before updating fields')
+    // If order doesn't have custom type set, or it's different from target, we need to set it first
+    if (!order.custom || currentTypeKey !== targetTypeKey) {
+      appLogger.info(
+        { orderId, currentType: currentTypeKey, targetType: targetTypeKey },
+        'Setting/Updating custom type on order before updating fields',
+      )
 
       const setTypeResponse = await apiRoot
         .orders()
@@ -228,7 +247,7 @@ export class BriqpaySessionDataService {
               {
                 action: 'setCustomType',
                 type: {
-                  key: briqpayCustomTypeKey,
+                  key: targetTypeKey,
                   typeId: 'type',
                 },
               },
@@ -249,7 +268,7 @@ export class BriqpaySessionDataService {
         })
         .execute()
     } else {
-      // Order already has custom type, just update the fields
+      // Order already has the correct custom type, just update the fields
       await apiRoot
         .orders()
         .withId({ ID: orderId })
@@ -266,6 +285,7 @@ export class BriqpaySessionDataService {
       {
         orderId,
         updatedFields: Object.keys(customFields),
+        targetTypeKey,
       },
       'Successfully updated order custom fields with Briqpay session data',
     )
@@ -281,29 +301,82 @@ export class BriqpaySessionDataService {
     appLogger.info({ sessionId, orderId }, 'Starting Briqpay session data ingestion to order')
 
     try {
-      // 1. Fetch full session data from Briqpay
       const sessionData = await this.fetchFullSession(sessionId)
+      const fieldMappings = await this.buildFieldMappingsForOrder(orderId)
+      const customFields = this.extractCustomFields(sessionData, fieldMappings)
 
-      // 2. Extract custom field values
-      const customFields = this.extractCustomFields(sessionData)
-
-      // 3. Update order custom fields
       await this.updateOrderCustomFields(orderId, customFields)
 
       appLogger.info({ sessionId, orderId }, 'Successfully completed Briqpay session data ingestion')
     } catch (error) {
-      appLogger.error(
-        {
-          sessionId,
-          orderId,
-          error: error instanceof Error ? error.message : error,
-          stack: error instanceof Error ? error.stack : undefined,
-        },
-        'Failed to ingest Briqpay session data to order',
-      )
-      // Re-throw to let caller handle the error appropriately
-      throw error
+      this.handleIngestionError(error, sessionId, orderId)
     }
+  }
+
+  /**
+   * Builds field mappings for an order based on its custom type definition
+   * Handles prefixed field names from conflict resolution
+   */
+  private async buildFieldMappingsForOrder(orderId: string): Promise<Record<string, string> | undefined> {
+    const orderResponse = await apiRoot.orders().withId({ ID: orderId }).get().execute()
+    const order = orderResponse.body
+
+    if (!order.custom) {
+      return undefined
+    }
+
+    const typeResponse = await apiRoot.types().withId({ ID: order.custom.type.id }).get().execute()
+    const typeDefinition = typeResponse.body
+
+    const fieldMappings: Record<string, string> = {}
+    const existingFieldNames = new Set(typeDefinition.fieldDefinitions.map((f) => f.name))
+
+    for (const fieldName of this.getPossibleBriqpayFieldNames()) {
+      if (!existingFieldNames.has(fieldName) && existingFieldNames.has(`briqpay-${fieldName}`)) {
+        fieldMappings[fieldName] = `briqpay-${fieldName}`
+      }
+    }
+
+    return fieldMappings
+  }
+
+  /**
+   * Gets all possible Briqpay field names based on environment configuration
+   */
+  private getPossibleBriqpayFieldNames(): string[] {
+    return [
+      process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id',
+      process.env.BRIQPAY_PSP_META_DATA_CUSTOMER_FACING_REFERENCE_KEY ||
+        'briqpay-psp-meta-data-customer-facing-reference',
+      process.env.BRIQPAY_PSP_META_DATA_DESCRIPTION_KEY || 'briqpay-psp-meta-data-description',
+      process.env.BRIQPAY_PSP_META_DATA_TYPE_KEY || 'briqpay-psp-meta-data-type',
+      process.env.BRIQPAY_PSP_META_DATA_PAYER_EMAIL_KEY || 'briqpay-psp-meta-data-payer-email',
+      process.env.BRIQPAY_PSP_META_DATA_PAYER_FIRST_NAME_KEY || 'briqpay-psp-meta-data-payer-first-name',
+      process.env.BRIQPAY_PSP_META_DATA_PAYER_LAST_NAME_KEY || 'briqpay-psp-meta-data-payer-last-name',
+      process.env.BRIQPAY_TRANSACTION_DATA_RESERVATION_ID_KEY || 'briqpay-transaction-data-reservation-id',
+      process.env.BRIQPAY_TRANSACTION_DATA_SECONDARY_RESERVATION_ID_KEY ||
+        'briqpay-transaction-data-secondary-reservation-id',
+      process.env.BRIQPAY_TRANSACTION_DATA_PSP_ID_KEY || 'briqpay-transaction-data-psp-id',
+      process.env.BRIQPAY_TRANSACTION_DATA_PSP_DISPLAY_NAME_KEY || 'briqpay-transaction-data-psp-display-name',
+      process.env.BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY || 'briqpay-transaction-data-psp-integration-name',
+    ]
+  }
+
+  /**
+   * Handles ingestion errors with consistent logging
+   */
+  private handleIngestionError(error: unknown, sessionId: string, orderId: string): never {
+    appLogger.error(
+      {
+        sessionId,
+        orderId,
+        error: error instanceof Error ? error.message : error,
+        stack: error instanceof Error ? error.stack : undefined,
+      },
+      'Failed to ingest Briqpay session data to order',
+    )
+    // Re-throw to let caller handle the error appropriately
+    throw error
   }
 
   /**

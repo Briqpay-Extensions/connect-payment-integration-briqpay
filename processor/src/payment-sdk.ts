@@ -5,16 +5,16 @@ import { log } from './libs/logger/index'
 
 export class AppLogger implements Logger {
   public debug = (obj: object, message: string) => {
-    log.debug(message, obj || undefined)
+    log.debug('[BRIQPAY] ' + message, obj || undefined)
   }
   public info = (obj: object, message: string) => {
-    log.info(message, obj || undefined)
+    log.info('[BRIQPAY] ' + message, obj || undefined)
   }
   public warn = (obj: object, message: string) => {
-    log.warn(message, obj || undefined)
+    log.warn('[BRIQPAY] ' + message, obj || undefined)
   }
   public error = (obj: object, message: string) => {
-    log.error(message, obj || undefined)
+    log.error('[BRIQPAY] ' + message, obj || undefined)
   }
 }
 

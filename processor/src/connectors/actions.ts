@@ -92,6 +92,73 @@ async function findTypeByKeyAndResourceType(key: string, resourceTypeId: string)
   )
 }
 
+/**
+ * Finds all custom types that use a specific resourceTypeId.
+ *
+ * @param resourceTypeId - The resource type to search for (e.g., 'order')
+ * @returns Array of all types that have this resourceTypeId
+ */
+async function findAllTypesByResourceType(resourceTypeId: string): Promise<Type[]> {
+  appLogger.info({ resourceTypeId }, `Searching for all custom types with resourceTypeId "${resourceTypeId}"`)
+
+  return withErrorLogging(
+    async () => {
+      const response = await apiClient
+        .types()
+        .get({
+          queryArgs: {
+            where: `resourceTypeIds contains "${resourceTypeId}"`,
+            // Get all results, not just one
+            limit: 500, // Reasonable upper limit for number of types
+          },
+        })
+        .execute()
+
+      const foundTypes = response.body.results
+
+      appLogger.info(
+        {
+          resourceTypeId,
+          typeCount: foundTypes.length,
+          types: foundTypes.map((t) => ({ key: t.key, id: t.id })),
+        },
+        `Found ${foundTypes.length} custom types with resourceTypeId "${resourceTypeId}"`,
+      )
+
+      return foundTypes as Type[]
+    },
+    { action: 'find all types by resourceTypeId', typeId: resourceTypeId },
+  )
+}
+
+/**
+ * Checks for field name conflicts and prefixes them if needed.
+ *
+ * @param fieldsToAdd - Briqpay fields we want to add
+ * @param existingFields - Fields already in the target type
+ * @returns Fields with conflicts prefixed (e.g., 'fieldName' -> 'briqpay-fieldName')
+ */
+function resolveFieldConflicts(
+  fieldsToAdd: BriqpayFieldDefinition[],
+  existingFields: any[], // Using any here to avoid importing FieldDefinition from platform-sdk if not needed, but it's already imported
+): BriqpayFieldDefinition[] {
+  const existingFieldNames = new Set(existingFields.map((f) => f.name))
+
+  return fieldsToAdd.map((field) => {
+    if (existingFieldNames.has(field.name)) {
+      appLogger.warn(
+        { fieldName: field.name },
+        `Field name conflict detected. Prefixing field "${field.name}" with "briqpay-"`,
+      )
+      return {
+        ...field,
+        name: `briqpay-${field.name}`,
+      }
+    }
+    return field
+  })
+}
+
 async function createType(key: string): Promise<Type> {
   const fieldDefinitions = briqpayFieldDefinitions.map(toFieldDefinition)
 
@@ -139,7 +206,7 @@ async function createType(key: string): Promise<Type> {
  * IMPORTANT: Uses `.withId({ ID })` instead of `.withKey({ key })` because in commercetools,
  * the key alone is NOT unique - it's the combination of `key + resourceTypeIds` that makes
  * a type unique. Using `.withKey()` could accidentally update the wrong type if another
- * connector (e.g., ingrid-shipping) uses the same key for a different resource type.
+ * connector uses the same key for a different resource type.
  *
  * @param customType - The custom type to update (must have a valid id)
  * @param missingFields - The field definitions to add
@@ -237,19 +304,49 @@ async function ensureFieldDefinitions(customType: Type): Promise<Type> {
  * @returns The created or updated custom type
  */
 export async function createBriqpayCustomType(key: string): Promise<Type> {
-  const existingType = await findTypeByKeyAndResourceType(key, 'order')
+  // 1. Check if Briqpay's own type exists
+  const existingBriqpayType = await findTypeByKeyAndResourceType(key, 'order')
 
-  let type: Type
-  if (existingType) {
+  if (existingBriqpayType) {
     appLogger.info(
-      { key, resourceTypeIds: existingType.resourceTypeIds },
-      `Found existing custom type with key ${key} and 'order' resource type`,
+      { key, resourceTypeIds: existingBriqpayType.resourceTypeIds },
+      `Found existing Briqpay custom type with key ${key} and 'order' resource type`,
     )
-    type = await ensureFieldDefinitions(existingType)
-  } else {
-    appLogger.info({ key }, `No custom type found with key ${key} and 'order' resource type, creating new one`)
-    type = await createType(key)
+    return ensureFieldDefinitions(existingBriqpayType)
   }
+
+  // 2. If not, query for ALL types with resourceTypeId='order'
+  const allOrderTypes = await findAllTypesByResourceType('order')
+
+  if (allOrderTypes.length > 0) {
+    // 3. Extend the first found type
+    const targetType = allOrderTypes[0]
+    appLogger.info(
+      { targetTypeKey: targetType.key, targetTypeId: targetType.id },
+      `Extending existing custom type "${targetType.key}" with Briqpay fields`,
+    )
+
+    // Resolve field conflicts before adding
+    const fieldsToEnsure = resolveFieldConflicts(briqpayFieldDefinitions, targetType.fieldDefinitions)
+
+    // We need to update ensureFieldDefinitions to accept dynamic fields or just use addMissingFieldDefinitions
+    const existingFieldNames = new Set(targetType.fieldDefinitions.map((f) => f.name))
+    const missingFields = fieldsToEnsure.filter((field) => !existingFieldNames.has(field.name))
+
+    if (missingFields.length === 0) {
+      appLogger.info(
+        { key: targetType.key, fieldCount: targetType.fieldDefinitions.length },
+        `Custom type with key ${targetType.key} already has all required Briqpay fields`,
+      )
+      return targetType
+    }
+
+    return addMissingFieldDefinitions(targetType, missingFields)
+  }
+
+  // 4. Fallback to creating Briqpay type if no existing types found
+  appLogger.info({ key }, `No custom types found for "order" resource type, creating new Briqpay type "${key}"`)
+  const type = await createType(key)
 
   appLogger.info(
     {

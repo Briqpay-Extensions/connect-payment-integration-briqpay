@@ -8,13 +8,35 @@ import {
 // Mock apiRoot
 const mockOrderGet = jest.fn<
   () => Promise<{
-    body: { id: string; version: number; custom?: { type: { id: string }; fields: Record<string, unknown> } }
+    body: {
+      id: string
+      version: number
+      custom?: { type: { id: string; key?: string }; fields: Record<string, unknown> }
+    }
   }>
 >()
 const mockOrderPostExecute = jest.fn<() => Promise<{ body: { id: string; version: number } }>>()
 const mockOrderPost = jest
   .fn<(args: { body: { version: number; actions: unknown[] } }) => { execute: typeof mockOrderPostExecute }>()
   .mockReturnValue({ execute: mockOrderPostExecute })
+
+const mockTypeGetExecute = jest.fn<() => Promise<{ body: { fieldDefinitions: { name: string }[] } }>>()
+mockTypeGetExecute.mockResolvedValue({
+  body: {
+    fieldDefinitions: [
+      { name: 'briqpay-session-id' },
+      { name: 'briqpay-psp-meta-data-description' },
+      { name: 'briqpay-transaction-data-reservation-id' },
+    ],
+  },
+})
+
+const mockTypeWithId = jest.fn<() => { get: () => { execute: typeof mockTypeGetExecute } }>()
+mockTypeWithId.mockReturnValue({ get: () => ({ execute: mockTypeGetExecute }) })
+
+const mockTypes = jest.fn<() => { withId: typeof mockTypeWithId }>()
+mockTypes.mockReturnValue({ withId: mockTypeWithId })
+
 jest.mock('../../../src/libs/commercetools/api-root', () => ({
   apiRoot: {
     orders: () => ({
@@ -23,6 +45,7 @@ jest.mock('../../../src/libs/commercetools/api-root', () => ({
         post: mockOrderPost,
       }),
     }),
+    types: () => mockTypes(),
   },
 }))
 
@@ -46,6 +69,15 @@ describe('BriqpaySessionDataService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+
+    // Reset mocks to default behavior
+    mockOrderGet.mockResolvedValue({
+      body: {
+        id: 'order-123',
+        version: 1,
+        custom: { type: { id: 'type-id', key: 'briqpay-session-id' }, fields: {} },
+      },
+    })
 
     // Set required env variables
     process.env = {
@@ -310,7 +342,7 @@ describe('BriqpaySessionDataService', () => {
         body: {
           id: 'order-123',
           version: 1,
-          custom: { type: { id: 'type-id' }, fields: {} },
+          custom: { type: { id: 'type-id', key: 'briqpay-session-id' }, fields: {} },
         },
       })
 
@@ -433,7 +465,7 @@ describe('BriqpaySessionDataService', () => {
         body: {
           id: 'order-123',
           version: 1,
-          custom: { type: { id: 'type-id' }, fields: {} },
+          custom: { type: { id: 'type-id', key: 'briqpay-session-id' }, fields: {} },
         },
       })
 
