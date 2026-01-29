@@ -155,7 +155,7 @@ async function createOrUpdateCustomType(): Promise<void> {
     .types()
     .get({
       queryArgs: {
-        where: `key="${customTypeKey}" and resourceTypeIds contains "order"`,
+        where: `key="${customTypeKey}" and resourceTypeIds contains any ("order")`,
         limit: 1,
       },
     })
