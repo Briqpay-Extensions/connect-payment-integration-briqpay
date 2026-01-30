@@ -58,6 +58,12 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
      - `view_tax_categories`
      - `view_order_edits`
 
+   After creating your API client, the scopes/permissions should look like this:
+
+```text
+client_credentials&scope=manage_orders:{projectKey} view_states:{projectKey} view_types:{projectKey} view_product_selections:{projectKey} view_attribute_groups:{projectKey} view_shopping_lists:{projectKey} manage_sessions:{projectKey} manage_types:{projectKey} manage_checkout_payment_intents:{projectKey} view_categories:{projectKey} manage_key_value_documents:{projectKey} view_discount_codes:{projectKey} view_products:{projectKey} view_cart_discounts:{projectKey} manage_payments:{projectKey} view_orders:{projectKey} view_shipping_methods:{projectKey} view_stores:{projectKey} manage_checkout_transactions:{projectKey} view_tax_categories:{projectKey} view_order_edits:{projectKey}
+```
+
 3. **Set commercetools configuration values**:
    - `CTP_PROJECT_KEY`
    - `CTP_CLIENT_ID`
@@ -77,6 +83,8 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
    - `BRIQPAY_CONFIRMATION_URL`
 
 5. **Optionally set custom type keys**:
+
+   > **IMPORTANT**: Please use the default names to preserve data integrity.
    - `BRIQPAY_SESSION_CUSTOM_TYPE_KEY` - Default: `briqpay-session-id`
    - `BRIQPAY_PSP_META_DATA_CUSTOMER_FACING_REFERENCE_KEY` - Default: `briqpay-psp-meta-data-customer-facing-reference`
    - `BRIQPAY_PSP_META_DATA_DESCRIPTION_KEY` - Default: `briqpay-psp-meta-data-description`
@@ -524,6 +532,9 @@ deployAs:
         - key: BRIQPAY_CONFIRMATION_URL
           description: The URL to your order confirmation page
           required: true
+        # IMPORTANT: Please use the default names to preserve data integrity.
+        # Changing these keys/field names after you already have data can orphan existing custom fields
+        # and break session/payment data lookups.
         - key: BRIQPAY_SESSION_CUSTOM_TYPE_KEY
           description: Key of CustomType to store briqpay session inside cart
           required: false
@@ -1187,7 +1198,6 @@ export async function createBriqpayCustomType(key: string) {
   // 3. Extend first found type with Briqpay fields
   // 4. Handle field conflicts by prefixing (e.g., 'briqpay-sessionId')
   // 5. Fallback to creating new Briqpay type if no order types exist
-
   // Fields added to the target type:
   // - briqpay-session-id: Session ID (or prefixed if conflict)
   // - briqpay-psp-meta-data-customer-facing-reference: PSP customer reference

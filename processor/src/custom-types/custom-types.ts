@@ -11,6 +11,7 @@ export interface BriqpayFieldDefinition {
   required: boolean
 }
 
+// IMPORTANT: Please use the default names to preserve data integrity.
 export const briqpayFieldDefinitions: BriqpayFieldDefinition[] = [
   // Session ID
   {
