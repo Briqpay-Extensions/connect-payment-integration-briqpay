@@ -144,9 +144,14 @@ async function findAllTypesByResourceType(resourceTypeId: string): Promise<Type[
 /**
  * Checks for field name conflicts and prefixes them if needed.
  *
+ * This function handles three cases:
+ * 1. Field doesn't exist → return as-is (will be added)
+ * 2. Field exists AND is already a Briqpay field (starts with "briqpay-") → return as-is (already ours, will be skipped by filter)
+ * 3. Field exists AND is NOT a Briqpay field → prefix with "briqpay-" (real conflict with another connector's field)
+ *
  * @param fieldsToAdd - Briqpay fields we want to add
  * @param existingFields - Fields already in the target type
- * @returns Fields with conflicts prefixed (e.g., 'fieldName' -> 'briqpay-fieldName')
+ * @returns Fields with real conflicts prefixed (e.g., 'session-id' -> 'briqpay-session-id')
  */
 function resolveFieldConflicts(
   fieldsToAdd: BriqpayFieldDefinition[],
@@ -156,9 +161,20 @@ function resolveFieldConflicts(
 
   return fieldsToAdd.map((field) => {
     if (existingFieldNames.has(field.name)) {
+      // If the existing field already starts with "briqpay-", it's our field from a previous deployment
+      // Don't prefix it - the subsequent filter will exclude it since it already exists
+      if (field.name.startsWith('briqpay-')) {
+        appLogger.info(
+          { fieldName: field.name },
+          `Field "${field.name}" already exists (Briqpay field from previous deployment), skipping`,
+        )
+        return field
+      }
+
+      // Real conflict: a non-Briqpay field with the same name exists
       appLogger.warn(
         { fieldName: field.name },
-        `Field name conflict detected. Prefixing field "${field.name}" with "briqpay-"`,
+        `Field name conflict detected with non-Briqpay field. Prefixing "${field.name}" with "briqpay-"`,
       )
       return {
         ...field,

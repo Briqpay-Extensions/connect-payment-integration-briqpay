@@ -213,14 +213,19 @@ export class BriqpaySessionDataService {
     )
 
     // First, get the current order to obtain its version
-    const orderResponse = await apiRoot.orders().withId({ ID: orderId }).get().execute()
+    // IMPORTANT: Expand custom.type to get the key, otherwise we only get id/typeId
+    const orderResponse = await apiRoot
+      .orders()
+      .withId({ ID: orderId })
+      .get({ queryArgs: { expand: ['custom.type'] } })
+      .execute()
     const order = orderResponse.body
 
     // Determine which custom type to use
     // 1. Use provided customTypeKey if any
-    // 2. Use order's current custom type if it exists
+    // 2. Use order's current custom type if it exists (from expanded reference)
     // 3. Fallback to dynamically resolved Briqpay custom type
-    const currentTypeKey = (order.custom?.type as any)?.obj?.key || (order.custom?.type as any)?.key
+    const currentTypeKey = (order.custom?.type as any)?.obj?.key
     const fallbackTypeKey = await getBriqpayTypeKey()
     const targetTypeKey = customTypeKey || currentTypeKey || fallbackTypeKey
 
@@ -231,12 +236,10 @@ export class BriqpaySessionDataService {
       value: value,
     }))
 
-    // If order doesn't have custom type set, or it's different from target, we need to set it first
-    if (!order.custom || currentTypeKey !== targetTypeKey) {
-      appLogger.info(
-        { orderId, currentType: currentTypeKey, targetType: targetTypeKey },
-        'Setting/Updating custom type on order before updating fields',
-      )
+    // Only set custom type if the order doesn't have one yet
+    // If it already has a custom type, just update the fields to preserve existing values
+    if (!order.custom) {
+      appLogger.info({ orderId, targetType: targetTypeKey }, 'Setting custom type on order (no existing custom type)')
 
       const setTypeResponse = await apiRoot
         .orders()
