@@ -226,7 +226,7 @@ const mapSingleLineItem = (
   discountNameMap: Map<string, string>,
 ): CartItem[] => {
   const localeName = getLocalizedName(item, fallbackLocale)
-  const taxRate = (item.taxRate?.amount ?? 0) * 10000
+  const taxRate = Math.round((item.taxRate?.amount ?? 0) * 10000)
   const isDiscountLine = item.lineItemMode === 'GiftCard' || item.priceMode === 'Discounted'
 
   const cartItem = isDiscountLine
@@ -598,7 +598,7 @@ class BriqpayService {
     const shippingPrice = ctCart.shippingInfo.price
     const effectiveTaxRate = await this.getEffectiveTaxRate(ctCart)
     const taxMultiplier = 1 + effectiveTaxRate
-    const shippingTaxRate = (ctCart.shippingInfo.taxRate?.amount ?? effectiveTaxRate) * 10000
+    const shippingTaxRate = Math.round((ctCart.shippingInfo.taxRate?.amount ?? effectiveTaxRate) * 10000)
 
     // Always use ORIGINAL shipping price (before discounts)
     const originalShippingGross = shippingPrice.centAmount

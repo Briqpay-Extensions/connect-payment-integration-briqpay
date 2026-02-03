@@ -35,7 +35,7 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
    > Please refer to the [commercetools documentation regarding scopes](https://docs.commercetools.com/api/scopes), names may change and names might be different from what you see in the GUI.
    - **Manage**:
      - `manage_orders` - Also grants permission to manage Carts
-     - `manage_sessions`
+     - `manage_sessions` (Manage Checkout sessions)
      - `manage_types`
      - `manage_payments`
      - `manage_checkout_transactions`
@@ -57,6 +57,8 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
      - `view_stores`
      - `view_tax_categories`
      - `view_order_edits`
+
+<img src="https://cdn.briqpay.com/static/images/api-client-ct.png" alt="commercetools API Client Scopes" style="width: 50%">
 
    After creating your API client, the scopes/permissions should look like this:
 
@@ -122,7 +124,7 @@ Create an API client responsible for payment management in your commercetools pr
 
 - **Manage**:
   - `manage_orders`
-  - `manage_sessions`
+  - `manage_sessions` (Manage Checkout sessions)
   - `manage_types`
   - `manage_payments`
   - `manage_checkout_transactions`
@@ -144,6 +146,8 @@ Create an API client responsible for payment management in your commercetools pr
   - `view_stores`
   - `view_tax_categories`
   - `view_order_edits`
+
+<img src="https://cdn.briqpay.com/static/images/api-client-ct.png" alt="commercetools API Client Scopes" style="width: 50%">
 
 #### 2. commercetools Platform URLs
 
@@ -737,7 +741,7 @@ Required API Client Scopes:
 
 - **Manage**:
   - `manage_orders` - Also grants permission to manage Carts
-  - `manage_sessions`
+  - `manage_sessions` (Manage Checkout sessions)
   - `manage_types`
   - `manage_payments`
   - `manage_checkout_transactions`
@@ -759,6 +763,8 @@ Required API Client Scopes:
   - `view_stores`
   - `view_tax_categories`
   - `view_order_edits`
+
+<img src="https://cdn.briqpay.com/static/images/api-client-ct.png" alt="commercetools API Client Scopes" style="width: 50%">
 
 ### Environment Variables
 
