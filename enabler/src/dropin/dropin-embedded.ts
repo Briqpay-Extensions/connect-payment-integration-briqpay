@@ -61,7 +61,8 @@ export class DropinComponents implements DropinComponent {
   }
 
   init(): void {
-    this.dropinOptions.onDropinReady?.().catch(() => {});
+    // Handle undefined or non-Promise return from onDropinReady
+    this.dropinOptions.onDropinReady?.()?.catch?.(() => {});
   }
 
   mount(selector: string) {
