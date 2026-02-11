@@ -17,11 +17,14 @@
     "connector:post-deploy": "node dist/connectors/post-deploy.js",
     "connector:pre-undeploy": "node dist/connectors/pre-undeploy.js"
   },
+  "engines": {
+    "node": ">=22.22.0"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@commercetools-backend/loggers": "25.1.0",
+    "@commercetools-backend/loggers": "25.2.0",
     "@commercetools/connect-payments-sdk": "0.27.2",
     "@commercetools/platform-sdk": "^8.23.0",
     "@commercetools/ts-client": "^4.8.0",

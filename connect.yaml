@@ -97,7 +97,7 @@ deployAs:
           required: false
           default: briqpay-transaction-data-psp-integration-name
         - key: ALLOWED_ORIGINS
-          description: Comma-separated list of allowed CORS origins (e.g., https://your-store.com,https://admin.your-store.com)
+          description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com). Origins listed here also enable dynamic confirmation redirect URLs for those domains.
           required: false
       securedConfiguration:
         - key: CTP_CLIENT_SECRET

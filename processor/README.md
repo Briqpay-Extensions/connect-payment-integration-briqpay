@@ -157,27 +157,27 @@ Copy `.env.template` to `.env` and configure the following variables:
 
 > **IMPORTANT**: Please use the default names to preserve data integrity.
 
-| Variable                                                | Description                                     | Example                                             |
-| ------------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------- |
-| `BRIQPAY_USERNAME`                                      | Briqpay API username                            | -                                                   |
-| `BRIQPAY_SECRET`                                        | Briqpay API secret                              | -                                                   |
-| `BRIQPAY_BASE_URL`                                      | Briqpay API base URL                            | `https://playground-api.briqpay.com/v3`             |
-| `BRIQPAY_TERMS_URL`                                     | URL to your terms and conditions                | `https://example.com/terms`                         |
-| `BRIQPAY_CONFIRMATION_URL`                              | Order confirmation redirect URL                 | `https://yoursite.com/order-confirmation`           |
-| `BRIQPAY_SESSION_CUSTOM_TYPE_KEY`                       | Custom type key for session storage             | `briqpay-session-id`                                |
-| `BRIQPAY_PSP_META_DATA_CUSTOMER_FACING_REFERENCE_KEY`   | Key for PSP customer reference field            | `briqpay-psp-meta-data-customer-facing-reference`   |
-| `BRIQPAY_PSP_META_DATA_DESCRIPTION_KEY`                 | Key for PSP description field                   | `briqpay-psp-meta-data-description`                 |
-| `BRIQPAY_PSP_META_DATA_TYPE_KEY`                        | Key for PSP type field                          | `briqpay-psp-meta-data-type`                        |
-| `BRIQPAY_PSP_META_DATA_PAYER_EMAIL_KEY`                 | Key for PSP payer email field                   | `briqpay-psp-meta-data-payer-email`                 |
-| `BRIQPAY_PSP_META_DATA_PAYER_FIRST_NAME_KEY`            | Key for PSP payer first name field              | `briqpay-psp-meta-data-payer-first-name`            |
-| `BRIQPAY_PSP_META_DATA_PAYER_LAST_NAME_KEY`             | Key for PSP payer last name field               | `briqpay-psp-meta-data-payer-last-name`             |
-| `BRIQPAY_TRANSACTION_DATA_RESERVATION_ID_KEY`           | Key for transaction reservation ID field        | `briqpay-transaction-data-reservation-id`           |
-| `BRIQPAY_TRANSACTION_DATA_SECONDARY_RESERVATION_ID_KEY` | Key for transaction secondary reservation field | `briqpay-transaction-data-secondary-reservation-id` |
-| `BRIQPAY_TRANSACTION_DATA_PSP_ID_KEY`                   | Key for transaction PSP ID field                | `briqpay-transaction-data-psp-id`                   |
-| `BRIQPAY_TRANSACTION_DATA_PSP_DISPLAY_NAME_KEY`         | Key for transaction PSP display name field      | `briqpay-transaction-data-psp-display-name`         |
-| `BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY`     | Key for transaction PSP integration name field  | `briqpay-transaction-data-psp-integration-name`     |
-| `BRIQPAY_WEBHOOK_SECRET`                                | Briqpay webhook signing secret (Mandatory)      | -                                                   |
-| `ALLOWED_ORIGINS`                                       | Comma-separated list of allowed CORS origins    | -                                                   |
+| Variable                                                | Description                                                                                                                                                                          | Example                                             |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------- |
+| `BRIQPAY_USERNAME`                                      | Briqpay API username                                                                                                                                                                 | -                                                   |
+| `BRIQPAY_SECRET`                                        | Briqpay API secret                                                                                                                                                                   | -                                                   |
+| `BRIQPAY_BASE_URL`                                      | Briqpay API base URL                                                                                                                                                                 | `https://playground-api.briqpay.com/v3`             |
+| `BRIQPAY_TERMS_URL`                                     | URL to your terms and conditions                                                                                                                                                     | `https://example.com/terms`                         |
+| `BRIQPAY_CONFIRMATION_URL`                              | Order confirmation redirect URL                                                                                                                                                      | `https://yoursite.com/order-confirmation`           |
+| `BRIQPAY_SESSION_CUSTOM_TYPE_KEY`                       | Custom type key for session storage                                                                                                                                                  | `briqpay-session-id`                                |
+| `BRIQPAY_PSP_META_DATA_CUSTOMER_FACING_REFERENCE_KEY`   | Key for PSP customer reference field                                                                                                                                                 | `briqpay-psp-meta-data-customer-facing-reference`   |
+| `BRIQPAY_PSP_META_DATA_DESCRIPTION_KEY`                 | Key for PSP description field                                                                                                                                                        | `briqpay-psp-meta-data-description`                 |
+| `BRIQPAY_PSP_META_DATA_TYPE_KEY`                        | Key for PSP type field                                                                                                                                                               | `briqpay-psp-meta-data-type`                        |
+| `BRIQPAY_PSP_META_DATA_PAYER_EMAIL_KEY`                 | Key for PSP payer email field                                                                                                                                                        | `briqpay-psp-meta-data-payer-email`                 |
+| `BRIQPAY_PSP_META_DATA_PAYER_FIRST_NAME_KEY`            | Key for PSP payer first name field                                                                                                                                                   | `briqpay-psp-meta-data-payer-first-name`            |
+| `BRIQPAY_PSP_META_DATA_PAYER_LAST_NAME_KEY`             | Key for PSP payer last name field                                                                                                                                                    | `briqpay-psp-meta-data-payer-last-name`             |
+| `BRIQPAY_TRANSACTION_DATA_RESERVATION_ID_KEY`           | Key for transaction reservation ID field                                                                                                                                             | `briqpay-transaction-data-reservation-id`           |
+| `BRIQPAY_TRANSACTION_DATA_SECONDARY_RESERVATION_ID_KEY` | Key for transaction secondary reservation field                                                                                                                                      | `briqpay-transaction-data-secondary-reservation-id` |
+| `BRIQPAY_TRANSACTION_DATA_PSP_ID_KEY`                   | Key for transaction PSP ID field                                                                                                                                                     | `briqpay-transaction-data-psp-id`                   |
+| `BRIQPAY_TRANSACTION_DATA_PSP_DISPLAY_NAME_KEY`         | Key for transaction PSP display name field                                                                                                                                           | `briqpay-transaction-data-psp-display-name`         |
+| `BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY`     | Key for transaction PSP integration name field                                                                                                                                       | `briqpay-transaction-data-psp-integration-name`     |
+| `BRIQPAY_WEBHOOK_SECRET`                                | Briqpay webhook signing secret (Mandatory)                                                                                                                                           | -                                                   |
+| `ALLOWED_ORIGINS`                                       | Comma-separated list of allowed CORS origins. Supports wildcard patterns (e.g. `https://*.preview.example.com`). Origins listed here also enable dynamic confirmation redirect URLs. | -                                                   |
 
 ### Application Configuration
 
@@ -198,7 +198,7 @@ The API client must have the following scopes:
 
 - **Manage**:
   - `manage_orders` - Also grants permission to manage Carts (see [Cart and Order Management](https://docs.commercetools.com/api/scopes#cart-and-order-management))
-,  - `manage_sessions` (Manage Checkout sessions)
+    , - `manage_sessions` (Manage Checkout sessions)
   - `manage_types`
   - `manage_payments`
   - `manage_checkout_transactions`
@@ -316,6 +316,7 @@ npm run connector:post-deploy
 ```
 
 **Behavior:**
+
 - Queries all custom types associated with the `order` resource type
 - Extends the first found type by adding Briqpay fields (configurable via `BRIQPAY_*` environment variables)
 - If field name conflicts exist, Briqpay fields are prefixed with `briqpay-`
@@ -462,11 +463,13 @@ All responses include security headers:
 
 ### CORS Configuration
 
-Configure allowed origins in production:
+Configure allowed origins in production. Wildcard patterns are supported for subdomain matching:
 
 ```bash
-ALLOWED_ORIGINS=https://your-frontend.com,https://admin.your-site.com
+ALLOWED_ORIGINS=https://your-frontend.com,https://admin.your-site.com,https://*.preview.your-site.com
 ```
+
+Origins listed in `ALLOWED_ORIGINS` also enable **dynamic confirmation redirect URLs**. When the client origin matches an allowed origin (or wildcard pattern), the processor constructs the redirect URL using the client's origin combined with the path from `BRIQPAY_CONFIRMATION_URL`. This is useful for dynamic preview environments where the subdomain varies (e.g. PR-based deployments).
 
 ### Environment Validation
 
