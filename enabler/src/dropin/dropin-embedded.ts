@@ -96,8 +96,8 @@ export class DropinComponents implements DropinComponent {
   public async handleDecision(data: unknown) {
     window._briqpay.v3.suspend();
 
-    if (this.dropinOptions.onPayButtonClick) {
-      await this.dropinOptions.onPayButtonClick(this.baseOptions.sdk);
+    if (this.dropinOptions.onBeforeDecision) {
+      await this.dropinOptions.onBeforeDecision(this.baseOptions.sdk);
     }
 
     const customDecisionResponse = await this.getCustomDecisionResponse(data);
@@ -187,13 +187,28 @@ export class DropinComponents implements DropinComponent {
         },
         paymentOutcome: PaymentOutcome._PENDING,
       };
-      await fetch(this.baseOptions.processorUrl + "/payments", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Session-Id": this.baseOptions.sessionId,
+      const response = await fetch(
+        this.baseOptions.processorUrl + "/payments",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Session-Id": this.baseOptions.sessionId,
+          },
+          body: JSON.stringify(request),
         },
-        body: JSON.stringify(request),
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          `Payment request failed with status ${response.status}`,
+        );
+      }
+
+      const data = await response.json();
+      this.baseOptions.onComplete?.({
+        isSuccess: true,
+        paymentReference: data.paymentReference,
       });
     } catch (e) {
       this.baseOptions.onError?.(e);

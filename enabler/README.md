@@ -173,8 +173,8 @@ const dropin = builder.build({
   onDropinReady: async () => {
     console.log("Briqpay widget is ready");
   },
-  onPayButtonClick: async (sdk) => {
-    // Optional: Perform validation before payment
+  onBeforeDecision: async (sdk) => {
+    // Optional: Perform validation before the decision flow proceeds
     // sdk.suspend() / sdk.resume() for cart updates
     // sdk.makeDecision(true) to allow payment
   },
@@ -218,16 +218,16 @@ The main enabler class exported as `Enabler`.
 
 ### BriqpaySdk
 
-The SDK instance is available via the `onPayButtonClick` callback.
+The SDK instance is available via the `onBeforeDecision` callback.
 
 #### Methods
 
-| Method                               | Description                                                                              |
-| ------------------------------------ | ---------------------------------------------------------------------------------------- |
-| `suspend()`                          | Adds an overlay over the payment widget (use during cart updates)                        |
-| `resume()`                           | Removes the overlay and rehydrates the iframe                                            |
-| `rehydrate(autoRehydrate?: boolean)` | Fetches latest session config and optionally resumes                                     |
-| `makeDecision(decision: boolean)`    | Makes a decision through the backend processor. `true` = allow, `false` = reject         |
+| Method                               | Description                                                                      |
+| ------------------------------------ | -------------------------------------------------------------------------------- |
+| `suspend()`                          | Adds an overlay over the payment widget (use during cart updates)                |
+| `resume()`                           | Removes the overlay and rehydrates the iframe                                    |
+| `rehydrate(autoRehydrate?: boolean)` | Fetches latest session config and optionally resumes                             |
+| `makeDecision(decision: boolean)`    | Makes a decision through the backend processor. `true` = allow, `false` = reject |
 
 ### DropinComponent
 
@@ -238,10 +238,10 @@ The SDK instance is available via the `onPayButtonClick` callback.
 
 ### DropinOptions
 
-| Option             | Type                                 | Description                           |
-| ------------------ | ------------------------------------ | ------------------------------------- |
-| `onDropinReady`    | `() => Promise<void>`                | Called when the drop-in is ready      |
-| `onPayButtonClick` | `(sdk: BriqpaySdk) => Promise<void>` | Called when the pay button is clicked |
+| Option             | Type                                 | Description                                                                                                     |
+| ------------------ | ------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `onDropinReady`    | `() => Promise<void>`                | Called when the drop-in is ready                                                                                |
+| `onBeforeDecision` | `(sdk: BriqpaySdk) => Promise<void>` | Called before the decision flow when Briqpay's `make_decision` event fires. Use for validation or cart updates. |
 
 ## Briqpay Events
 

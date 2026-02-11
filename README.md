@@ -60,7 +60,7 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
 
 <img src="https://cdn.briqpay.com/static/images/api-client-ct.png" alt="commercetools API Client Scopes" style="width: 50%">
 
-   After creating your API client, the scopes/permissions should look like this:
+After creating your API client, the scopes/permissions should look like this:
 
 ```text
 client_credentials&scope=manage_orders:{projectKey} view_states:{projectKey} view_types:{projectKey} view_product_selections:{projectKey} view_attribute_groups:{projectKey} view_shopping_lists:{projectKey} manage_sessions:{projectKey} manage_types:{projectKey} manage_checkout_payment_intents:{projectKey} view_categories:{projectKey} manage_key_value_documents:{projectKey} view_discount_codes:{projectKey} view_products:{projectKey} view_cart_discounts:{projectKey} manage_payments:{projectKey} view_orders:{projectKey} view_shipping_methods:{projectKey} view_stores:{projectKey} manage_checkout_transactions:{projectKey} view_tax_categories:{projectKey} view_order_edits:{projectKey}
@@ -588,7 +588,7 @@ deployAs:
           required: false
           default: briqpay-transaction-data-psp-integration-name
         - key: ALLOWED_ORIGINS
-          description: Comma-separated list of allowed CORS origins (e.g., https://your-store.com,https://admin.your-store.com)
+          description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com). Origins listed here also enable dynamic confirmation redirect URLs for those domains.
           required: false
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
@@ -649,6 +649,10 @@ const builder = await enabler.createDropinBuilder("embedded");
 const dropin = builder.build({
   onDropinReady: async () => {
     console.log("Briqpay widget is ready");
+  },
+  onBeforeDecision: async (sdk) => {
+    // Optional: Perform validation before the decision flow proceeds
+    // sdk.suspend() / sdk.resume() for cart updates
   },
 });
 
@@ -1266,7 +1270,7 @@ Authentication is handled by the commercetools Connect Payments SDK:
 - **JWT Token Validation**: Using commercetools JWKS endpoint
 - **Input Validation**: Strict TypeBox schema validation with regex patterns for session IDs
 - **HTTPS Enforcement**: Secure all API communications (URLs must use HTTPS in production)
-- **CORS Configuration**: Configurable allowed origins via `ALLOWED_ORIGINS` environment variable
+- **CORS Configuration**: Configurable allowed origins via `ALLOWED_ORIGINS` environment variable (supports wildcard patterns, e.g. `https://*.preview.example.com`)
 - **Security Headers**: X-Frame-Options, X-Content-Type-Options, HSTS, CSP, and more
 - **Audit Logging**: Request/response logging with correlation IDs for security monitoring
 - **Environment Validation**: Fail-fast startup if required environment variables are missing
@@ -1306,7 +1310,7 @@ The processor uses environment variables for all configuration. See the [Configu
 - **Briqpay URL**: Use `https://playground-api.briqpay.com/v3` for testing, production URL for live
 - **Logging**: Configure `LOGGER_LEVEL` (default: `info`)
 - **Health Check**: Configure timeout via `HEALTH_CHECK_TIMEOUT` (default: `5000`ms)
-- **CORS**: Set `ALLOWED_ORIGINS` for production deployments
+- **CORS**: Set `ALLOWED_ORIGINS` for production deployments (supports wildcard patterns for dynamic preview environments)
 
 ## Best Practices
 
