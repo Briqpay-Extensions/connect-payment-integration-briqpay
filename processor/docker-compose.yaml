@@ -1,6 +1,6 @@
 services:
   jwt-server:
-    image: node:22-alpine
+    image: node:24-alpine
     restart: always
     command:
       - npx
