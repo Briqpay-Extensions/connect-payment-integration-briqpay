@@ -20,8 +20,5 @@
     "*.{ts,js,tsx,jsx}": [
       "npm run lint"
     ]
-  },
-  "overrides": {
-    "lodash": "4.17.23"
   }
 }

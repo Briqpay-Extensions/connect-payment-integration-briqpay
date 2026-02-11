@@ -223,7 +223,7 @@ describe("DropinComponents", () => {
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
-          onBeforeDecision: jest.fn<any>().mockResolvedValue(undefined),
+          onPayButtonClick: jest.fn<any>().mockResolvedValue(undefined),
         },
       },
       {

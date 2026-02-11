@@ -103,17 +103,10 @@ const OPTIONAL_ENV_VARS: EnvVarConfig[] = [
     validator: (value) => {
       // SECURITY: Each origin must be HTTPS or a local development URL
       // This prevents allowing arbitrary HTTP origins like http://shadywebsite.com
-      // Wildcard patterns (e.g. https://*.preview.example.com) are allowed if they use HTTPS
       const origins = value.split(',').map((o) => o.trim())
-      return origins.every((origin) => {
-        if (origin.includes('*')) {
-          return origin.startsWith('https://')
-        }
-        return isSecureOrLocalUrl(origin)
-      })
+      return origins.every(isSecureOrLocalUrl)
     },
-    errorMessage:
-      'ALLOWED_ORIGINS must be HTTPS URLs (HTTP only allowed for localhost/127.0.0.1/private network IPs). Wildcard patterns must use HTTPS.',
+    errorMessage: 'ALLOWED_ORIGINS must be HTTPS URLs (HTTP only allowed for localhost/127.0.0.1/private network IPs)',
   },
 ]
 

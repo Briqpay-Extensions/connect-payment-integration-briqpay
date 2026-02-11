@@ -7,7 +7,6 @@ import { join } from 'path'
 import { config } from '../config/config'
 import { requestContextPlugin } from '../libs/fastify/context/context'
 import { errorHandler } from '../libs/fastify/error-handler'
-import { matchOriginPattern } from '../libs/utils/origin-matching'
 
 /**
  * Setup Fastify server instance
@@ -44,10 +43,7 @@ export const setupFastify = async () => {
         return
       }
 
-      callback(
-        null,
-        allowedOrigins.some((pattern) => matchOriginPattern(pattern, origin)),
-      )
+      callback(null, allowedOrigins.includes(origin))
     },
     credentials: true,
   })

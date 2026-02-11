@@ -19,7 +19,6 @@ import {
 import { Money } from '@commercetools/connect-payments-sdk'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
 import { appLogger } from '../../payment-sdk'
-import { matchOriginPattern } from '../utils/origin-matching'
 
 const mapBriqpayProductType = (item: LineItem) => {
   // Check if the product has a digital-related attribute
@@ -430,20 +429,14 @@ class BriqpayService {
 
   /**
    * Builds the confirmation redirect URL.
-   * Uses clientOrigin for dynamic URL construction when the origin is either:
-   * - A local development URL (localhost/local IPs)
-   * - Listed in ALLOWED_ORIGINS (supports wildcard patterns, e.g. https://*.preview.example.com)
-   * Otherwise, falls back to BRIQPAY_CONFIRMATION_URL from env.
+   * Only uses clientOrigin for local development (localhost/local IPs) to enable local testing.
+   * For production, always uses BRIQPAY_CONFIRMATION_URL from env.
    */
   private buildConfirmationUrl(clientOrigin?: string): string {
     const envConfirmationUrl = process.env.BRIQPAY_CONFIRMATION_URL as string
 
-    if (!clientOrigin) {
-      return envConfirmationUrl
-    }
-
-    // Allow dynamic redirect for local development or allowed origins
-    if (!this.isLocalDevelopmentOrigin(clientOrigin) && !this.isAllowedOrigin(clientOrigin)) {
+    // Only use clientOrigin for local development environments
+    if (!clientOrigin || !this.isLocalDevelopmentOrigin(clientOrigin)) {
       return envConfirmationUrl
     }
 
@@ -461,7 +454,7 @@ class BriqpayService {
         origin = url.origin
       }
 
-      appLogger.info({ clientOrigin, origin, path }, 'Building dynamic confirmation URL for allowed origin')
+      appLogger.info({ clientOrigin, origin, path }, 'Building dynamic confirmation URL for local development')
       return origin + path
     } catch (error) {
       appLogger.warn(
@@ -470,15 +463,6 @@ class BriqpayService {
       )
       return envConfirmationUrl
     }
-  }
-
-  /**
-   * Checks if the given origin matches any entry in ALLOWED_ORIGINS.
-   * Supports wildcard patterns (e.g. https://*.preview.example.com).
-   */
-  private isAllowedOrigin(origin: string): boolean {
-    const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',').map((o) => o.trim()) || []
-    return allowedOrigins.some((pattern) => matchOriginPattern(pattern, origin))
   }
 
   private async generateSessionRequestBody(
