@@ -21,7 +21,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@commercetools-backend/loggers": "25.1.0",
+    "@commercetools-backend/loggers": "25.2.0",
     "@commercetools/connect-payments-sdk": "0.27.2",
     "@commercetools/platform-sdk": "^8.23.0",
     "@commercetools/ts-client": "^4.8.0",
