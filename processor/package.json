@@ -17,6 +17,9 @@
     "connector:post-deploy": "node dist/connectors/post-deploy.js",
     "connector:pre-undeploy": "node dist/connectors/pre-undeploy.js"
   },
+  "engines": {
+    "node": ">=22.22.0"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
