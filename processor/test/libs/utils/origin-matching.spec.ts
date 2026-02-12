@@ -1,4 +1,5 @@
 import { matchOriginPattern } from '../../../src/libs/utils/origin-matching'
+import { describe, expect, it } from '@jest/globals'
 
 describe('matchOriginPattern', () => {
   describe('exact match', () => {
@@ -40,6 +41,44 @@ describe('matchOriginPattern', () => {
 
     it('should not match https origin against http wildcard pattern', () => {
       expect(matchOriginPattern('http://*.example.com', 'https://app.example.com')).toBe(false)
+    })
+  })
+
+  describe('PR preview environment scenarios', () => {
+    it('should match PR preview subdomain (e.g. pr-123.preview.example.com)', () => {
+      expect(matchOriginPattern('https://*.preview.example.com', 'https://pr-123.preview.example.com')).toBe(true)
+    })
+
+    it('should match feature branch preview subdomain', () => {
+      expect(matchOriginPattern('https://*.preview.example.com', 'https://feature-xyz.preview.example.com')).toBe(true)
+    })
+
+    it('should not match nested subdomain under preview (e.g. a.b.preview.example.com)', () => {
+      expect(matchOriginPattern('https://*.preview.example.com', 'https://a.b.preview.example.com')).toBe(false)
+    })
+
+    it('should not match bare preview.example.com against wildcard', () => {
+      expect(matchOriginPattern('https://*.preview.example.com', 'https://preview.example.com')).toBe(false)
+    })
+
+    it('should not match production domain against preview wildcard', () => {
+      expect(matchOriginPattern('https://*.preview.example.com', 'https://production.example.com')).toBe(false)
+    })
+  })
+
+  describe('multiple pattern matching (simulating ALLOWED_ORIGINS list)', () => {
+    const patterns = ['https://production.example.com', 'https://*.preview.example.com']
+
+    it('should match exact production origin', () => {
+      expect(patterns.some((p) => matchOriginPattern(p, 'https://production.example.com'))).toBe(true)
+    })
+
+    it('should match wildcard preview origin', () => {
+      expect(patterns.some((p) => matchOriginPattern(p, 'https://pr-123.preview.example.com'))).toBe(true)
+    })
+
+    it('should not match unrelated origin', () => {
+      expect(patterns.some((p) => matchOriginPattern(p, 'https://evil-site.com'))).toBe(false)
     })
   })
 

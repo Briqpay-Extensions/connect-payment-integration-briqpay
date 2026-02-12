@@ -83,7 +83,7 @@ const createRegularLineItem = (item: LineItem, localeName: string, taxRate: numb
 
   return {
     productType: mapBriqpayProductType(item),
-    reference: item.key ?? localeName,
+    reference: item.variant?.sku ?? localeName,
     name: localeName,
     quantity,
     quantityUnit: 'pc',

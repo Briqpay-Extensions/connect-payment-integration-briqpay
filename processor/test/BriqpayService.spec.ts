@@ -1335,6 +1335,181 @@ describe('BriqpayService', () => {
     })
   })
 
+  describe('wildcard ALLOWED_ORIGINS and dynamic confirmation URL', () => {
+    const originalAllowedOrigins = process.env.ALLOWED_ORIGINS
+    const originalConfirmationUrl = process.env.BRIQPAY_CONFIRMATION_URL
+
+    afterEach(() => {
+      if (originalAllowedOrigins !== undefined) {
+        process.env.ALLOWED_ORIGINS = originalAllowedOrigins
+      } else {
+        delete process.env.ALLOWED_ORIGINS
+      }
+      if (originalConfirmationUrl !== undefined) {
+        process.env.BRIQPAY_CONFIRMATION_URL = originalConfirmationUrl
+      }
+    })
+
+    it('should use client origin + env path when origin matches wildcard pattern', async () => {
+      process.env.BRIQPAY_CONFIRMATION_URL = 'https://production.example.com/order-confirmation'
+      process.env.ALLOWED_ORIGINS = 'https://production.example.com,https://*.preview.example.com'
+
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        'https://pr-123.preview.example.com',
+      )
+
+      const fetchCall = (global.fetch as jest.Mock<typeof fetch>).mock.calls[0]
+      const body = JSON.parse(fetchCall[1]?.body as string)
+      expect(body.urls.redirect).toBe('https://pr-123.preview.example.com/order-confirmation')
+    })
+
+    it('should use client origin + env path when origin matches exact allowed origin', async () => {
+      process.env.BRIQPAY_CONFIRMATION_URL = 'https://production.example.com/order-confirmation'
+      process.env.ALLOWED_ORIGINS = 'https://production.example.com,https://*.preview.example.com'
+
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        'https://production.example.com',
+      )
+
+      const fetchCall = (global.fetch as jest.Mock<typeof fetch>).mock.calls[0]
+      const body = JSON.parse(fetchCall[1]?.body as string)
+      expect(body.urls.redirect).toBe('https://production.example.com/order-confirmation')
+    })
+
+    it('should fall back to env URL when origin does not match any allowed pattern', async () => {
+      process.env.BRIQPAY_CONFIRMATION_URL = 'https://production.example.com/order-confirmation'
+      process.env.ALLOWED_ORIGINS = 'https://production.example.com,https://*.preview.example.com'
+
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        'https://evil-site.com',
+      )
+
+      const fetchCall = (global.fetch as jest.Mock<typeof fetch>).mock.calls[0]
+      const body = JSON.parse(fetchCall[1]?.body as string)
+      expect(body.urls.redirect).toBe('https://production.example.com/order-confirmation')
+    })
+
+    it('should use localhost origin for dynamic redirect (local dev bypass)', async () => {
+      process.env.BRIQPAY_CONFIRMATION_URL = 'https://production.example.com/order-confirmation'
+      process.env.ALLOWED_ORIGINS = 'https://production.example.com'
+
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        'http://localhost:3001',
+      )
+
+      const fetchCall = (global.fetch as jest.Mock<typeof fetch>).mock.calls[0]
+      const body = JSON.parse(fetchCall[1]?.body as string)
+      expect(body.urls.redirect).toBe('http://localhost:3001/order-confirmation')
+    })
+
+    it('should preserve path, search, and hash from env confirmation URL', async () => {
+      process.env.BRIQPAY_CONFIRMATION_URL =
+        'https://production.example.com/checkout/order-confirmation?ref=briqpay#success'
+      process.env.ALLOWED_ORIGINS = 'https://*.preview.example.com'
+
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        'https://pr-456.preview.example.com',
+      )
+
+      const fetchCall = (global.fetch as jest.Mock<typeof fetch>).mock.calls[0]
+      const body = JSON.parse(fetchCall[1]?.body as string)
+      expect(body.urls.redirect).toBe(
+        'https://pr-456.preview.example.com/checkout/order-confirmation?ref=briqpay#success',
+      )
+    })
+
+    it('should fall back to env URL when no clientOrigin is provided', async () => {
+      process.env.BRIQPAY_CONFIRMATION_URL = 'https://production.example.com/order-confirmation'
+      process.env.ALLOWED_ORIGINS = 'https://*.preview.example.com'
+
+      const mockCart = mockGetCartResult()
+
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+        undefined,
+        undefined,
+      )
+
+      const fetchCall = (global.fetch as jest.Mock<typeof fetch>).mock.calls[0]
+      const body = JSON.parse(fetchCall[1]?.body as string)
+      expect(body.urls.redirect).toBe('https://production.example.com/order-confirmation')
+    })
+  })
+
   describe('logFinalAmounts edge cases', () => {
     it('should handle cart with no items in logFinalAmounts', async () => {
       const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
