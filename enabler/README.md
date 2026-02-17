@@ -173,7 +173,7 @@ const dropin = builder.build({
   onDropinReady: async () => {
     console.log("Briqpay widget is ready");
   },
-  onBeforeDecision: async (sdk) => {
+  onPayButtonClick: async (sdk) => {
     // Optional: Perform validation before the decision flow proceeds
     // sdk.suspend() / sdk.resume() for cart updates
     // sdk.makeDecision(true) to allow payment
@@ -218,7 +218,7 @@ The main enabler class exported as `Enabler`.
 
 ### BriqpaySdk
 
-The SDK instance is available via the `onBeforeDecision` callback.
+The SDK instance is available via the `onPayButtonClick` callback.
 
 #### Methods
 
@@ -238,10 +238,11 @@ The SDK instance is available via the `onBeforeDecision` callback.
 
 ### DropinOptions
 
-| Option             | Type                                 | Description                                                                                                     |
-| ------------------ | ------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `onDropinReady`    | `() => Promise<void>`                | Called when the drop-in is ready                                                                                |
-| `onBeforeDecision` | `(sdk: BriqpaySdk) => Promise<void>` | Called before the decision flow when Briqpay's `make_decision` event fires. Use for validation or cart updates. |
+| Option             | Type                                 | Description                                                                                                       |
+| ------------------ | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `onDropinReady`    | `() => Promise<void>`                | Called when the drop-in is ready                                                                                  |
+| `onPayButtonClick` | `(sdk: BriqpaySdk) => Promise<void>` | Called when Checkout's pay button is clicked, before Briqpay's decision flow proceeds. Use for validation/cart updates. |
+| `onBeforeDecision` | `(sdk: BriqpaySdk) => Promise<void>` | Deprecated alias for `onPayButtonClick`, kept for backward compatibility.                                        |
 
 ## Briqpay Events
 

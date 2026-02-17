@@ -233,10 +233,17 @@ export type DropinOptions = {
   onDropinReady?: () => Promise<void>;
 
   /**
-   * A callback function that is called when Briqpay's make_decision event fires,
-   * before the decision flow proceeds. Use this to perform validation or cart updates.
+   * A callback function that is called when Checkout's pay button is clicked.
+   * This maps to Checkout's `onPayButtonClick` callback.
+   * Use this to perform validation or cart updates before the decision flow proceeds.
    * The BriqpaySdk instance is provided for suspend/resume/rehydrate operations.
    * @returns A Promise that resolves when pre-decision logic is complete.
+   */
+  onPayButtonClick?: (_sdk: BriqpaySdk) => Promise<void>;
+
+  /**
+   * @deprecated Use onPayButtonClick instead.
+   * Backward-compatible alias for existing integrations.
    */
   onBeforeDecision?: (_sdk: BriqpaySdk) => Promise<void>;
 };

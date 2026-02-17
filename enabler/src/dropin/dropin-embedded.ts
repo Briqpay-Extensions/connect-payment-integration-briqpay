@@ -96,8 +96,9 @@ export class DropinComponents implements DropinComponent {
   public async handleDecision(data: unknown) {
     window._briqpay.v3.suspend();
 
-    if (this.dropinOptions.onBeforeDecision) {
-      await this.dropinOptions.onBeforeDecision(this.baseOptions.sdk);
+    const onPayButtonClickPromise = this.runOnPayButtonClick();
+    if (onPayButtonClickPromise) {
+      await onPayButtonClickPromise;
     }
 
     const customDecisionResponse = await this.getCustomDecisionResponse(data);
@@ -109,6 +110,27 @@ export class DropinComponents implements DropinComponent {
 
     await this.sendDecision(customDecisionResponse as BriqpayDecisionRequest);
     window._briqpay.v3.resumeDecision();
+  }
+
+  private runOnPayButtonClick() {
+    const callback =
+      this.dropinOptions.onPayButtonClick ?? this.getOnBeforeDecisionCompat();
+
+    if (!callback) {
+      return;
+    }
+
+    return callback(this.baseOptions.sdk);
+  }
+
+  private getOnBeforeDecisionCompat():
+    | ((sdk: BaseOptions["sdk"]) => Promise<void>)
+    | undefined {
+    const compatOptions = this.dropinOptions as unknown as {
+      onBeforeDecision?: (sdk: BaseOptions["sdk"]) => Promise<void>;
+    };
+
+    return compatOptions.onBeforeDecision;
   }
 
   private async getCustomDecisionResponse(data: unknown) {

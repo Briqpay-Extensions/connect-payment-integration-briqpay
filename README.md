@@ -650,7 +650,7 @@ const dropin = builder.build({
   onDropinReady: async () => {
     console.log("Briqpay widget is ready");
   },
-  onBeforeDecision: async (sdk) => {
+  onPayButtonClick: async (sdk) => {
     // Optional: Perform validation before the decision flow proceeds
     // sdk.suspend() / sdk.resume() for cart updates
   },

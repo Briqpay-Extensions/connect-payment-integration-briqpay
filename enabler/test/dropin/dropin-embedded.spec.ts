@@ -201,6 +201,7 @@ describe("DropinComponents", () => {
     // Mock document.addEventListener to capture the callback
     const addEventListenerSpy = jest.spyOn(document, "addEventListener");
     let _eventCallback: ((event: Event) => void) | null = null;
+    const onBeforeDecision = jest.fn<any>().mockResolvedValue(undefined);
 
     addEventListenerSpy.mockImplementation(
       (_event: string, callback: any, _options?: any) => {
@@ -223,7 +224,7 @@ describe("DropinComponents", () => {
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
-          onBeforeDecision: jest.fn<any>().mockResolvedValue(undefined),
+          onBeforeDecision,
         },
       },
       {
@@ -257,6 +258,77 @@ describe("DropinComponents", () => {
     }
 
     await expect(decisionPromise).resolves.not.toThrow();
+    expect(onBeforeDecision).toHaveBeenCalledTimes(1);
+
+    addEventListenerSpy.mockRestore();
+  });
+
+  test("handleDecision should prefer onPayButtonClick over onBeforeDecision", async () => {
+    // Mock document.addEventListener to capture the callback
+    const addEventListenerSpy = jest.spyOn(document, "addEventListener");
+    let _eventCallback: ((event: Event) => void) | null = null;
+
+    addEventListenerSpy.mockImplementation(
+      (_event: string, callback: any, _options?: any) => {
+        if (_event === "briqpayDecisionResponse") {
+          _eventCallback = callback;
+        }
+      },
+    );
+
+    window._briqpay = {
+      subscribe: jest.fn(),
+      v3: {
+        suspend: jest.fn().mockReturnValueOnce({}),
+        resume: jest.fn().mockReturnValueOnce({}),
+        resumeDecision: jest.fn().mockReturnValueOnce({}),
+      },
+    };
+
+    const onPayButtonClick = jest.fn<any>().mockResolvedValue(undefined);
+    const onBeforeDecision = jest.fn<any>().mockResolvedValue(undefined);
+
+    const dropin = new DropinComponents(
+      {
+        dropinOptions: {
+          onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+          onPayButtonClick,
+          onBeforeDecision,
+        },
+      },
+      {
+        processorUrl: "http://localhost:8080",
+        sessionId: "123",
+        briqpaySessionId: "abc123",
+        snippet: "Dropin Embedded",
+        sdk: {} as BriqpaySdk,
+        environment: "test",
+        onComplete: () => {},
+        onError: () => {},
+      },
+    );
+
+    const decisionPromise = dropin.handleDecision("invalid");
+
+    // Wait a bit for the event listener to be set up
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Simulate the response event
+    if (_eventCallback) {
+      const event = new CustomEvent("briqpayDecisionResponse", {
+        detail: {
+          decision: "allow",
+          softErrors: ["softErrors"],
+          hardError: "hardError",
+          rejectionType: "rejected",
+        },
+      });
+      (_eventCallback as (event: Event) => void)(event);
+    }
+
+    await expect(decisionPromise).resolves.not.toThrow();
+    expect(onPayButtonClick).toHaveBeenCalledTimes(1);
+    expect(onBeforeDecision).not.toHaveBeenCalled();
 
     addEventListenerSpy.mockRestore();
   });
