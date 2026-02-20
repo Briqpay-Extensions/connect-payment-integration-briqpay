@@ -563,6 +563,46 @@ describe('BriqpayService', () => {
       expect(response).toHaveProperty('sessionId', 'abc123')
     })
 
+    it('should create session with custom shipping method (no shippingMethod reference) and correct tax rate calculation', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      // Setup based on bug logs: 19% on line item, 0% on shipping fee, no shippingMethod reference
+      ;(mockCart as any).lineItems[0].taxRate = { amount: 0.19 }
+      delete (mockCart as any).shippingInfo.shippingMethod
+      ;(mockCart as any).shippingInfo.price = { centAmount: 5000, currencyCode: 'RON' }
+      ;(mockCart as any).shippingInfo.taxRate = { amount: 0 }
+      // Mock cart taxedPrice
+      ;(mockCart as any).taxedPrice = {
+        totalNet: { centAmount: 120965, currencyCode: 'RON' },
+        totalGross: { centAmount: 142998, currencyCode: 'RON' },
+      }
+
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response)
+      }) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 142998, currencyCode: 'RON', fractionDigits: 2 },
+        'localhost',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(requestBody).toBeDefined()
+      expect(requestBody.data.order.amountExVat).toBe(120965)
+
+      const cartItems = requestBody.data.order.cart
+      const shippingItem = cartItems.find((item: any) => item.productType === 'shipping_fee')
+      expect(shippingItem).toBeDefined()
+      expect(shippingItem.taxRate).toBe(0) // 0% * 10000
+      expect(shippingItem.unitPrice).toBe(5000) // 5000 / (1 + 0)
+      expect(shippingItem.totalVatAmount).toBe(0) // 5000 - 5000
+    })
+
     it('should skip shipping when fully discounted (zero price)', async () => {
       const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
       // Fully discounted shipping
@@ -610,6 +650,45 @@ describe('BriqpayService', () => {
       })
 
       expect(response).toHaveProperty('sessionId', 'updated-session')
+    })
+
+    it('should update session with custom shipping method (no shippingMethod reference) and correct tax rate calculation', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      // Setup based on bug logs: 19% on line item, 0% on shipping fee, no shippingMethod reference
+      ;(mockCart as any).lineItems[0].taxRate = { amount: 0.19 }
+      delete (mockCart as any).shippingInfo.shippingMethod
+      ;(mockCart as any).shippingInfo.price = { centAmount: 5000, currencyCode: 'RON' }
+      ;(mockCart as any).shippingInfo.taxRate = { amount: 0 }
+      // Mock cart taxedPrice to simulate exact rounding from CT
+      ;(mockCart as any).taxedPrice = {
+        totalNet: { centAmount: 120965, currencyCode: 'RON' },
+        totalGross: { centAmount: 142998, currencyCode: 'RON' },
+      }
+
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'updated-session' }),
+        } as Response)
+      }) as typeof fetch
+
+      const response = await BriqpayService.updateSession('abc123', mockCart, {
+        centAmount: 142998,
+        currencyCode: 'RON',
+      })
+
+      expect(response).toHaveProperty('sessionId', 'updated-session')
+      expect(requestBody).toBeDefined()
+      expect(requestBody.data.order.amountExVat).toBe(120965)
+
+      const cartItems = requestBody.data.order.cart
+      const shippingItem = cartItems.find((item: any) => item.productType === 'shipping_fee')
+      expect(shippingItem).toBeDefined()
+      expect(shippingItem.taxRate).toBe(0) // 0% * 10000
+      expect(shippingItem.unitPrice).toBe(5000) // 5000 / (1 + 0)
+      expect(shippingItem.totalVatAmount).toBe(0) // 5000 - 5000
     })
 
     it('should skip shipping in updateSession when fully discounted', async () => {

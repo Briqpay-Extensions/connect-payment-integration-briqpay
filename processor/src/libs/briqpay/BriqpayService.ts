@@ -563,7 +563,7 @@ class BriqpayService {
       ctCart.discountOnTotalPrice.discountedNetAmount.centAmount
     )
     const vat = gross - net
-    const taxRate = Math.round(((gross - net) / net) * 10000)
+    const taxRate = net !== 0 ? Math.round(((gross - net) / net) * 10000) : 0
 
     // Get discount IDs from discountOnTotalPrice.includedDiscounts
     const discountIds =
@@ -607,14 +607,15 @@ class BriqpayService {
   }
 
   private async addShippingItem(briqpayCreateSession: CreateSessionRequestBody, ctCart: Cart): Promise<void> {
-    if (!ctCart.shippingInfo?.shippingMethod || !briqpayCreateSession.data?.order?.cart || !ctCart.shippingInfo.price) {
+    if (!briqpayCreateSession.data?.order?.cart || !ctCart.shippingInfo?.price) {
       return
     }
 
     const shippingPrice = ctCart.shippingInfo.price
     const effectiveTaxRate = await this.getEffectiveTaxRate(ctCart)
-    const taxMultiplier = 1 + effectiveTaxRate
-    const shippingTaxRate = Math.round((ctCart.shippingInfo.taxRate?.amount ?? effectiveTaxRate) * 10000)
+    const shippingTaxRateAmount = ctCart.shippingInfo.taxRate?.amount ?? effectiveTaxRate
+    const taxMultiplier = 1 + shippingTaxRateAmount
+    const shippingTaxRate = Math.round(shippingTaxRateAmount * 10000)
 
     // Always use ORIGINAL shipping price (before discounts)
     const originalShippingGross = shippingPrice.centAmount
@@ -961,8 +962,9 @@ class BriqpayService {
 
     const shippingPrice = cart.shippingInfo.price
     const effectiveTaxRate = await this.getEffectiveTaxRate(cart)
-    const taxMultiplier = 1 + effectiveTaxRate
-    const shippingTaxRate = (cart.shippingInfo.taxRate?.amount ?? effectiveTaxRate) * 10000
+    const shippingTaxRateAmount = cart.shippingInfo.taxRate?.amount ?? effectiveTaxRate
+    const taxMultiplier = 1 + shippingTaxRateAmount
+    const shippingTaxRate = Math.round(shippingTaxRateAmount * 10000)
 
     // Always use ORIGINAL shipping price (before discounts)
     const originalShippingGross = shippingPrice.centAmount
@@ -1085,15 +1087,15 @@ class BriqpayService {
       await this.addDiscountItemToCart(cartItems, cart)
       await this.addShippingItemToCart(cartItems, cart)
 
-      const effectiveTaxRate = await this.getEffectiveTaxRate(cart)
-      const taxMultiplier = 1 + effectiveTaxRate
+      // Get highest possible original value fallback without assuming matching rounding
+      const fallbackAmountExVat = Math.round(amount.centAmount / (1 + (await this.getEffectiveTaxRate(cart))))
 
       const data = {
         data: {
           order: {
             currency: amount.currencyCode,
             amountIncVat: amount.centAmount,
-            amountExVat: Math.round(amount.centAmount / taxMultiplier),
+            amountExVat: cart.taxedPrice?.totalNet?.centAmount ?? fallbackAmountExVat,
             cart: cartItems,
           },
           ...(cart.billingAddress && { billing: mapBriqpayAddress(cart.billingAddress) }),
