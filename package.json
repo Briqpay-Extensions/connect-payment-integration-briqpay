@@ -22,6 +22,9 @@
     ]
   },
   "overrides": {
-    "lodash": "4.17.23"
+    "lodash": "4.17.23",
+    "minimatch": "10.2.1",
+    "glob": "11.1.0",
+    "test-exclude": "7.0.1"
   }
 }

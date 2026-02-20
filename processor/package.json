@@ -64,6 +64,8 @@
   },
   "overrides": {
     "path-to-regexp": "3.3.0",
-    "jws": "3.2.3"
+    "jws": "3.2.3",
+    "minimatch": "10.2.1",
+    "glob": "11.1.0"
   }
 }
