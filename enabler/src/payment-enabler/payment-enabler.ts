@@ -142,14 +142,14 @@ export type EnablerOptions = {
    * A callback function that is called when the payment is completed.
    * @param result - The result of the payment.
    */
-  onComplete?: (_result: PaymentResult) => void;
+  onComplete?: (_result: PaymentResult) => void | Promise<void>;
 
   /**
    * A callback function that is called when an error occurs during the payment process.
    * @param error - The error that occurred.
    * @param paymentReference - The payment reference.
    */
-  onError?: (_error: unknown, _context?: { paymentReference?: string }) => void;
+  onError?: (_error: unknown, _context?: { paymentReference?: string }) => void | Promise<void>;
 };
 
 /**

@@ -186,10 +186,14 @@ export class Briqpay extends BaseComponent {
       const isSuccess = true;
 
       if (this.onComplete) {
-        this.onComplete({ isSuccess, paymentReference: data.paymentReference });
+        await this.onComplete({ isSuccess, paymentReference: data.paymentReference });
       }
-    } catch {
-      this.onError("An error occurred. Please try again.");
+    } catch (e) {
+      try {
+        await this.onError(e);
+      } catch {
+        // Prevent async onError rejection from masking the original error
+      }
     }
   }
 

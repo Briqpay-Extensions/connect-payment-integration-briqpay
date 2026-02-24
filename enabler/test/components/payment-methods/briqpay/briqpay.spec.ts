@@ -28,8 +28,8 @@ describe("Briqpay", () => {
     environment: "test",
     snippet: '<div id="briqpay"></div>',
     briqpaySessionId: "briq-sess-123",
-    onComplete: jest.fn(),
-    onError: jest.fn(),
+    onComplete: jest.fn() as jest.MockedFunction<BaseOptions["onComplete"]>,
+    onError: jest.fn() as jest.MockedFunction<BaseOptions["onError"]>,
   };
 
   // Mock fetch
@@ -241,9 +241,33 @@ describe("Briqpay", () => {
 
     await component.submit();
 
-    expect(baseOptions.onError).toHaveBeenCalledWith(
-      "An error occurred. Please try again.",
-    );
+    expect(baseOptions.onError).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  test("submit() awaits an async onComplete before resolving", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = jest.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => ({ paymentReference: "ref-async" }),
+      } as unknown as Response),
+    ) as unknown as typeof fetch;
+
+    let resolved = false;
+    const asyncOnComplete = jest.fn(async () => {
+      await Promise.resolve();
+      resolved = true;
+    }) as jest.MockedFunction<BaseOptions["onComplete"]>;
+
+    const builder = new BriqpayBuilder({ ...baseOptions, onComplete: asyncOnComplete });
+    const asyncComponent = builder.build();
+
+    await asyncComponent.submit();
+
+    expect(asyncOnComplete).toHaveBeenCalled();
+    expect(resolved).toBe(true);
+
+    global.fetch = originalFetch;
   });
 
   test("getState() returns an empty object", () => {

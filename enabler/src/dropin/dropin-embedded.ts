@@ -228,12 +228,16 @@ export class DropinComponents implements DropinComponent {
       }
 
       const data = await response.json();
-      this.baseOptions.onComplete?.({
+      await this.baseOptions.onComplete?.({
         isSuccess: true,
         paymentReference: data.paymentReference,
       });
     } catch (e) {
-      this.baseOptions.onError?.(e);
+      try {
+        await this.baseOptions.onError?.(e);
+      } catch {
+        // Prevent async onError rejection from masking the original error
+      }
       throw new Error("An error occurred. Please try again.");
     }
   }

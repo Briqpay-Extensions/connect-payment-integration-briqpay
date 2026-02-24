@@ -23,8 +23,8 @@ export type BaseOptions = {
   locale?: string;
   snippet: string;
   briqpaySessionId: string;
-  onComplete: (_result: PaymentResult) => void;
-  onError: (_error: unknown, _context?: { paymentReference?: string }) => void;
+  onComplete: (_result: PaymentResult) => void | Promise<void>;
+  onError: (_error: unknown, _context?: { paymentReference?: string }) => void | Promise<void>;
 };
 
 export class BriqpayPaymentEnabler implements PaymentEnabler {

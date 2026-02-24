@@ -37,8 +37,8 @@ describe("BaseComponent", () => {
     environment: "test",
     snippet: '<div id="briqpay"></div>',
     briqpaySessionId: "sess-123",
-    onComplete: jest.fn(),
-    onError: jest.fn(),
+    onComplete: jest.fn() as jest.MockedFunction<BaseOptions["onComplete"]>,
+    onError: jest.fn() as jest.MockedFunction<BaseOptions["onError"]>,
   };
 
   beforeEach(() => {

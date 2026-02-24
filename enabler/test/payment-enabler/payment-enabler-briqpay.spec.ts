@@ -22,8 +22,17 @@ describe("BriqpayPaymentEnabler", () => {
     const enabler = await BriqpayPaymentEnabler.create({
       processorUrl: "https://mock-processor.com",
       sessionId: "sess-123",
-      onComplete: jest.fn(),
-      onError: jest.fn(),
+      onComplete: jest.fn() as jest.MockedFunction<
+        import("../../src/payment-enabler/payment-enabler").PaymentResult extends infer T
+          ? (_result: T) => void | Promise<void>
+          : never
+      >,
+      onError: jest.fn() as jest.MockedFunction<
+        (
+          _error: unknown,
+          _context?: { paymentReference?: string },
+        ) => void | Promise<void>
+      >,
     });
 
     await expect(enabler.createComponentBuilder("unsupported")).rejects.toThrow(
@@ -35,8 +44,17 @@ describe("BriqpayPaymentEnabler", () => {
     const enabler = await BriqpayPaymentEnabler.create({
       processorUrl: "https://mock-processor.com",
       sessionId: "sess-123",
-      onComplete: jest.fn(),
-      onError: jest.fn(),
+      onComplete: jest.fn() as jest.MockedFunction<
+        import("../../src/payment-enabler/payment-enabler").PaymentResult extends infer T
+          ? (_result: T) => void | Promise<void>
+          : never
+      >,
+      onError: jest.fn() as jest.MockedFunction<
+        (
+          _error: unknown,
+          _context?: { paymentReference?: string },
+        ) => void | Promise<void>
+      >,
     });
 
     await expect(enabler.createComponentBuilder("unsupported")).rejects.toThrow(
@@ -48,8 +66,17 @@ describe("BriqpayPaymentEnabler", () => {
     const enabler = await BriqpayPaymentEnabler.create({
       processorUrl: "https://mock-processor.com",
       sessionId: "sess-123",
-      onComplete: jest.fn(),
-      onError: jest.fn(),
+      onComplete: jest.fn() as jest.MockedFunction<
+        import("../../src/payment-enabler/payment-enabler").PaymentResult extends infer T
+          ? (_result: T) => void | Promise<void>
+          : never
+      >,
+      onError: jest.fn() as jest.MockedFunction<
+        (
+          _error: unknown,
+          _context?: { paymentReference?: string },
+        ) => void | Promise<void>
+      >,
     });
 
     const builder = await enabler.createDropinBuilder(DropinType._embedded);
@@ -61,8 +88,17 @@ describe("BriqpayPaymentEnabler", () => {
     const enabler = await BriqpayPaymentEnabler.create({
       processorUrl: "https://mock-processor.com",
       sessionId: "sess-123",
-      onComplete: jest.fn(),
-      onError: jest.fn(),
+      onComplete: jest.fn() as jest.MockedFunction<
+        import("../../src/payment-enabler/payment-enabler").PaymentResult extends infer T
+          ? (_result: T) => void | Promise<void>
+          : never
+      >,
+      onError: jest.fn() as jest.MockedFunction<
+        (
+          _error: unknown,
+          _context?: { paymentReference?: string },
+        ) => void | Promise<void>
+      >,
     });
 
     await expect(
@@ -79,8 +115,17 @@ describe("BriqpayPaymentEnabler", () => {
     const enabler = await BriqpayPaymentEnabler.create({
       processorUrl: "https://mock-processor.com",
       sessionId: "sess-123",
-      onComplete: jest.fn(),
-      onError: jest.fn(),
+      onComplete: jest.fn() as jest.MockedFunction<
+        import("../../src/payment-enabler/payment-enabler").PaymentResult extends infer T
+          ? (_result: T) => void | Promise<void>
+          : never
+      >,
+      onError: jest.fn() as jest.MockedFunction<
+        (
+          _error: unknown,
+          _context?: { paymentReference?: string },
+        ) => void | Promise<void>
+      >,
     });
 
     await expect(enabler.createComponentBuilder("_briqpay")).rejects.toThrow(

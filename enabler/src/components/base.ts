@@ -19,12 +19,12 @@ export abstract class BaseComponent implements PaymentComponent {
   protected processorUrl: BaseOptions["processorUrl"];
   protected sessionId: BaseOptions["sessionId"];
   protected environment: BaseOptions["environment"];
-  protected onComplete: (_result: PaymentResult) => void;
+  protected onComplete: (_result: PaymentResult) => void | Promise<void>;
   protected onError: (
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     _error: any,
     _context?: { paymentReference?: string },
-  ) => void;
+  ) => void | Promise<void>;
 
   constructor(paymentMethod: PaymentMethod, baseOptions: BaseOptions) {
     this.paymentMethod = paymentMethod;
