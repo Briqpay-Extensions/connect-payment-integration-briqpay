@@ -83,6 +83,7 @@ client_credentials&scope=manage_orders:{projectKey} view_states:{projectKey} vie
    - `BRIQPAY_BASE_URL`
    - `BRIQPAY_TERMS_URL`
    - `BRIQPAY_CONFIRMATION_URL`
+   - `BRIQPAY_EXTERNAL_WEBHOOK_URL` - **Optional** external webhook URL to receive `order_status`, `capture_status`, and `refund_status` events from Briqpay alongside the internal connector hooks. Must use HTTPS.
 
 5. **Optionally set custom type keys**:
 
@@ -792,6 +793,9 @@ BRIQPAY_BASE_URL=https://playground-api.briqpay.com/v3
 BRIQPAY_TERMS_URL=https://your-store.com/terms
 BRIQPAY_CONFIRMATION_URL=https://your-store.com/confirmation
 BRIQPAY_SESSION_CUSTOM_TYPE_KEY=briqpay-session-id
+
+# Optional: forward Briqpay events to an external service
+# BRIQPAY_EXTERNAL_WEBHOOK_URL=https://your-service.com/briqpay-events
 ```
 
 #### Enabler (.env)

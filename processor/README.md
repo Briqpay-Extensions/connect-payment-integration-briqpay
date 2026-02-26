@@ -178,6 +178,7 @@ Copy `.env.template` to `.env` and configure the following variables:
 | `BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY`     | Key for transaction PSP integration name field                                                                                                                                       | `briqpay-transaction-data-psp-integration-name`     |
 | `BRIQPAY_WEBHOOK_SECRET`                                | Briqpay webhook signing secret (Mandatory)                                                                                                                                           | -                                                   |
 | `ALLOWED_ORIGINS`                                       | Comma-separated list of allowed CORS origins. Supports wildcard patterns (e.g. `https://*.preview.example.com`). Origins listed here also enable dynamic confirmation redirect URLs. | -                                                   |
+| `BRIQPAY_EXTERNAL_WEBHOOK_URL`                          | Optional external webhook URL to receive `order_status`, `capture_status`, and `refund_status` events from Briqpay. When set, additional hooks are registered alongside the internal connector hooks. Must use HTTPS.   | `https://your-service.com/briqpay-events`           |
 
 ### Application Configuration
 
