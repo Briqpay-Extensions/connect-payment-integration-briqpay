@@ -99,6 +99,9 @@ deployAs:
         - key: ALLOWED_ORIGINS
           description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com). Origins listed here also enable dynamic confirmation redirect URLs for those domains.
           required: false
+        - key: BRIQPAY_EXTERNAL_WEBHOOK_URL
+          description: Optional external webhook URL to receive order_status, capture_status, and refund_status events from Briqpay. When set, additional hooks are registered alongside the internal connector hooks. Must use HTTPS.
+          required: false
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
           description: commercetools client secret

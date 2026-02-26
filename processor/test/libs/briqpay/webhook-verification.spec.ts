@@ -143,6 +143,43 @@ describe('webhook-verification', () => {
 
       expect(result.isValid).toBe(true)
     })
+
+    test('should return invalid when timestamp value is empty in header', () => {
+      // t=,s1=abc → timestamp part is empty string after split
+      const result = verifyBriqpayWebhook(testBody, 't=,s1=abc', testSecret)
+
+      expect(result.isValid).toBe(false)
+      expect(result.error).toBe('Invalid signature header format')
+    })
+
+    test('should return invalid when signature value is empty in header', () => {
+      // t=12345,s1= → signature is empty string
+      const result = verifyBriqpayWebhook(testBody, `t=${Date.now()},s1=`, testSecret)
+
+      expect(result.isValid).toBe(false)
+      expect(result.error).toBe('Invalid signature header format')
+    })
+
+    test('should return invalid when received signature has different length than expected', () => {
+      // A 3-character base64 signature decodes to 2 bytes; expected HMAC-SHA256 is 32 bytes → length mismatch
+      const shortSig = 'abc'
+      const result = verifyBriqpayWebhook(testBody, `t=${Date.now()},s1=${shortSig}`, testSecret)
+
+      expect(result.isValid).toBe(false)
+      expect(result.error).toBe('Signature validation failed')
+    })
+
+    test('should detect replay when the same valid webhook is submitted twice', () => {
+      const uniqueBody = `{"unique":"replay-test-${Date.now()}"}`
+      const header = generateValidSignature(uniqueBody, testSecret)
+
+      const first = verifyBriqpayWebhook(uniqueBody, header, testSecret)
+      expect(first.isValid).toBe(true)
+
+      const second = verifyBriqpayWebhook(uniqueBody, header, testSecret)
+      expect(second.isValid).toBe(false)
+      expect(second.error).toBe('Replay detected')
+    })
   })
 
   describe('isHmacVerificationEnabled', () => {

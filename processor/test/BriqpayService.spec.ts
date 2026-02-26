@@ -1610,4 +1610,89 @@ describe('BriqpayService', () => {
       expect(response).toHaveProperty('sessionId', 'abc123')
     })
   })
+
+  describe('external webhook hooks', () => {
+    const originalExternalUrl = process.env.BRIQPAY_EXTERNAL_WEBHOOK_URL
+
+    afterEach(() => {
+      if (originalExternalUrl === undefined) {
+        delete process.env.BRIQPAY_EXTERNAL_WEBHOOK_URL
+      } else {
+        process.env.BRIQPAY_EXTERNAL_WEBHOOK_URL = originalExternalUrl
+      }
+    })
+
+    it('should NOT include external hooks when BRIQPAY_EXTERNAL_WEBHOOK_URL is not set', async () => {
+      delete process.env.BRIQPAY_EXTERNAL_WEBHOOK_URL
+      const mockCart = mockGetCartResult()
+
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response)
+      }) as typeof fetch
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'SEK', fractionDigits: 2 },
+        'localhost',
+      )
+
+      expect(requestBody.hooks).toHaveLength(3)
+      expect(requestBody.hooks.every((h: any) => h.url === 'https://localhost/notifications')).toBe(true)
+    })
+
+    it('should include 3 additional external hooks when BRIQPAY_EXTERNAL_WEBHOOK_URL is set', async () => {
+      process.env.BRIQPAY_EXTERNAL_WEBHOOK_URL = 'https://merchant.example.com/webhooks'
+      const mockCart = mockGetCartResult()
+
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response)
+      }) as typeof fetch
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 10000, currencyCode: 'SEK', fractionDigits: 2 },
+        'localhost',
+      )
+
+      // 3 internal + 3 external = 6 hooks total
+      expect(requestBody.hooks).toHaveLength(6)
+
+      const externalHooks = requestBody.hooks.filter((h: any) => h.url === 'https://merchant.example.com/webhooks')
+      expect(externalHooks).toHaveLength(3)
+
+      const eventTypes = externalHooks.map((h: any) => h.eventType).sort()
+      expect(eventTypes).toEqual(['capture_status', 'order_status', 'refund_status'])
+
+      // All external hooks use POST
+      expect(externalHooks.every((h: any) => h.method === 'POST')).toBe(true)
+
+      // External order_status includes all ORDER_STATUS values
+      const orderHook = externalHooks.find((h: any) => h.eventType === 'order_status')
+      expect(orderHook.statuses).toEqual(
+        expect.arrayContaining(['order_pending', 'order_rejected', 'order_cancelled', 'order_approved_not_captured']),
+      )
+
+      // External capture_status includes all TRANSACTION_STATUS values (including cancelled)
+      const captureHook = externalHooks.find((h: any) => h.eventType === 'capture_status')
+      expect(captureHook.statuses).toEqual(expect.arrayContaining(['pending', 'approved', 'rejected', 'cancelled']))
+
+      // External refund_status includes all TRANSACTION_STATUS values (including cancelled)
+      const refundHook = externalHooks.find((h: any) => h.eventType === 'refund_status')
+      expect(refundHook.statuses).toEqual(expect.arrayContaining(['pending', 'approved', 'rejected', 'cancelled']))
+
+      // Internal hooks are unchanged
+      const internalHooks = requestBody.hooks.filter((h: any) => h.url === 'https://localhost/notifications')
+      expect(internalHooks).toHaveLength(3)
+    })
+  })
 })

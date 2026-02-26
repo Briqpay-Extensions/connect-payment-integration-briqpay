@@ -6,6 +6,7 @@ import {
   CreateSessionRequestBody,
   CUSTOMER_TYPE,
   EVENT_HOOK,
+  Hooks,
   IAddressSchema,
   ITEM_PRODUCT_TYPE,
   MediumBriqpayResponse,
@@ -528,6 +529,28 @@ class BriqpayService {
           method: 'POST',
           url: hookUrl,
         },
+        ...(process.env.BRIQPAY_EXTERNAL_WEBHOOK_URL
+          ? ([
+              {
+                eventType: EVENT_HOOK.ORDER_STATUS,
+                statuses: Object.values(ORDER_STATUS),
+                method: 'POST',
+                url: process.env.BRIQPAY_EXTERNAL_WEBHOOK_URL,
+              },
+              {
+                eventType: EVENT_HOOK.CAPTURE_STATUS,
+                statuses: Object.values(TRANSACTION_STATUS),
+                method: 'POST',
+                url: process.env.BRIQPAY_EXTERNAL_WEBHOOK_URL,
+              },
+              {
+                eventType: EVENT_HOOK.REFUND_STATUS,
+                statuses: Object.values(TRANSACTION_STATUS),
+                method: 'POST',
+                url: process.env.BRIQPAY_EXTERNAL_WEBHOOK_URL,
+              },
+            ] satisfies Hooks)
+          : []),
       ],
       references: {
         cartId: ctCart.id,

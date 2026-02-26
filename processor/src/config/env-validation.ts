@@ -115,6 +115,13 @@ const OPTIONAL_ENV_VARS: EnvVarConfig[] = [
     errorMessage:
       'ALLOWED_ORIGINS must be HTTPS URLs (HTTP only allowed for localhost/127.0.0.1/private network IPs). Wildcard patterns must use HTTPS.',
   },
+  // External webhook URL
+  {
+    name: 'BRIQPAY_EXTERNAL_WEBHOOK_URL',
+    required: false,
+    validator: (value) => value.startsWith('https://'),
+    errorMessage: 'BRIQPAY_EXTERNAL_WEBHOOK_URL must use HTTPS',
+  },
 ]
 
 export class EnvValidationError extends Error {
