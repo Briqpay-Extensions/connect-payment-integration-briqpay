@@ -409,6 +409,7 @@ class BriqpayService {
       locale: ctCart.locale || 'en-GB',
       urls: {
         terms: process.env.BRIQPAY_TERMS_URL as string,
+        redirect: (process.env.ALLOWED_ORIGINS?.split(',')[0]?.trim() as string) || '',
       },
       config: {
         disableSessionCompleteRedirect: true,
