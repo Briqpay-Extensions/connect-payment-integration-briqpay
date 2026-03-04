@@ -159,7 +159,9 @@ const enabler = await Enabler.create({
   onComplete: (result) => {
     if (result.isSuccess) {
       console.log("Payment completed:", result.paymentReference);
-      // Redirect to confirmation page
+      // You must handle post-payment navigation here (e.g., redirect to your order confirmation page).
+      // The connector does not perform automatic redirects after session completion.
+      window.location.href = "/order-confirmation";
     }
   },
   onError: (error, context) => {
@@ -190,7 +192,7 @@ dropin.mount("#payment-container");
 | `processorUrl`     | `string`                             | Yes      | URL of the payment processor          |
 | `sessionId`        | `string`                             | Yes      | commercetools session ID              |
 | `locale`           | `string`                             | No       | Locale for the payment widget         |
-| `onComplete`       | `(result: PaymentResult) => void`    | No       | Callback when payment completes       |
+| `onComplete`       | `(result: PaymentResult) => void`    | No       | Callback when payment completes. You must handle post-payment navigation (e.g., redirect to confirmation page) in this callback.       |
 | `onError`          | `(error: unknown, context?) => void` | No       | Callback when an error occurs         |
 | `onActionRequired` | `() => Promise<void>`                | No       | Callback when user action is required |
 

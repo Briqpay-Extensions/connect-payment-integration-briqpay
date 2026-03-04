@@ -87,12 +87,6 @@ const REQUIRED_ENV_VARS: EnvVarConfig[] = [
     validator: (value) => value.startsWith('https://'),
     errorMessage: 'BRIQPAY_TERMS_URL must use HTTPS',
   },
-  {
-    name: 'BRIQPAY_CONFIRMATION_URL',
-    required: true,
-    validator: isSecureOrLocalUrl,
-    errorMessage: 'BRIQPAY_CONFIRMATION_URL must use HTTPS (except for localhost/127.0.0.1/private network IPs)',
-  },
 ]
 
 const OPTIONAL_ENV_VARS: EnvVarConfig[] = [

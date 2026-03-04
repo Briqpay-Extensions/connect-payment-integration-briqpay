@@ -2,8 +2,7 @@ import { describe, expect, test, jest, beforeEach, afterEach } from '@jest/globa
 import { BriqpaySessionService } from '../../../src/services/briqpay/session.service'
 import { mockGetCartResult } from '../../utils/mock-cart-data'
 import Briqpay from '../../../src/libs/briqpay/BriqpayService'
-import type { CommercetoolsCartService } from '@commercetools/connect-payments-sdk'
-import type { Cart } from '@commercetools/platform-sdk'
+import type { CommercetoolsCartService, Cart } from '@commercetools/connect-payments-sdk'
 
 // Mock apiRoot
 jest.mock('../../../src/libs/commercetools/api-root')
@@ -18,7 +17,7 @@ jest.mock('../../../src/payment-sdk', () => ({
 
 // Mock actions module to avoid paymentSDK initialization issues
 jest.mock('../../../src/connectors/actions', () => ({
-  getBriqpayTypeKey: jest.fn().mockResolvedValue('briqpay-session-id'),
+  getBriqpayTypeKey: jest.fn<() => Promise<string>>().mockResolvedValue('briqpay-session-id'),
   clearBriqpayTypeKeyCache: jest.fn(),
 }))
 
@@ -27,6 +26,9 @@ jest.mock('../../../src/libs/briqpay/BriqpayService')
 
 // Get mocked functions
 const mockedBriqpay = jest.mocked(Briqpay)
+
+// Helper to get a Cart typed to the SDK's version (avoids duplicate node_modules type mismatch)
+const getCart = () => mockGetCartResult() as unknown as Cart
 
 describe('BriqpaySessionService', () => {
   let sessionService: BriqpaySessionService
@@ -68,23 +70,22 @@ describe('BriqpaySessionService', () => {
 
   describe('createOrUpdateBriqpaySession', () => {
     test('should create new session when no existing session', async () => {
-      const mockCart = mockGetCartResult()
+      const mockCart = getCart()
       const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
 
       const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
 
       expect(mockedBriqpay.createSession).toHaveBeenCalledWith(
-        mockCart,
+        expect.objectContaining({ id: mockCart.id }),
         amountPlanned,
         'localhost',
-        undefined,
         undefined,
       )
       expect(result.sessionId).toBe('new-session-id')
     })
 
     test('should retrieve existing session and compare cart', async () => {
-      const baseCart = mockGetCartResult()
+      const baseCart = getCart()
       const mockCart = {
         ...baseCart,
         locale: 'en',
@@ -92,7 +93,7 @@ describe('BriqpaySessionService', () => {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
           fields: { 'briqpay-session-id': 'existing-session-id' },
         },
-      } as Cart
+      } as unknown as Cart
 
       mockedBriqpay.getSession.mockResolvedValue({
         sessionId: 'existing-session-id',
@@ -115,7 +116,7 @@ describe('BriqpaySessionService', () => {
     })
 
     test('should update session when cart amount differs', async () => {
-      const baseCart = mockGetCartResult()
+      const baseCart = getCart()
       const mockCart = {
         ...baseCart,
         locale: 'en',
@@ -123,7 +124,7 @@ describe('BriqpaySessionService', () => {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
           fields: { 'briqpay-session-id': 'existing-session-id' },
         },
-      } as Cart
+      } as unknown as Cart
 
       mockedBriqpay.getSession.mockResolvedValue({
         sessionId: 'existing-session-id',
@@ -140,7 +141,7 @@ describe('BriqpaySessionService', () => {
     })
 
     test('should create new session when update fails', async () => {
-      const baseCart = mockGetCartResult()
+      const baseCart = getCart()
       const mockCart = {
         ...baseCart,
         locale: 'en',
@@ -148,7 +149,7 @@ describe('BriqpaySessionService', () => {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
           fields: { 'briqpay-session-id': 'existing-session-id' },
         },
-      } as Cart
+      } as unknown as Cart
 
       mockedBriqpay.getSession.mockResolvedValue({
         sessionId: 'existing-session-id',
@@ -166,7 +167,7 @@ describe('BriqpaySessionService', () => {
     })
 
     test('should throw SessionError when all session operations fail', async () => {
-      const mockCart = mockGetCartResult()
+      const mockCart = getCart()
       mockedBriqpay.createSession.mockRejectedValue(new Error('Create failed'))
 
       const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
@@ -177,14 +178,14 @@ describe('BriqpaySessionService', () => {
     })
 
     test('should create new session when getSession fails for existing session', async () => {
-      const baseCart = mockGetCartResult()
+      const baseCart = getCart()
       const mockCart = {
         ...baseCart,
         custom: {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
           fields: { 'briqpay-session-id': 'existing-session-id' },
         },
-      } as Cart
+      } as unknown as Cart
 
       mockedBriqpay.getSession.mockRejectedValue(new Error('Session not found'))
 
@@ -199,7 +200,7 @@ describe('BriqpaySessionService', () => {
 
   describe('compareCartWithSession - edge cases', () => {
     test('should trigger update when cart item count differs', async () => {
-      const baseCart = mockGetCartResult()
+      const baseCart = getCart()
       const mockCart = {
         ...baseCart,
         locale: 'en',
@@ -207,7 +208,7 @@ describe('BriqpaySessionService', () => {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
           fields: { 'briqpay-session-id': 'existing-session-id' },
         },
-      } as Cart
+      } as unknown as Cart
 
       mockedBriqpay.getSession.mockResolvedValue({
         sessionId: 'existing-session-id',
@@ -228,7 +229,7 @@ describe('BriqpaySessionService', () => {
     })
 
     test('should handle cart with missing locale', async () => {
-      const baseCart = mockGetCartResult()
+      const baseCart = getCart()
       const mockCart = {
         ...baseCart,
         locale: undefined,
@@ -259,7 +260,7 @@ describe('BriqpaySessionService', () => {
     })
 
     test('should trigger update when cart item name is missing in locale', async () => {
-      const baseCart = mockGetCartResult()
+      const baseCart = getCart()
       const mockCart = {
         ...baseCart,
         locale: 'de',
@@ -267,7 +268,7 @@ describe('BriqpaySessionService', () => {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
           fields: { 'briqpay-session-id': 'existing-session-id' },
         },
-      } as Cart
+      } as unknown as Cart
 
       mockedBriqpay.getSession.mockResolvedValue({
         sessionId: 'existing-session-id',
@@ -295,7 +296,7 @@ describe('BriqpaySessionService', () => {
     })
 
     test('should handle sales_tax product type in session cart', async () => {
-      const baseCart = mockGetCartResult()
+      const baseCart = getCart()
       const mockCart = {
         ...baseCart,
         locale: 'en',

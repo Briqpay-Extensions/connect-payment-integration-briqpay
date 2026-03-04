@@ -15,7 +15,11 @@ import {
 } from '../../../src/services/briqpay/utils'
 import { BRIQPAY_WEBHOOK_STATUS, PaymentOutcome } from '../../../src/dtos/briqpay-payment.dto'
 import { PaymentModificationStatus } from '../../../src/dtos/operations/payment-intents.dto'
-import { MediumBriqpayResponse, ORDER_STATUS, TRANSACTION_STATUS } from '../../../src/services/types/briqpay-payment.type'
+import {
+  MediumBriqpayResponse,
+  ORDER_STATUS,
+  TRANSACTION_STATUS,
+} from '../../../src/services/types/briqpay-payment.type'
 
 describe('briqpay utils', () => {
   describe('convertNotificationStatus', () => {
@@ -207,9 +211,7 @@ describe('briqpay utils', () => {
         htmlSnippet: '',
         sessionId: 'sess-1',
         data: {
-          captures: [
-            { captureId: 'cap-1', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 1000, currency: 'EUR' },
-          ],
+          captures: [{ captureId: 'cap-1', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 1000, currency: 'EUR' }],
         },
       }
       expect(getCapture(session, 'cap-1')?.captureId).toBe('cap-1')
@@ -238,9 +240,7 @@ describe('briqpay utils', () => {
         htmlSnippet: '',
         sessionId: 'sess-1',
         data: {
-          captures: [
-            { captureId: 'cap-1', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 1000, currency: 'EUR' },
-          ],
+          captures: [{ captureId: 'cap-1', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 1000, currency: 'EUR' }],
         },
       }
       expect(getActualCaptureStatus(session, 'cap-1')).toBe(TRANSACTION_STATUS.APPROVED)
@@ -258,9 +258,7 @@ describe('briqpay utils', () => {
         htmlSnippet: '',
         sessionId: 'sess-1',
         data: {
-          refunds: [
-            { refundId: 'ref-1', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 500, currency: 'EUR' },
-          ],
+          refunds: [{ refundId: 'ref-1', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 500, currency: 'EUR' }],
         },
       }
       expect(getRefund(session, 'ref-1')?.refundId).toBe('ref-1')
@@ -270,9 +268,7 @@ describe('briqpay utils', () => {
       const session: MediumBriqpayResponse = {
         htmlSnippet: '',
         sessionId: 'sess-1',
-        refunds: [
-          { refundId: 'ref-legacy', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 300, currency: 'EUR' },
-        ],
+        refunds: [{ refundId: 'ref-legacy', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 300, currency: 'EUR' }],
       }
       expect(getRefund(session, 'ref-legacy')?.refundId).toBe('ref-legacy')
     })
@@ -289,9 +285,7 @@ describe('briqpay utils', () => {
         htmlSnippet: '',
         sessionId: 'sess-1',
         data: {
-          refunds: [
-            { refundId: 'ref-1', status: TRANSACTION_STATUS.REJECTED, amountIncVat: 500, currency: 'EUR' },
-          ],
+          refunds: [{ refundId: 'ref-1', status: TRANSACTION_STATUS.REJECTED, amountIncVat: 500, currency: 'EUR' }],
         },
       }
       expect(getActualRefundStatus(session, 'ref-1')).toBe(TRANSACTION_STATUS.REJECTED)

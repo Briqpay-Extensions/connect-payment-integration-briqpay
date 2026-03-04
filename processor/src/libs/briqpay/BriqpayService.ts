@@ -20,7 +20,6 @@ import {
 import { Money } from '@commercetools/connect-payments-sdk'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
 import { appLogger } from '../../payment-sdk'
-import { matchOriginPattern } from '../utils/origin-matching'
 
 const mapBriqpayProductType = (item: LineItem) => {
   // Check if the product has a digital-related attribute
@@ -390,104 +389,11 @@ class BriqpayService {
     throw new Error(errorMessage)
   }
 
-  /**
-   * Checks if the given origin is a local development URL (localhost or local IP).
-   */
-  private isLocalDevelopmentOrigin(origin: string): boolean {
-    try {
-      const url = new URL(origin)
-      const hostname = url.hostname.toLowerCase()
-
-      // Check for localhost
-      if (hostname === 'localhost') {
-        return true
-      }
-
-      // Check for IPv4 loopback (127.x.x.x)
-      if (hostname.startsWith('127.')) {
-        return true
-      }
-
-      // Check for IPv6 loopback
-      if (hostname === '::1' || hostname === '[::1]') {
-        return true
-      }
-
-      // Check for private IPv4 ranges (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-      const ipv4Regex = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/
-      const match = hostname.match(ipv4Regex)
-      if (match) {
-        const [, a, b] = match.map(Number)
-        if (a === 10) return true // 10.0.0.0/8
-        if (a === 192 && b === 168) return true // 192.168.0.0/16
-        if (a === 172 && b >= 16 && b <= 31) return true // 172.16.0.0/12
-      }
-
-      return false
-    } catch {
-      return false
-    }
-  }
-
-  /**
-   * Builds the confirmation redirect URL.
-   * Uses clientOrigin for dynamic URL construction when the origin is either:
-   * - A local development URL (localhost/local IPs)
-   * - Listed in ALLOWED_ORIGINS (supports wildcard patterns, e.g. https://*.preview.example.com)
-   * Otherwise, falls back to BRIQPAY_CONFIRMATION_URL from env.
-   */
-  private buildConfirmationUrl(clientOrigin?: string): string {
-    const envConfirmationUrl = process.env.BRIQPAY_CONFIRMATION_URL as string
-
-    if (!clientOrigin) {
-      return envConfirmationUrl
-    }
-
-    // Allow dynamic redirect for local development or allowed origins
-    if (!this.isLocalDevelopmentOrigin(clientOrigin) && !this.isAllowedOrigin(clientOrigin)) {
-      return envConfirmationUrl
-    }
-
-    try {
-      // Extract the path from the env URL (e.g., '/order-confirmation')
-      const envUrl = new URL(envConfirmationUrl)
-      const path = envUrl.pathname + envUrl.search + envUrl.hash
-
-      // Clean up the client origin (remove trailing slash, handle referer with path)
-      let origin = clientOrigin
-      // If it's a referer URL (has path), extract just the origin
-      if (origin.includes('/', 8)) {
-        // 8 = length of 'https://'
-        const url = new URL(origin)
-        origin = url.origin
-      }
-
-      appLogger.info({ clientOrigin, origin, path }, 'Building dynamic confirmation URL for allowed origin')
-      return origin + path
-    } catch (error) {
-      appLogger.warn(
-        { clientOrigin, error: error instanceof Error ? error.message : error },
-        'Failed to parse client origin, falling back to env URL',
-      )
-      return envConfirmationUrl
-    }
-  }
-
-  /**
-   * Checks if the given origin matches any entry in ALLOWED_ORIGINS.
-   * Supports wildcard patterns (e.g. https://*.preview.example.com).
-   */
-  private isAllowedOrigin(origin: string): boolean {
-    const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',').map((o) => o.trim()) || []
-    return allowedOrigins.some((pattern) => matchOriginPattern(pattern, origin))
-  }
-
   private async generateSessionRequestBody(
     ctCart: Cart,
     amountPlanned: PaymentAmount,
     hookUrl: string,
     futureOrderNumber?: string,
-    clientOrigin?: string,
   ): Promise<CreateSessionRequestBody> {
     const effectiveTaxRate = await this.getEffectiveTaxRate(ctCart)
     const taxMultiplier = 1 + effectiveTaxRate
@@ -503,7 +409,9 @@ class BriqpayService {
       locale: ctCart.locale || 'en-GB',
       urls: {
         terms: process.env.BRIQPAY_TERMS_URL as string,
-        redirect: this.buildConfirmationUrl(clientOrigin),
+      },
+      config: {
+        disableSessionCompleteRedirect: true,
       },
       hooks: [
         {
@@ -751,13 +659,7 @@ class BriqpayService {
     )
   }
 
-  async createSession(
-    ctCart: Cart,
-    amountPlanned: PaymentAmount,
-    hostname: string,
-    futureOrderNumber?: string,
-    clientOrigin?: string,
-  ) {
+  async createSession(ctCart: Cart, amountPlanned: PaymentAmount, hostname: string, futureOrderNumber?: string) {
     // Always try https on the default port by default, can always fix the URL from Briqpay if necessary
     const connectorUrl = 'https://' + hostname
     const hookUrl = connectorUrl.endsWith('/') ? connectorUrl + 'notifications' : connectorUrl + '/notifications'
@@ -767,7 +669,6 @@ class BriqpayService {
       amountPlanned,
       hookUrl,
       futureOrderNumber,
-      clientOrigin,
     )
 
     appLogger.info(

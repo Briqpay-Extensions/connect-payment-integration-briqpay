@@ -430,7 +430,6 @@ export interface CreateSessionRequestBody {
   locale?: string
   urls?: {
     terms: string
-    redirect: string
   }
   references?: Record<string, string>
   hooks?: (SessionStatusHook | OrderStatusHook | CaptureStatusHook | RefundStatusHook | ModuleUiStatusHook)[]

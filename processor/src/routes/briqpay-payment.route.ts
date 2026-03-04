@@ -37,10 +37,7 @@ export const paymentRoutes = (fastify: FastifyInstance, opts: FastifyPluginOptio
       const previewHostname = process.env.PREVIEW_HOSTNAME
       const hostname = previewHostname || request.hostname
 
-      // Get client origin for dynamic redirect URL construction
-      const clientOrigin = request.headers.origin || request.headers.referer
-
-      const paymentConfig = await opts.paymentService.config(hostname, clientOrigin)
+      const paymentConfig = await opts.paymentService.config(hostname)
       reply.code(200).send(paymentConfig)
     },
   )

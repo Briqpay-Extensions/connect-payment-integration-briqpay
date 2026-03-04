@@ -4,27 +4,16 @@ import prettier from 'eslint-plugin-prettier'
 import unusedImports from 'eslint-plugin-unused-imports'
 import globals from 'globals'
 import tsParser from '@typescript-eslint/parser'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import js from '@eslint/js'
-import { FlatCompat } from '@eslint/eslintrc'
+import eslintConfigPrettier from 'eslint-config-prettier'
+import eslintPluginPrettierRecommended from 'eslint-plugin-prettier/recommended'
 import sonarjs from 'eslint-plugin-sonarjs'
 
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = path.dirname(__filename)
-const compat = new FlatCompat({
-  baseDirectory: __dirname,
-  recommendedConfig: js.configs.recommended,
-  allConfig: js.configs.all,
-})
-
 export default [
-  ...compat.extends(
-    'eslint:recommended',
-    'plugin:@typescript-eslint/recommended',
-    'prettier',
-    'plugin:prettier/recommended',
-  ),
+  js.configs.recommended,
+  ...typescriptEslint.configs['flat/recommended'],
+  eslintConfigPrettier,
+  eslintPluginPrettierRecommended,
   {
     plugins: {
       '@typescript-eslint': typescriptEslint,
@@ -42,8 +31,8 @@ export default [
 
       parser: tsParser,
       parserOptions: {
-        project: ['./tsconfig.json'], // 👈 Add this line
-        tsconfigRootDir: __dirname,
+        project: ['./tsconfig.json'],
+        tsconfigRootDir: import.meta.dirname,
       },
     },
 

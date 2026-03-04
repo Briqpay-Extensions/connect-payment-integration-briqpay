@@ -82,8 +82,9 @@ client_credentials&scope=manage_orders:{projectKey} view_states:{projectKey} vie
    - `BRIQPAY_WEBHOOK_SECRET` - **Mandatory** for secure webhook processing (HMAC verification) (get your webhook secret at https://app.briqpay.com/dashboard/developers/webhooks)
    - `BRIQPAY_BASE_URL`
    - `BRIQPAY_TERMS_URL`
-   - `BRIQPAY_CONFIRMATION_URL`
    - `BRIQPAY_EXTERNAL_WEBHOOK_URL` - **Optional** external webhook URL to receive `order_status`, `capture_status`, and `refund_status` events from Briqpay alongside the internal connector hooks. Must use HTTPS.
+
+   > **Note**: The connector disables Briqpay's automatic session-complete redirect (`disableSessionCompleteRedirect: true`). You must handle post-payment navigation in the enabler's `onComplete` callback (e.g., redirect to your order confirmation page).
 
 5. **Optionally set custom type keys**:
 
@@ -173,7 +174,6 @@ Obtain API credentials from Briqpay:
 Configure your merchant URLs:
 
 - `BRIQPAY_TERMS_URL` - URL to your terms and conditions page
-- `BRIQPAY_CONFIRMATION_URL` - URL to your order confirmation page
 
 ## 🏗️ Architecture Overview
 
@@ -534,9 +534,6 @@ deployAs:
         - key: BRIQPAY_TERMS_URL
           description: The URL to your terms page
           required: true
-        - key: BRIQPAY_CONFIRMATION_URL
-          description: The URL to your order confirmation page
-          required: true
         # IMPORTANT: Please use the default names to preserve data integrity.
         # Changing these keys/field names after you already have data can orphan existing custom fields
         # and break session/payment data lookups.
@@ -589,7 +586,7 @@ deployAs:
           required: false
           default: briqpay-transaction-data-psp-integration-name
         - key: ALLOWED_ORIGINS
-          description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com). Origins listed here also enable dynamic confirmation redirect URLs for those domains.
+          description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com).
           required: false
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
@@ -619,7 +616,6 @@ deployAs:
 | `BRIQPAY_SECRET`                  | Briqpay API secret                  | Yes      | -                                                                         |
 | `BRIQPAY_BASE_URL`                | Briqpay API URL                     | Yes      | `https://playground-api.briqpay.com/v3`                                   |
 | `BRIQPAY_TERMS_URL`               | URL to terms page                   | Yes      | -                                                                         |
-| `BRIQPAY_CONFIRMATION_URL`        | URL to confirmation page            | Yes      | -                                                                         |
 | `BRIQPAY_SESSION_CUSTOM_TYPE_KEY` | Custom type key for session storage | No       | `briqpay-session-id`                                                      |
 
 ### Enabler Usage
@@ -791,7 +787,6 @@ BRIQPAY_USERNAME=your-briqpay-username
 BRIQPAY_SECRET=your-briqpay-secret
 BRIQPAY_BASE_URL=https://playground-api.briqpay.com/v3
 BRIQPAY_TERMS_URL=https://your-store.com/terms
-BRIQPAY_CONFIRMATION_URL=https://your-store.com/confirmation
 BRIQPAY_SESSION_CUSTOM_TYPE_KEY=briqpay-session-id
 
 # Optional: forward Briqpay events to an external service
