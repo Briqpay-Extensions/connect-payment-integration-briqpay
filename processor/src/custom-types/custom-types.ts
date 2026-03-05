@@ -7,7 +7,7 @@ export const briqpaySessionIdCustomType = {
 export interface BriqpayFieldDefinition {
   name: string
   label: string
-  type: 'String'
+  type: 'String' | 'Boolean'
   required: boolean
 }
 
@@ -93,6 +93,14 @@ export const briqpayFieldDefinitions: BriqpayFieldDefinition[] = [
       process.env.BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY || 'briqpay-transaction-data-psp-integration-name',
     label: 'Briqpay Transaction PSP Integration Name',
     type: 'String',
+    required: false,
+  },
+
+  // Auto-capture flag
+  {
+    name: process.env.BRIQPAY_AUTOCAPTURED_KEY || 'briqpay-autocaptured',
+    label: 'Briqpay Auto-Captured',
+    type: 'Boolean',
     required: false,
   },
 ]

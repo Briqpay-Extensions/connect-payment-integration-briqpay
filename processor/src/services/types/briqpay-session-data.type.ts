@@ -42,6 +42,14 @@ export interface BriqpayTransaction {
 }
 
 /**
+ * Capture data from Briqpay session (subset for data ingestion)
+ */
+export interface BriqpaySessionCapture {
+  captureId?: string
+  autoCaptured?: boolean
+}
+
+/**
  * Full Briqpay session response structure for data ingestion
  */
 export interface BriqpayFullSessionResponse {
@@ -51,6 +59,7 @@ export interface BriqpayFullSessionResponse {
   data?: {
     pspMetadata?: BriqpayPspMetadata
     transactions?: BriqpayTransaction[]
+    captures?: BriqpaySessionCapture[]
     order?: {
       amountIncVat?: number
       amountExVat?: number
@@ -64,7 +73,7 @@ export interface BriqpayFullSessionResponse {
  * Only includes fields that have actual values (no undefined/null)
  */
 export interface ExtractedBriqpayCustomFields {
-  [key: string]: string | undefined
+  [key: string]: string | boolean | undefined
 }
 
 /**

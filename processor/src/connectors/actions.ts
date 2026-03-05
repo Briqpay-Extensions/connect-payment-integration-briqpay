@@ -18,7 +18,7 @@ function toFieldDefinition(field: BriqpayFieldDefinition) {
   return {
     name: field.name,
     label: { en: field.label },
-    type: { name: 'String' as const },
+    type: { name: field.type },
     required: field.required,
   }
 }

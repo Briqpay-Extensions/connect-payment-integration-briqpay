@@ -181,6 +181,16 @@ export class BriqpaySessionDataService {
       )
     }
 
+    // Extract auto-captured flag from captures array
+    const captures = sessionData.data?.captures
+    if (captures && captures.length > 0) {
+      const primaryCapture = captures[0]
+      if (typeof primaryCapture.autoCaptured === 'boolean') {
+        const fieldName = getFieldName('BRIQPAY_AUTOCAPTURED_KEY', 'briqpay-autocaptured')
+        result[fieldName] = primaryCapture.autoCaptured
+      }
+    }
+
     return result
   }
 
@@ -363,6 +373,7 @@ export class BriqpaySessionDataService {
       process.env.BRIQPAY_TRANSACTION_DATA_PSP_ID_KEY || 'briqpay-transaction-data-psp-id',
       process.env.BRIQPAY_TRANSACTION_DATA_PSP_DISPLAY_NAME_KEY || 'briqpay-transaction-data-psp-display-name',
       process.env.BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY || 'briqpay-transaction-data-psp-integration-name',
+      process.env.BRIQPAY_AUTOCAPTURED_KEY || 'briqpay-autocaptured',
     ]
   }
 
@@ -386,7 +397,11 @@ export class BriqpaySessionDataService {
   /**
    * Helper to set a field only if the value is a non-empty string
    */
-  private setIfPresent(target: ExtractedBriqpayCustomFields, key: string, value: string | undefined | null): void {
+  private setIfPresent(
+    target: ExtractedBriqpayCustomFields,
+    key: string,
+    value: string | boolean | undefined | null,
+  ): void {
     if (value !== undefined && value !== null && value !== '') {
       target[key] = value
     }

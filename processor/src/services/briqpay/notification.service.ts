@@ -136,6 +136,7 @@ export class BriqpayNotificationService {
       event,
       briqpayCaptureId,
       briqpayRefundId,
+      data.autoCaptured,
     )
 
     // Convert trusted webhook status to the format expected by existing handlers
@@ -300,6 +301,7 @@ export class BriqpayNotificationService {
     event: BRIQPAY_WEBHOOK_EVENT,
     briqpayCaptureId?: string,
     briqpayRefundId?: string,
+    autoCaptured?: boolean,
   ): MediumBriqpayResponse {
     const briqpaySession: MediumBriqpayResponse = {
       sessionId: briqpaySessionId,
@@ -344,6 +346,7 @@ export class BriqpayNotificationService {
             currency: transactionData.currency,
             createdAt: transactionData.createdAt,
             reservationId: transactionData.reservationId,
+            autoCaptured,
             pspId: transactionData.pspId,
             pspDisplayName: transactionData.pspDisplayName,
             pspIntegrationName: transactionData.pspIntegrationName,
