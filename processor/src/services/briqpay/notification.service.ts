@@ -156,7 +156,6 @@ export class BriqpayNotificationService {
       briqpayCaptureId,
       briqpayRefundId,
       cartId,
-      data.autoCaptured,
     )
   }
 
@@ -447,20 +446,13 @@ export class BriqpayNotificationService {
     briqpayCaptureId?: string,
     briqpayRefundId?: string,
     cartId?: string,
-    autoCaptured?: boolean,
   ): Promise<void> {
     switch (event) {
       case BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS:
-        await this.processOrderStatusEvent(payment, briqpaySession, actualStatuses, cartId, autoCaptured)
+        await this.processOrderStatusEvent(payment, briqpaySession, actualStatuses, cartId)
         break
       case BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS:
-        await this.processCaptureStatusEvent(
-          payment,
-          briqpaySession,
-          actualStatuses.captureStatus,
-          briqpayCaptureId,
-          autoCaptured,
-        )
+        await this.processCaptureStatusEvent(payment, briqpaySession, actualStatuses.captureStatus, briqpayCaptureId)
         break
       case BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS:
         await this.processRefundStatusEvent(payment, briqpaySession, actualStatuses.refundStatus, briqpayRefundId)
@@ -477,7 +469,6 @@ export class BriqpayNotificationService {
     briqpaySession: MediumBriqpayResponse,
     actualStatuses: ReturnType<typeof this.extractActualStatuses>,
     cartId?: string,
-    autoCaptured?: boolean,
   ): Promise<void> {
     const { orderStatus, authorizationStatus } = actualStatuses
 
@@ -492,8 +483,7 @@ export class BriqpayNotificationService {
 
       const authHandlers: Partial<Record<BRIQPAY_WEBHOOK_STATUS, () => Promise<void>>> = {
         [BRIQPAY_WEBHOOK_STATUS.PENDING]: () => this.handleAuthorizationPending(payment, briqpaySession, cartId),
-        [BRIQPAY_WEBHOOK_STATUS.APPROVED]: () =>
-          this.handleAuthorizationApproved(payment, briqpaySession, cartId, autoCaptured),
+        [BRIQPAY_WEBHOOK_STATUS.APPROVED]: () => this.handleAuthorizationApproved(payment, briqpaySession, cartId),
         [BRIQPAY_WEBHOOK_STATUS.REJECTED]: () => this.handleAuthorizationRejected(payment, briqpaySession),
       }
 
@@ -519,7 +509,7 @@ export class BriqpayNotificationService {
     const orderHandlers: Partial<Record<BRIQPAY_WEBHOOK_STATUS, () => Promise<void>>> = {
       [BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING]: () => this.handleAuthorizationPending(payment, briqpaySession, cartId),
       [BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED]: () =>
-        this.handleAuthorizationApproved(payment, briqpaySession, cartId, autoCaptured),
+        this.handleAuthorizationApproved(payment, briqpaySession, cartId),
     }
 
     const handler = orderHandlers[orderWebhookStatus]
@@ -541,7 +531,6 @@ export class BriqpayNotificationService {
     briqpaySession: MediumBriqpayResponse,
     actualCaptureStatus: TRANSACTION_STATUS | undefined,
     briqpayCaptureId?: string,
-    autoCaptured?: boolean,
   ): Promise<void> {
     if (!briqpayCaptureId) {
       appLogger.warn({ briqpaySessionId: briqpaySession.sessionId }, 'Capture webhook received without captureId')
@@ -566,7 +555,7 @@ export class BriqpayNotificationService {
       [BRIQPAY_WEBHOOK_STATUS.PENDING]: () =>
         this.handleCapturePending(payment, briqpaySession, briqpayCaptureId, captureWebhookStatus),
       [BRIQPAY_WEBHOOK_STATUS.APPROVED]: () =>
-        this.handleCaptureApproved(payment, briqpaySession, briqpayCaptureId, captureWebhookStatus, autoCaptured),
+        this.handleCaptureApproved(payment, briqpaySession, briqpayCaptureId, captureWebhookStatus),
       [BRIQPAY_WEBHOOK_STATUS.REJECTED]: () =>
         this.handleCaptureRejected(payment, briqpaySession, briqpayCaptureId, captureWebhookStatus),
     }
@@ -710,7 +699,6 @@ export class BriqpayNotificationService {
     payment: Payment[],
     briqpaySession: MediumBriqpayResponse,
     cartId?: string,
-    autoCaptured?: boolean,
   ) => {
     const briqpaySessionId = briqpaySession.sessionId
     const transaction = getTransaction(briqpaySession)
@@ -754,7 +742,7 @@ export class BriqpayNotificationService {
     }
 
     // Always attempt to ingest Briqpay session data to order custom fields
-    await this.ingestSessionDataToOrder(briqpaySessionId, payment[0].id, autoCaptured)
+    await this.ingestSessionDataToOrder(briqpaySessionId, payment[0].id)
   }
 
   /**
@@ -853,7 +841,6 @@ export class BriqpayNotificationService {
     briqpaySession: MediumBriqpayResponse,
     briqpayCaptureId: string,
     _status: BRIQPAY_WEBHOOK_STATUS,
-    autoCaptured?: boolean,
   ) => {
     const briqpaySessionId = briqpaySession.sessionId
     const capture = getCapture(briqpaySession, briqpayCaptureId)
@@ -890,7 +877,7 @@ export class BriqpayNotificationService {
     appLogger.info({ updatedPayment, briqpayCaptureId, captureAmount: amount }, 'Created Charge Success')
 
     // Ingest Briqpay session data to order custom fields
-    await this.ingestSessionDataToOrder(briqpaySessionId, payment[0].id, autoCaptured)
+    await this.ingestSessionDataToOrder(briqpaySessionId, payment[0].id)
   }
 
   /**
@@ -1071,12 +1058,8 @@ export class BriqpayNotificationService {
    * @param briqpaySessionId - The Briqpay session ID
    * @param paymentId - The CommerceTools payment ID
    */
-  private ingestSessionDataToOrder = async (
-    briqpaySessionId: string,
-    paymentId: string,
-    autoCaptured?: boolean,
-  ): Promise<void> => {
-    appLogger.info({ briqpaySessionId, paymentId, autoCaptured }, 'Starting ingestSessionDataToOrder lookup')
+  private ingestSessionDataToOrder = async (briqpaySessionId: string, paymentId: string): Promise<void> => {
+    appLogger.info({ briqpaySessionId, paymentId }, 'Starting ingestSessionDataToOrder lookup')
 
     try {
       // Find the order that contains this payment
@@ -1108,7 +1091,7 @@ export class BriqpayNotificationService {
       )
 
       // Ingest the session data to the order
-      await this.sessionDataService.ingestSessionDataToOrder(briqpaySessionId, order.id, autoCaptured)
+      await this.sessionDataService.ingestSessionDataToOrder(briqpaySessionId, order.id)
     } catch (error) {
       // Log the error but don't fail the notification processing
       // The session data ingestion is a best-effort operation
