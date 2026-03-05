@@ -93,6 +93,10 @@ deployAs:
           description: Key of CustomType field to store transaction PSP integration name
           required: false
           default: briqpay-transaction-data-psp-integration-name
+        - key: BRIQPAY_AUTOCAPTURED_KEY
+          description: Key of CustomType field to store whether the order was auto-captured
+          required: false
+          default: briqpay-autocaptured
         - key: ALLOWED_ORIGINS
           description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com).
           required: false
