@@ -311,13 +311,25 @@ export class BriqpaySessionDataService {
    * @param sessionId - The Briqpay session ID
    * @param orderId - The CommerceTools order ID
    */
-  public async ingestSessionDataToOrder(sessionId: string, orderId: string): Promise<void> {
-    appLogger.info({ sessionId, orderId }, 'Starting Briqpay session data ingestion to order')
+  public async ingestSessionDataToOrder(sessionId: string, orderId: string, autoCaptured?: boolean): Promise<void> {
+    appLogger.info({ sessionId, orderId, autoCaptured }, 'Starting Briqpay session data ingestion to order')
 
     try {
       const sessionData = await this.fetchFullSession(sessionId)
       const fieldMappings = await this.buildFieldMappingsForOrder(orderId)
       const customFields = this.extractCustomFields(sessionData, fieldMappings)
+
+      // If autoCaptured is provided from the webhook payload, use it directly
+      // This ensures it's set as early as possible (e.g. on authorization)
+      // even if the full session doesn't have captures yet
+      if (typeof autoCaptured === 'boolean') {
+        const getFieldName = (envKey: string, fallback: string) => {
+          const defaultName = process.env[envKey] || fallback
+          return fieldMappings?.[defaultName] || defaultName
+        }
+        const fieldName = getFieldName('BRIQPAY_AUTOCAPTURED_KEY', 'briqpay-autocaptured')
+        customFields[fieldName] = autoCaptured
+      }
 
       await this.updateOrderCustomFields(orderId, customFields)
 
