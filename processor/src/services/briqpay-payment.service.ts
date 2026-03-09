@@ -103,6 +103,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
         environment: config.mockEnvironment,
         snippet: briqpaySession.htmlSnippet,
         briqpaySessionId: briqpaySession.sessionId,
+        ...(futureOrderNumber && { futureOrderNumber }),
       }
     } catch (error) {
       appLogger.error(

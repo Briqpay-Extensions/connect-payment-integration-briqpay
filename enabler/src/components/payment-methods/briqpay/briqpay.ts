@@ -50,11 +50,13 @@ declare global {
 export class Briqpay extends BaseComponent {
   private snippet: string;
   private briqpaySessionId: string;
+  private futureOrderNumber?: string;
 
   constructor(baseOptions: BaseOptions) {
     super(PaymentMethod._briqpay, baseOptions);
     this.snippet = baseOptions.snippet;
     this.briqpaySessionId = baseOptions.briqpaySessionId;
+    this.futureOrderNumber = baseOptions.futureOrderNumber;
   }
 
   mount(_selector: string) {
@@ -186,7 +188,11 @@ export class Briqpay extends BaseComponent {
       const isSuccess = true;
 
       if (this.onComplete) {
-        await this.onComplete({ isSuccess, paymentReference: data.paymentReference });
+        await this.onComplete({
+          isSuccess,
+          paymentReference: data.paymentReference,
+          ...(this.futureOrderNumber && { futureOrderNumber: this.futureOrderNumber }),
+        });
       }
     } catch (e) {
       try {
