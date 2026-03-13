@@ -179,11 +179,6 @@ export type PaymentResult =
        * The payment reference.
        */
       paymentReference: string;
-
-      /**
-       * The future order number (reference1) if available.
-       */
-      futureOrderNumber?: string;
     }
   | {
       /**
@@ -195,11 +190,6 @@ export type PaymentResult =
        * The payment reference.
        */
       paymentReference?: string;
-
-      /**
-       * The future order number (reference1) if available.
-       */
-      futureOrderNumber?: string;
     };
 
 /**

@@ -13,7 +13,7 @@ import {
   RefundPaymentRequest,
   ReversePaymentRequest,
 } from '../types/operation.type'
-import { CreatePaymentRequest } from '../types/briqpay-payment.type'
+import { CreatePaymentRequest, SalesTaxOverride } from '../types/briqpay-payment.type'
 import { PaymentOutcome, PaymentResponseSchemaDTO } from '../../dtos/briqpay-payment.dto'
 import { TransactionDraftDTO, TransactionResponseDTO } from '../../dtos/operations/transaction.dto'
 import {
@@ -26,6 +26,14 @@ import { appLogger } from '../../payment-sdk'
 import Briqpay from '../../libs/briqpay/BriqpayService'
 import { convertPaymentModificationStatusCode, convertPaymentResultCode } from './utils'
 import { SessionError, ValidationError } from '../../libs/errors/briqpay-errors'
+
+/**
+ * Returns true when the connector should use US sales-tax mode:
+ *   - Cart country is US
+ *   - BRIQPAY_TREAT_US_AS_ROW is NOT 'true'
+ */
+const isUsSalesTaxMode = (country: string | undefined): boolean =>
+  country === 'US' && process.env.BRIQPAY_TREAT_US_AS_ROW !== 'true'
 
 export class BriqpayOperationService {
   constructor(
@@ -52,10 +60,16 @@ export class BriqpayOperationService {
       throw new ValidationError('Commerce Tools does not support partial captures towards all payment providers')
     }
 
+    // Build sales-tax override when in US sales-tax mode
+    const salesTaxOverride: SalesTaxOverride | undefined = isUsSalesTaxMode(ctCart.country)
+      ? { enabled: true, totalTaxCentAmount: ctCart.taxedPrice?.totalTax?.centAmount ?? 0 }
+      : undefined
+
     const briqpayCapture = await Briqpay.capture(
       ctCart as PlatformCart,
       request.payment.amountPlanned,
       briqpaySessionId,
+      salesTaxOverride,
     )
 
     // Update pending authorization to success if needed
@@ -166,8 +180,13 @@ export class BriqpayOperationService {
       throw new ErrorInvalidOperation('Commerce Tools does not support partial refunds towards all payment providers')
     }
 
+    // Build sales-tax override when in US sales-tax mode
+    const salesTaxOverride: SalesTaxOverride | undefined = isUsSalesTaxMode(ctCart.country)
+      ? { enabled: true, totalTaxCentAmount: ctCart.taxedPrice?.totalTax?.centAmount ?? 0 }
+      : undefined
+
     appLogger.info(
-      { sessionId: briqpaySessionId, captureId: existingCapture.interactionId },
+      { sessionId: briqpaySessionId, captureId: existingCapture.interactionId, salesTaxOverride },
       'Calling Briqpay refund API',
     )
     const briqpayRefund = await Briqpay.refund(
@@ -175,6 +194,7 @@ export class BriqpayOperationService {
       request.payment.amountPlanned,
       briqpaySessionId,
       existingCapture.interactionId,
+      salesTaxOverride,
     )
     appLogger.info({ briqpayRefund }, 'Briqpay refund completed')
 

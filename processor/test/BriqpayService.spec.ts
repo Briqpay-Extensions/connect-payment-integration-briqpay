@@ -1329,4 +1329,367 @@ describe('BriqpayService', () => {
       expect(internalHooks).toHaveLength(3)
     })
   })
+
+  describe('US Sales Tax Mode', () => {
+    const originalTreatUsAsRow = process.env.BRIQPAY_TREAT_US_AS_ROW
+
+    afterEach(() => {
+      if (originalTreatUsAsRow === undefined) {
+        delete process.env.BRIQPAY_TREAT_US_AS_ROW
+      } else {
+        process.env.BRIQPAY_TREAT_US_AS_ROW = originalTreatUsAsRow
+      }
+    })
+
+    it('should create session with US sales tax (taxRate: 0, sales_tax item appended)', async () => {
+      delete process.env.BRIQPAY_TREAT_US_AS_ROW
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      ;(mockCart as any).country = 'US'
+      ;(mockCart as any).lineItems[0].taxRate = { amount: 0.08, includedInPrice: false }
+      ;(mockCart as any).taxedPrice = {
+        totalNet: { centAmount: 119000, currencyCode: 'EUR' },
+        totalGross: { centAmount: 128520, currencyCode: 'EUR' },
+        totalTax: { centAmount: 9520, currencyCode: 'EUR' },
+      }
+
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'us-session' }),
+        } as Response)
+      }) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 128520, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'us-session')
+      expect(requestBody).toBeDefined()
+
+      // Cart items should have taxRate: 0 and equal unitPrice/unitPriceIncVat (net prices)
+      const regularItems = requestBody.data.order.cart.filter(
+        (item: any) => item.productType !== 'sales_tax' && item.productType !== 'shipping_fee',
+      )
+      for (const item of regularItems) {
+        expect(item.taxRate).toBe(0)
+        expect(item.totalVatAmount).toBe(0)
+        expect(item.unitPrice).toBe(item.unitPriceIncVat)
+      }
+
+      // A sales_tax item should be appended
+      const salesTaxItem = requestBody.data.order.cart.find((item: any) => item.productType === 'sales_tax')
+      expect(salesTaxItem).toBeDefined()
+      expect(salesTaxItem.reference).toBe('sales-tax')
+      expect(salesTaxItem.totalTaxAmount).toBe(9520)
+
+      // amountExVat should use taxedPrice.totalNet.centAmount
+      expect(requestBody.data.order.amountExVat).toBe(119000)
+    })
+
+    it('should use normal VAT behavior when BRIQPAY_TREAT_US_AS_ROW is true', async () => {
+      process.env.BRIQPAY_TREAT_US_AS_ROW = 'true'
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      ;(mockCart as any).country = 'US'
+      ;(mockCart as any).lineItems[0].taxRate = { amount: 0.08, includedInPrice: true }
+      ;(mockCart as any).taxedPrice = {
+        totalNet: { centAmount: 110185, currencyCode: 'EUR' },
+        totalGross: { centAmount: 119000, currencyCode: 'EUR' },
+        totalTax: { centAmount: 8815, currencyCode: 'EUR' },
+      }
+
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'row-session' }),
+        } as Response)
+      }) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'row-session')
+      expect(requestBody).toBeDefined()
+
+      // No sales_tax item should exist
+      const salesTaxItem = requestBody.data.order.cart.find((item: any) => item.productType === 'sales_tax')
+      expect(salesTaxItem).toBeUndefined()
+
+      // taxRate should be > 0 (normal VAT)
+      const regularItems = requestBody.data.order.cart.filter(
+        (item: any) => item.productType !== 'shipping_fee' && item.productType !== 'discount',
+      )
+      for (const item of regularItems) {
+        expect(item.taxRate).toBeGreaterThan(0)
+      }
+    })
+
+    it('should use normal VAT behavior for non-US country regardless of toggle', async () => {
+      delete process.env.BRIQPAY_TREAT_US_AS_ROW
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      ;(mockCart as any).country = 'SE'
+      ;(mockCart as any).lineItems[0].taxRate = { amount: 0.25, includedInPrice: true }
+      ;(mockCart as any).taxedPrice = {
+        totalNet: { centAmount: 95200, currencyCode: 'SEK' },
+        totalGross: { centAmount: 119000, currencyCode: 'SEK' },
+        totalTax: { centAmount: 23800, currencyCode: 'SEK' },
+      }
+
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'se-session' }),
+        } as Response)
+      }) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 119000, currencyCode: 'SEK', fractionDigits: 2 },
+        'localhost',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'se-session')
+      expect(requestBody).toBeDefined()
+
+      // No sales_tax item
+      const salesTaxItem = requestBody.data.order.cart.find((item: any) => item.productType === 'sales_tax')
+      expect(salesTaxItem).toBeUndefined()
+
+      // Normal VAT: taxRate > 0
+      const regularItems = requestBody.data.order.cart.filter(
+        (item: any) => item.productType !== 'shipping_fee' && item.productType !== 'discount',
+      )
+      for (const item of regularItems) {
+        expect(item.taxRate).toBeGreaterThan(0)
+      }
+    })
+
+    it('should add shipping item with taxRate: 0 in sales tax mode', async () => {
+      delete process.env.BRIQPAY_TREAT_US_AS_ROW
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      ;(mockCart as any).country = 'US'
+      ;(mockCart as any).lineItems[0].taxRate = { amount: 0.08, includedInPrice: false }
+      ;(mockCart as any).taxedPrice = {
+        totalNet: { centAmount: 238000, currencyCode: 'EUR' },
+        totalGross: { centAmount: 257040, currencyCode: 'EUR' },
+        totalTax: { centAmount: 19040, currencyCode: 'EUR' },
+      }
+
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'us-shipping-session' }),
+        } as Response)
+      }) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 257040, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'us-shipping-session')
+      expect(requestBody).toBeDefined()
+
+      const shippingItem = requestBody.data.order.cart.find((item: any) => item.productType === 'shipping_fee')
+      expect(shippingItem).toBeDefined()
+      expect(shippingItem.taxRate).toBe(0)
+      expect(shippingItem.totalVatAmount).toBe(0)
+      expect(shippingItem.unitPrice).toBe(shippingItem.unitPriceIncVat)
+    })
+
+    it('should add discount item with taxRate: 0 in sales tax mode', async () => {
+      delete process.env.BRIQPAY_TREAT_US_AS_ROW
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      ;(mockCart as any).country = 'US'
+      ;(mockCart as any).lineItems[0].taxRate = { amount: 0.08, includedInPrice: false }
+      ;(mockCart as any).discountOnTotalPrice = {
+        discountedNetAmount: {
+          centAmount: -1000,
+          currencyCode: 'EUR',
+        },
+        discountedGrossAmount: {
+          centAmount: -1080,
+          currencyCode: 'EUR',
+        },
+      }
+      ;(mockCart as any).taxedPrice = {
+        totalNet: { centAmount: 118000, currencyCode: 'EUR' },
+        totalGross: { centAmount: 127440, currencyCode: 'EUR' },
+        totalTax: { centAmount: 9440, currencyCode: 'EUR' },
+      }
+
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'us-discount-session' }),
+        } as Response)
+      }) as typeof fetch
+
+      const response = await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 127440, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      expect(response).toHaveProperty('sessionId', 'us-discount-session')
+      expect(requestBody).toBeDefined()
+
+      const discountItems = requestBody.data.order.cart.filter((item: any) => item.productType === 'discount')
+      expect(discountItems.length).toBeGreaterThanOrEqual(1)
+      for (const item of discountItems) {
+        expect(item.taxRate).toBe(0)
+        expect(item.totalVatAmount).toBe(0)
+      }
+    })
+
+    it('should update session with sales tax mode (taxRate: 0, sales_tax item appended)', async () => {
+      delete process.env.BRIQPAY_TREAT_US_AS_ROW
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      ;(mockCart as any).country = 'US'
+      ;(mockCart as any).lineItems[0].taxRate = { amount: 0.08, includedInPrice: false }
+      ;(mockCart as any).taxedPrice = {
+        totalNet: { centAmount: 119000, currencyCode: 'EUR' },
+        totalGross: { centAmount: 128520, currencyCode: 'EUR' },
+        totalTax: { centAmount: 9520, currencyCode: 'EUR' },
+      }
+
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'us-update-session' }),
+        } as Response)
+      }) as typeof fetch
+
+      const response = await BriqpayService.updateSession('abc123', mockCart, {
+        centAmount: 128520,
+        currencyCode: 'EUR',
+      })
+
+      expect(response).toHaveProperty('sessionId', 'us-update-session')
+      expect(requestBody).toBeDefined()
+
+      // Cart items should have taxRate: 0
+      const regularItems = requestBody.data.order.cart.filter(
+        (item: any) => item.productType !== 'sales_tax' && item.productType !== 'shipping_fee',
+      )
+      for (const item of regularItems) {
+        expect(item.taxRate).toBe(0)
+        expect(item.totalVatAmount).toBe(0)
+      }
+
+      // A sales_tax item should be appended
+      const salesTaxItem = requestBody.data.order.cart.find((item: any) => item.productType === 'sales_tax')
+      expect(salesTaxItem).toBeDefined()
+      expect(salesTaxItem.totalTaxAmount).toBe(9520)
+
+      // amountExVat should use taxedPrice.totalNet.centAmount
+      expect(requestBody.data.order.amountExVat).toBe(119000)
+    })
+
+    it('should append sales_tax item to capture payload when salesTaxOverride provided', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      ;(mockCart as any).country = 'US'
+      ;(mockCart as any).lineItems[0].taxRate = { amount: 0.08, includedInPrice: false }
+      ;(mockCart as any).taxedPrice = {
+        totalNet: { centAmount: 119000, currencyCode: 'EUR' },
+        totalGross: { centAmount: 128520, currencyCode: 'EUR' },
+        totalTax: { centAmount: 9520, currencyCode: 'EUR' },
+      }
+
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ captureId: 'capture-us', status: 'captured' }),
+        } as Response)
+      }) as typeof fetch
+
+      const response = await BriqpayService.capture(
+        mockCart,
+        { centAmount: 128520, currencyCode: 'EUR' },
+        'session-123',
+        { enabled: true, totalTaxCentAmount: 9520 },
+      )
+
+      expect(response).toHaveProperty('captureId', 'capture-us')
+      expect(requestBody).toBeDefined()
+
+      // Cart items should have taxRate: 0
+      const regularItems = requestBody.data.order.cart.filter((item: any) => item.productType !== 'sales_tax')
+      for (const item of regularItems) {
+        expect(item.taxRate).toBe(0)
+        expect(item.totalVatAmount).toBe(0)
+      }
+
+      // sales_tax item should be appended
+      const salesTaxItem = requestBody.data.order.cart.find((item: any) => item.productType === 'sales_tax')
+      expect(salesTaxItem).toBeDefined()
+      expect(salesTaxItem.totalTaxAmount).toBe(9520)
+      expect(salesTaxItem.reference).toBe('sales-tax')
+      expect(salesTaxItem.name).toBe('Sales Tax')
+    })
+
+    it('should append sales_tax item to refund payload when salesTaxOverride provided', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      ;(mockCart as any).country = 'US'
+      ;(mockCart as any).lineItems[0].taxRate = { amount: 0.08, includedInPrice: false }
+      ;(mockCart as any).taxedPrice = {
+        totalNet: { centAmount: 119000, currencyCode: 'EUR' },
+        totalGross: { centAmount: 128520, currencyCode: 'EUR' },
+        totalTax: { centAmount: 9520, currencyCode: 'EUR' },
+      }
+
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ refundId: 'refund-us', status: 'refunded' }),
+        } as Response)
+      }) as typeof fetch
+
+      const response = await BriqpayService.refund(
+        mockCart,
+        { centAmount: 128520, currencyCode: 'EUR' },
+        'session-123',
+        'capture-123',
+        { enabled: true, totalTaxCentAmount: 9520 },
+      )
+
+      expect(response).toHaveProperty('refundId', 'refund-us')
+      expect(requestBody).toBeDefined()
+
+      // Cart items should have taxRate: 0
+      const regularItems = requestBody.data.order.cart.filter((item: any) => item.productType !== 'sales_tax')
+      for (const item of regularItems) {
+        expect(item.taxRate).toBe(0)
+        expect(item.totalVatAmount).toBe(0)
+      }
+
+      // sales_tax item should be appended
+      const salesTaxItem = requestBody.data.order.cart.find((item: any) => item.productType === 'sales_tax')
+      expect(salesTaxItem).toBeDefined()
+      expect(salesTaxItem.totalTaxAmount).toBe(9520)
+      expect(salesTaxItem.reference).toBe('sales-tax')
+      expect(salesTaxItem.name).toBe('Sales Tax')
+    })
+  })
 })

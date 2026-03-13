@@ -231,7 +231,6 @@ export class DropinComponents implements DropinComponent {
       await this.baseOptions.onComplete?.({
         isSuccess: true,
         paymentReference: data.paymentReference,
-        ...(this.baseOptions.futureOrderNumber && { futureOrderNumber: this.baseOptions.futureOrderNumber }),
       });
     } catch (e) {
       try {

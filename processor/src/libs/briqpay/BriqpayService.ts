@@ -14,12 +14,61 @@ import {
   ORDER_STATUS,
   PAYMENT_TOOLS_PRODUCT,
   RegularCartItem,
+  SalesTaxCartItem,
+  SalesTaxOverride,
   SESSION_INTENT,
   TRANSACTION_STATUS,
 } from '../../services/types/briqpay-payment.type'
 import { Money } from '@commercetools/connect-payments-sdk'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
 import { appLogger } from '../../payment-sdk'
+
+/**
+ * Determines if sales tax mode should be used.
+ * Sales tax mode is active when the country is US and BRIQPAY_TREAT_US_AS_ROW is NOT 'true'.
+ * Non-US countries are never affected by this toggle.
+ */
+const isSalesTaxMode = (country: string | undefined): boolean =>
+  country === 'US' && process.env.BRIQPAY_TREAT_US_AS_ROW !== 'true'
+
+/**
+ * Computes order amounts and appends the synthetic sales_tax cart item when in sales tax mode.
+ * In VAT mode, falls back to dividing by tax multiplier for amountExVat.
+ */
+const applySalesTaxToOrder = (
+  cartItems: CartItem[],
+  cart: Cart,
+  fallbackAmount: number,
+  taxMultiplier: number,
+  salesTaxMode: boolean,
+): { amountExVat: number; amountIncVat: number } => {
+  if (salesTaxMode) {
+    appLogger.info(
+      { country: cart.country, cartId: cart.id },
+      'Sales tax mode active: US cart with BRIQPAY_TREAT_US_AS_ROW !== true',
+    )
+
+    if (cart.taxedPrice?.totalTax) {
+      cartItems.push({
+        productType: ITEM_PRODUCT_TYPE.SALES_TAX,
+        reference: 'sales-tax',
+        name: 'Sales Tax',
+        totalTaxAmount: cart.taxedPrice.totalTax.centAmount,
+      } satisfies SalesTaxCartItem)
+      appLogger.info({ totalTaxAmount: cart.taxedPrice.totalTax.centAmount }, 'Appended sales_tax aggregate line item')
+    }
+
+    return {
+      amountExVat: cart.taxedPrice?.totalNet?.centAmount ?? fallbackAmount,
+      amountIncVat: cart.taxedPrice?.totalGross?.centAmount ?? fallbackAmount,
+    }
+  }
+
+  return {
+    amountExVat: cart.taxedPrice?.totalNet?.centAmount ?? Math.round(fallbackAmount / taxMultiplier),
+    amountIncVat: fallbackAmount,
+  }
+}
 
 const mapBriqpayProductType = (item: LineItem) => {
   // Check if the product has a digital-related attribute
@@ -44,9 +93,34 @@ const getLocalizedName = (item: LineItem, locale: string): string => {
   return item.productKey ?? item.productId ?? 'Item'
 }
 
-const createDiscountLineItem = (item: LineItem, localeName: string, taxRate: number): RegularCartItem => {
+const createDiscountLineItem = (
+  item: LineItem,
+  localeName: string,
+  taxRate: number,
+  salesTaxMode: boolean,
+): RegularCartItem => {
   const quantity = item.quantity
   const grossUnit = item.price.value.centAmount
+
+  if (salesTaxMode) {
+    // In sales tax mode, centAmount is already net. Tax is aggregated separately.
+    const netUnit = grossUnit
+    return {
+      productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+      reference: item.key ?? localeName,
+      name: localeName,
+      quantity,
+      quantityUnit: 'pc',
+      unitPrice: netUnit,
+      unitPriceIncVat: netUnit,
+      discountPercentage: 0,
+      taxRate: 0,
+      totalAmount: netUnit * quantity,
+      totalVatAmount: 0,
+      imageUrl: item.variant?.images?.[0]?.url,
+    }
+  }
+
   const netUnit = item.taxedPrice?.totalNet
     ? Math.round(item.taxedPrice.totalNet.centAmount / quantity)
     : Math.round(grossUnit / (1 + (item.taxRate?.amount ?? 0)))
@@ -71,8 +145,36 @@ const createDiscountLineItem = (item: LineItem, localeName: string, taxRate: num
  * Creates a regular line item using ORIGINAL prices (before any discounts).
  * Discounts are handled as separate discount line items to avoid percentage calculation issues.
  */
-const createRegularLineItem = (item: LineItem, localeName: string, taxRate: number): RegularCartItem => {
+const createRegularLineItem = (
+  item: LineItem,
+  localeName: string,
+  taxRate: number,
+  salesTaxMode: boolean,
+): RegularCartItem => {
   const quantity = item.quantity
+
+  if (salesTaxMode) {
+    // In sales tax mode, centAmount is already net (includedInPrice: false).
+    // Tax is aggregated into a single sales_tax line item.
+    const unitPrice = item.price.value.centAmount
+    const totalAmount = unitPrice * quantity
+
+    return {
+      productType: mapBriqpayProductType(item),
+      reference: item.variant?.sku ?? localeName,
+      name: localeName,
+      quantity,
+      quantityUnit: 'pc',
+      unitPrice,
+      unitPriceIncVat: unitPrice,
+      taxRate: 0,
+      discountPercentage: 0,
+      totalAmount,
+      totalVatAmount: 0,
+      imageUrl: item.variant?.images?.[0]?.url,
+    }
+  }
+
   const taxRateAmount = item.taxRate?.amount ?? 0
 
   // Use ORIGINAL price (before discounts) for the line item
@@ -148,6 +250,7 @@ const createItemDiscountLineItem = (
   localeName: string,
   taxRate: number,
   discountNameMap: Map<string, string>,
+  salesTaxMode: boolean,
 ): RegularCartItem | null => {
   // Check if item has per-quantity discounts
   if (!item.discountedPricePerQuantity?.length) {
@@ -155,14 +258,15 @@ const createItemDiscountLineItem = (
   }
 
   const quantity = item.quantity
-  const taxRateAmount = item.taxRate?.amount ?? 0
 
   // Calculate original total (before discount)
   const originalUnitGross = item.price.value.centAmount
   const originalGrossTotal = originalUnitGross * quantity
 
   // Get actual discounted total from CommerceTools (what customer actually pays)
-  const actualGrossTotal = item.taxedPrice?.totalGross?.centAmount ?? originalGrossTotal
+  const actualGrossTotal = salesTaxMode
+    ? (item.taxedPrice?.totalNet?.centAmount ?? originalGrossTotal)
+    : (item.taxedPrice?.totalGross?.centAmount ?? originalGrossTotal)
 
   // Calculate the discount amount (difference between original and actual)
   const discountGrossAmount = originalGrossTotal - actualGrossTotal
@@ -171,10 +275,6 @@ const createItemDiscountLineItem = (
   if (discountGrossAmount <= 0) {
     return null
   }
-
-  // Calculate net and VAT for the discount amount
-  const discountNetAmount = Math.round(discountGrossAmount / (1 + taxRateAmount))
-  const discountVatAmount = discountGrossAmount - discountNetAmount
 
   // Get unique discount IDs from this item
   const discountIds = item.discountedPricePerQuantity
@@ -189,6 +289,30 @@ const createItemDiscountLineItem = (
   // Build discount name from Cart Discount names, fallback to product name
   const discountNames = discountIds.map((id) => discountNameMap.get(id)).filter((name): name is string => !!name)
   const discountName = discountNames.length > 0 ? discountNames.join(' + ') : `Discount: ${localeName}`
+
+  if (salesTaxMode) {
+    // In sales tax mode, discount is net. Tax is aggregated separately.
+    return {
+      productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+      reference: discountReference,
+      name: discountName,
+      quantity: 1,
+      quantityUnit: 'pc',
+      unitPrice: -discountGrossAmount,
+      unitPriceIncVat: -discountGrossAmount,
+      taxRate: 0,
+      discountPercentage: 0,
+      totalAmount: -discountGrossAmount,
+      totalVatAmount: 0,
+      imageUrl: undefined,
+    }
+  }
+
+  const taxRateAmount = item.taxRate?.amount ?? 0
+
+  // Calculate net and VAT for the discount amount
+  const discountNetAmount = Math.round(discountGrossAmount / (1 + taxRateAmount))
+  const discountVatAmount = discountGrossAmount - discountNetAmount
 
   return {
     productType: ITEM_PRODUCT_TYPE.DISCOUNT,
@@ -225,14 +349,15 @@ const mapSingleLineItem = (
   item: LineItem,
   fallbackLocale: string,
   discountNameMap: Map<string, string>,
+  salesTaxMode: boolean,
 ): CartItem[] => {
   const localeName = getLocalizedName(item, fallbackLocale)
-  const taxRate = Math.round((item.taxRate?.amount ?? 0) * 10000)
+  const taxRate = salesTaxMode ? 0 : Math.round((item.taxRate?.amount ?? 0) * 10000)
   const isDiscountLine = item.lineItemMode === 'GiftCard' || item.priceMode === 'Discounted'
 
   const cartItem = isDiscountLine
-    ? createDiscountLineItem(item, localeName, taxRate)
-    : createRegularLineItem(item, localeName, taxRate)
+    ? createDiscountLineItem(item, localeName, taxRate, salesTaxMode)
+    : createRegularLineItem(item, localeName, taxRate, salesTaxMode)
 
   appLogger.info(
     {
@@ -248,7 +373,7 @@ const mapSingleLineItem = (
   const result: CartItem[] = [cartItem]
 
   if (!isDiscountLine) {
-    const itemDiscountLine = createItemDiscountLineItem(item, localeName, taxRate, discountNameMap)
+    const itemDiscountLine = createItemDiscountLineItem(item, localeName, taxRate, discountNameMap, salesTaxMode)
     if (itemDiscountLine) {
       appLogger.info(
         {
@@ -266,18 +391,24 @@ const mapSingleLineItem = (
   return result
 }
 
-const mapBriqpayCartItem = async (lineItems: LineItem[], locale: string | undefined): Promise<CartItem[]> => {
+const mapBriqpayCartItem = async (
+  lineItems: LineItem[],
+  locale: string | undefined,
+  salesTaxMode: boolean = false,
+): Promise<CartItem[]> => {
   const fallbackLocale = locale || 'en-GB'
 
   const allDiscountIds = collectDiscountIds(lineItems)
   const discountNameMap = await fetchCartDiscountNames(allDiscountIds, fallbackLocale)
 
   appLogger.info(
-    { discountIds: allDiscountIds, discountNameMap: Object.fromEntries(discountNameMap) },
+    { discountIds: allDiscountIds, discountNameMap: Object.fromEntries(discountNameMap), salesTaxMode },
     'Fetched cart discount names:',
   )
 
-  const mappedItems = lineItems.flatMap((item) => mapSingleLineItem(item, fallbackLocale, discountNameMap))
+  const mappedItems = lineItems.flatMap((item) =>
+    mapSingleLineItem(item, fallbackLocale, discountNameMap, salesTaxMode),
+  )
 
   appLogger.info(mappedItems, 'Final mapped items:')
   return mappedItems
@@ -395,9 +526,18 @@ class BriqpayService {
     hookUrl: string,
     futureOrderNumber?: string,
   ): Promise<CreateSessionRequestBody> {
+    const salesTaxMode = isSalesTaxMode(ctCart.country)
     const effectiveTaxRate = await this.getEffectiveTaxRate(ctCart)
     const taxMultiplier = 1 + effectiveTaxRate
-    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.locale)
+    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.locale, salesTaxMode)
+
+    const { amountExVat, amountIncVat } = applySalesTaxToOrder(
+      cartItems,
+      ctCart,
+      amountPlanned.centAmount,
+      taxMultiplier,
+      salesTaxMode,
+    )
 
     return {
       product: {
@@ -472,8 +612,8 @@ class BriqpayService {
         }),
         order: {
           currency: ctCart.totalPrice.currencyCode,
-          amountIncVat: amountPlanned.centAmount,
-          amountExVat: ctCart.taxedPrice?.totalNet?.centAmount ?? Math.round(amountPlanned.centAmount / taxMultiplier),
+          amountIncVat,
+          amountExVat,
           cart: cartItems,
         },
       },
@@ -488,14 +628,18 @@ class BriqpayService {
       return
     }
 
+    const salesTaxMode = isSalesTaxMode(ctCart.country)
+
     // CT amounts are negative, we negate them to make Briqpay see a positive discount
     const net = -ctCart.discountOnTotalPrice.discountedNetAmount.centAmount
     const gross = -(
       ctCart.discountOnTotalPrice.discountedGrossAmount?.centAmount ??
       ctCart.discountOnTotalPrice.discountedNetAmount.centAmount
     )
-    const vat = gross - net
-    const taxRate = net !== 0 ? Math.round(((gross - net) / net) * 10000) : 0
+
+    // In sales tax mode, discount has no per-line VAT — tax is aggregated separately
+    const vat = salesTaxMode ? 0 : gross - net
+    const taxRate = salesTaxMode ? 0 : net !== 0 ? Math.round(((gross - net) / net) * 10000) : 0
 
     // Get discount IDs from discountOnTotalPrice.includedDiscounts
     const discountIds =
@@ -510,20 +654,35 @@ class BriqpayService {
     const discountName = discountNames.length > 0 ? discountNames.join(' + ') : 'Discount'
     const discountReference = discountIds.length > 0 ? `discount-${discountIds.join('-')}` : 'total-discount'
 
-    const discountItem: RegularCartItem = {
-      productType: ITEM_PRODUCT_TYPE.DISCOUNT,
-      reference: discountReference,
-      name: discountName,
-      quantity: 1,
-      quantityUnit: 'pc',
-      unitPrice: net, // ex VAT
-      unitPriceIncVat: gross, // incl VAT
-      taxRate,
-      discountPercentage: 0,
-      totalAmount: gross,
-      totalVatAmount: vat,
-      imageUrl: undefined,
-    }
+    const discountItem: RegularCartItem = salesTaxMode
+      ? {
+          productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+          reference: discountReference,
+          name: discountName,
+          quantity: 1,
+          quantityUnit: 'pc',
+          unitPrice: net,
+          unitPriceIncVat: net,
+          taxRate: 0,
+          discountPercentage: 0,
+          totalAmount: net,
+          totalVatAmount: 0,
+          imageUrl: undefined,
+        }
+      : {
+          productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+          reference: discountReference,
+          name: discountName,
+          quantity: 1,
+          quantityUnit: 'pc',
+          unitPrice: net, // ex VAT
+          unitPriceIncVat: gross, // incl VAT
+          taxRate,
+          discountPercentage: 0,
+          totalAmount: gross,
+          totalVatAmount: vat,
+          imageUrl: undefined,
+        }
 
     appLogger.info(
       {
@@ -531,6 +690,7 @@ class BriqpayService {
         grossAmount: gross,
         netAmount: net,
         discountIds,
+        salesTaxMode,
       },
       'Adding total discount line item:',
     )
@@ -543,7 +703,59 @@ class BriqpayService {
       return
     }
 
+    const salesTaxMode = isSalesTaxMode(ctCart.country)
     const shippingPrice = ctCart.shippingInfo.price
+
+    if (salesTaxMode) {
+      // In sales tax mode, shipping price is net. Tax is in the aggregate sales_tax item.
+      const shippingNet = shippingPrice.centAmount
+
+      const shippingItem: RegularCartItem = {
+        productType: 'shipping_fee' as any,
+        reference: 'shippingfee',
+        name: 'Shipping fee',
+        quantity: 1,
+        quantityUnit: 'pc',
+        unitPrice: shippingNet,
+        unitPriceIncVat: shippingNet,
+        taxRate: 0,
+        discountPercentage: 0,
+        totalAmount: shippingNet,
+        totalVatAmount: 0,
+      }
+
+      briqpayCreateSession.data.order.cart.push(shippingItem)
+      appLogger.info({ shippingItem, salesTaxMode }, 'Added shipping fee item (sales tax mode):')
+
+      // Handle shipping discounts in sales tax mode
+      const discountedPrice = ctCart.shippingInfo.discountedPrice?.value.centAmount
+      if (discountedPrice !== undefined && discountedPrice < shippingNet) {
+        const shippingDiscountNet = shippingNet - discountedPrice
+
+        const shippingDiscountItem: RegularCartItem = {
+          productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+          reference: 'shipping-discount',
+          name: 'Shipping Discount',
+          quantity: 1,
+          quantityUnit: 'pc',
+          unitPrice: -shippingDiscountNet,
+          unitPriceIncVat: -shippingDiscountNet,
+          taxRate: 0,
+          discountPercentage: 0,
+          totalAmount: -shippingDiscountNet,
+          totalVatAmount: 0,
+          imageUrl: undefined,
+        }
+
+        briqpayCreateSession.data.order.cart.push(shippingDiscountItem)
+        appLogger.info(
+          { shippingDiscountItem, originalShippingNet: shippingNet, discountedPrice, salesTaxMode },
+          'Added shipping discount line item (sales tax mode):',
+        )
+      }
+      return
+    }
+
     const effectiveTaxRate = await this.getEffectiveTaxRate(ctCart)
     const shippingTaxRateAmount = ctCart.shippingInfo.taxRate?.amount ?? effectiveTaxRate
     const taxMultiplier = 1 + shippingTaxRateAmount
@@ -731,21 +943,44 @@ class BriqpayService {
     ctCart: Cart,
     amountPlanned: Omit<PaymentAmount, 'fractionDigits'>,
     sessionId: string,
+    salesTaxOverride?: SalesTaxOverride,
   ): Promise<{ captureId: string; status: PaymentOutcome } & Record<string, unknown>> {
-    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.locale)
+    const salesTaxMode = salesTaxOverride?.enabled ?? false
+    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.locale, salesTaxMode)
+
+    // In sales tax mode, use CT's pre-calculated amounts directly
+    const amountExVat = salesTaxMode
+      ? (ctCart.taxedPrice?.totalNet?.centAmount ?? amountPlanned.centAmount)
+      : (ctCart.taxedPrice?.totalNet?.centAmount ??
+        (ctCart.lineItems.reduce(
+          (acc, item) =>
+            acc + Number(item.taxedPrice?.totalNet?.centAmount || item.price.value.centAmount) * item.quantity,
+          0,
+        ) ||
+          amountPlanned.centAmount))
+
+    const amountIncVat = salesTaxMode
+      ? (ctCart.taxedPrice?.totalGross?.centAmount ?? amountPlanned.centAmount)
+      : amountPlanned.centAmount
+
+    // Append aggregate sales_tax line item if in sales tax mode
+    if (salesTaxMode && salesTaxOverride) {
+      const salesTaxItem: SalesTaxCartItem = {
+        productType: ITEM_PRODUCT_TYPE.SALES_TAX,
+        reference: 'sales-tax',
+        name: 'Sales Tax',
+        totalTaxAmount: salesTaxOverride.totalTaxCentAmount,
+      }
+      cartItems.push(salesTaxItem)
+      appLogger.info({ salesTaxItem }, 'Appended sales_tax aggregate line item to capture')
+    }
+
     const briqpayCaptureRequest: Pick<CreateSessionRequestBody, 'data'> = {
       data: {
         order: {
           currency: amountPlanned.currencyCode,
-          amountIncVat: amountPlanned.centAmount,
-          amountExVat:
-            ctCart.taxedPrice?.totalNet?.centAmount ??
-            (ctCart.lineItems.reduce(
-              (acc, item) =>
-                acc + Number(item.taxedPrice?.totalNet?.centAmount || item.price.value.centAmount) * item.quantity,
-              0,
-            ) ||
-              amountPlanned.centAmount),
+          amountIncVat,
+          amountExVat,
           cart: cartItems,
         },
         // Temporary cast
@@ -768,22 +1003,45 @@ class BriqpayService {
     amountPlanned: Omit<PaymentAmount, 'fractionDigits'>,
     sessionId: string,
     captureId?: string,
+    salesTaxOverride?: SalesTaxOverride,
   ): Promise<{ refundId: string; status: PaymentOutcome } & Record<string, unknown>> {
-    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.locale)
+    const salesTaxMode = salesTaxOverride?.enabled ?? false
+    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.locale, salesTaxMode)
+
+    // In sales tax mode, use CT's pre-calculated amounts directly
+    const amountExVat = salesTaxMode
+      ? (ctCart.taxedPrice?.totalNet?.centAmount ?? amountPlanned.centAmount)
+      : (ctCart.taxedPrice?.totalNet?.centAmount ??
+        (ctCart.lineItems.reduce(
+          (acc, item) =>
+            acc + Number(item.taxedPrice?.totalNet?.centAmount || item.price.value.centAmount) * item.quantity,
+          0,
+        ) ||
+          amountPlanned.centAmount))
+
+    const amountIncVat = salesTaxMode
+      ? (ctCart.taxedPrice?.totalGross?.centAmount ?? amountPlanned.centAmount)
+      : amountPlanned.centAmount
+
+    // Append aggregate sales_tax line item if in sales tax mode
+    if (salesTaxMode && salesTaxOverride) {
+      const salesTaxItem: SalesTaxCartItem = {
+        productType: ITEM_PRODUCT_TYPE.SALES_TAX,
+        reference: 'sales-tax',
+        name: 'Sales Tax',
+        totalTaxAmount: salesTaxOverride.totalTaxCentAmount,
+      }
+      cartItems.push(salesTaxItem)
+      appLogger.info({ salesTaxItem }, 'Appended sales_tax aggregate line item to refund')
+    }
+
     const briqpayRefundRequest: Pick<CreateSessionRequestBody, 'data'> & { captureId?: string } = {
       ...(captureId && { captureId }),
       data: {
         order: {
           currency: ctCart.totalPrice.currencyCode,
-          amountIncVat: amountPlanned.centAmount,
-          amountExVat:
-            ctCart.taxedPrice?.totalNet?.centAmount ??
-            (ctCart.lineItems.reduce(
-              (acc, item) =>
-                acc + Number(item.taxedPrice?.totalNet?.centAmount || item.price.value.centAmount) * item.quantity,
-              0,
-            ) ||
-              amountPlanned.centAmount),
+          amountIncVat,
+          amountExVat,
           cart: cartItems,
         },
       },
@@ -885,7 +1143,59 @@ class BriqpayService {
       return
     }
 
+    const salesTaxMode = isSalesTaxMode(cart.country)
     const shippingPrice = cart.shippingInfo.price
+
+    if (salesTaxMode) {
+      // In sales tax mode, shipping price is net. Tax is in the aggregate sales_tax item.
+      const shippingNet = shippingPrice.centAmount
+
+      const shippingItem: RegularCartItem = {
+        productType: 'shipping_fee' as any,
+        reference: 'shippingfee',
+        name: 'Shipping fee',
+        quantity: 1,
+        quantityUnit: 'pc',
+        unitPrice: shippingNet,
+        unitPriceIncVat: shippingNet,
+        taxRate: 0,
+        discountPercentage: 0,
+        totalAmount: shippingNet,
+        totalVatAmount: 0,
+      }
+
+      cartItems.push(shippingItem)
+      appLogger.info({ shippingItem, salesTaxMode }, 'Added shipping fee item to update session (sales tax mode):')
+
+      // Handle shipping discounts in sales tax mode
+      const discountedPrice = cart.shippingInfo.discountedPrice?.value.centAmount
+      if (discountedPrice !== undefined && discountedPrice < shippingNet) {
+        const shippingDiscountNet = shippingNet - discountedPrice
+
+        const shippingDiscountItem: RegularCartItem = {
+          productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+          reference: 'shipping-discount',
+          name: 'Shipping Discount',
+          quantity: 1,
+          quantityUnit: 'pc',
+          unitPrice: -shippingDiscountNet,
+          unitPriceIncVat: -shippingDiscountNet,
+          taxRate: 0,
+          discountPercentage: 0,
+          totalAmount: -shippingDiscountNet,
+          totalVatAmount: 0,
+          imageUrl: undefined,
+        }
+
+        cartItems.push(shippingDiscountItem)
+        appLogger.info(
+          { shippingDiscountItem, originalShippingNet: shippingNet, discountedPrice, salesTaxMode },
+          'Added shipping discount line item to update session (sales tax mode):',
+        )
+      }
+      return
+    }
+
     const effectiveTaxRate = await this.getEffectiveTaxRate(cart)
     const shippingTaxRateAmount = cart.shippingInfo.taxRate?.amount ?? effectiveTaxRate
     const taxMultiplier = 1 + shippingTaxRateAmount
@@ -957,13 +1267,17 @@ class BriqpayService {
       return
     }
 
+    const salesTaxMode = isSalesTaxMode(cart.country)
+
     const net = -cart.discountOnTotalPrice.discountedNetAmount.centAmount
     const gross = -(
       cart.discountOnTotalPrice.discountedGrossAmount?.centAmount ??
       cart.discountOnTotalPrice.discountedNetAmount.centAmount
     )
-    const vat = gross - net
-    const taxRate = net !== 0 ? Math.round(((gross - net) / net) * 10000) : 0
+
+    // In sales tax mode, discount has no per-line VAT — tax is aggregated separately
+    const vat = salesTaxMode ? 0 : gross - net
+    const taxRate = salesTaxMode ? 0 : net !== 0 ? Math.round(((gross - net) / net) * 10000) : 0
 
     // Get discount IDs from discountOnTotalPrice.includedDiscounts
     const discountIds =
@@ -978,20 +1292,35 @@ class BriqpayService {
     const discountName = discountNames.length > 0 ? discountNames.join(' + ') : 'Discount'
     const discountReference = discountIds.length > 0 ? `discount-${discountIds.join('-')}` : 'total-discount'
 
-    const discountItem: RegularCartItem = {
-      productType: ITEM_PRODUCT_TYPE.DISCOUNT,
-      reference: discountReference,
-      name: discountName,
-      quantity: 1,
-      quantityUnit: 'pc',
-      unitPrice: net, // ex VAT
-      unitPriceIncVat: gross, // incl VAT
-      taxRate,
-      discountPercentage: 0,
-      totalAmount: gross,
-      totalVatAmount: vat,
-      imageUrl: undefined,
-    }
+    const discountItem: RegularCartItem = salesTaxMode
+      ? {
+          productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+          reference: discountReference,
+          name: discountName,
+          quantity: 1,
+          quantityUnit: 'pc',
+          unitPrice: net,
+          unitPriceIncVat: net,
+          taxRate: 0,
+          discountPercentage: 0,
+          totalAmount: net,
+          totalVatAmount: 0,
+          imageUrl: undefined,
+        }
+      : {
+          productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+          reference: discountReference,
+          name: discountName,
+          quantity: 1,
+          quantityUnit: 'pc',
+          unitPrice: net, // ex VAT
+          unitPriceIncVat: gross, // incl VAT
+          taxRate,
+          discountPercentage: 0,
+          totalAmount: gross,
+          totalVatAmount: vat,
+          imageUrl: undefined,
+        }
 
     appLogger.info(
       {
@@ -999,6 +1328,7 @@ class BriqpayService {
         grossAmount: gross,
         netAmount: net,
         discountIds,
+        salesTaxMode,
       },
       'Adding total discount line item to update session:',
     )
@@ -1008,19 +1338,26 @@ class BriqpayService {
 
   public async updateSession(sessionId: string, cart: Cart, amount: Money): Promise<MediumBriqpayResponse> {
     try {
-      const cartItems = await mapBriqpayCartItem(cart.lineItems, cart.locale)
+      const salesTaxMode = isSalesTaxMode(cart.country)
+      const cartItems = await mapBriqpayCartItem(cart.lineItems, cart.locale, salesTaxMode)
       await this.addDiscountItemToCart(cartItems, cart)
       await this.addShippingItemToCart(cartItems, cart)
 
-      // Get highest possible original value fallback without assuming matching rounding
-      const fallbackAmountExVat = Math.round(amount.centAmount / (1 + (await this.getEffectiveTaxRate(cart))))
+      const taxMultiplier = salesTaxMode ? 1 : 1 + (await this.getEffectiveTaxRate(cart))
+      const { amountExVat, amountIncVat } = applySalesTaxToOrder(
+        cartItems,
+        cart,
+        amount.centAmount,
+        taxMultiplier,
+        salesTaxMode,
+      )
 
       const data = {
         data: {
           order: {
             currency: amount.currencyCode,
-            amountIncVat: amount.centAmount,
-            amountExVat: cart.taxedPrice?.totalNet?.centAmount ?? fallbackAmountExVat,
+            amountIncVat,
+            amountExVat,
             cart: cartItems,
           },
           ...(cart.billingAddress && { billing: mapBriqpayAddress(cart.billingAddress) }),

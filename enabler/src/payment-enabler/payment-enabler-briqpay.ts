@@ -23,7 +23,6 @@ export type BaseOptions = {
   locale?: string;
   snippet: string;
   briqpaySessionId: string;
-  futureOrderNumber?: string;
   onComplete: (_result: PaymentResult) => void | Promise<void>;
   onError: (_error: unknown, _context?: { paymentReference?: string }) => void | Promise<void>;
 };
@@ -69,7 +68,6 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
       baseOptions: {
         snippet: configJson.snippet,
         briqpaySessionId: configJson.briqpaySessionId,
-        futureOrderNumber: configJson.futureOrderNumber,
         sdk: new BriqpaySdk(sdkOptions),
         processorUrl: options.processorUrl,
         sessionId: options.sessionId,

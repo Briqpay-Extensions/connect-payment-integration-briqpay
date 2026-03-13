@@ -100,6 +100,10 @@ deployAs:
         - key: ALLOWED_ORIGINS
           description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com).
           required: false
+        - key: BRIQPAY_TREAT_US_AS_ROW
+          description: Set to 'true' if you use the US country code as a Rest-of-World (ROW) catch-all. When enabled, US orders use normal VAT-style tax rates instead of the US sales_tax format.
+          required: false
+          default: "false"
         - key: BRIQPAY_EXTERNAL_WEBHOOK_URL
           description: Optional external webhook URL to receive order_status, capture_status, and refund_status events from Briqpay. When set, additional hooks are registered alongside the internal connector hooks. Must use HTTPS.
           required: false
