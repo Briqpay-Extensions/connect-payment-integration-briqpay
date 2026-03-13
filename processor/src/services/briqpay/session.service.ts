@@ -3,7 +3,7 @@ import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commerce
 import type { Cart as PlatformCart } from '@commercetools/platform-sdk'
 import { LineItem } from '@commercetools/platform-sdk'
 import { appLogger } from '../../payment-sdk'
-import { CartItem, ITEM_PRODUCT_TYPE, MediumBriqpayResponse, SalesTaxCartItem } from '../types/briqpay-payment.type'
+import { CartItem, MediumBriqpayResponse } from '../types/briqpay-payment.type'
 import Briqpay from '../../libs/briqpay/BriqpayService'
 import { apiRoot } from '../../libs/commercetools/api-root'
 import { SessionError, ValidationError } from '../../libs/errors/briqpay-errors'
@@ -223,42 +223,12 @@ export class BriqpaySessionService {
     const sessionItems = briqpaySession.data?.order?.cart || []
     const cartItems = ctCart.lineItems
 
-    // Sales tax mode: US country with BRIQPAY_TREAT_US_AS_ROW !== 'true'.
-    // In this mode the session cart contains one extra synthetic sales_tax item.
-    const country = ctCart.shippingAddress?.country || ctCart.country
-    const salesTaxMode = country === 'US' && process.env.BRIQPAY_TREAT_US_AS_ROW !== 'true'
-    const expectedSessionItemCount = salesTaxMode ? cartItems.length + 1 : cartItems.length
-
-    if (sessionItems.length !== expectedSessionItemCount) {
+    if (sessionItems.length !== cartItems.length) {
       appLogger.info(
-        {
-          briqpayCartLength: sessionItems.length,
-          ctCartLength: cartItems.length,
-          expectedSessionItemCount,
-          salesTaxMode,
-        },
+        { briqpayCartLength: sessionItems.length, ctCartLength: cartItems.length },
         'Number of items does not match',
       )
       return false
-    }
-
-    // In sales tax mode, verify the sales_tax item's totalTaxAmount still matches the cart's total tax.
-    if (salesTaxMode) {
-      const sessionSalesTaxItem = sessionItems.find(
-        (item): item is SalesTaxCartItem => item.productType === ITEM_PRODUCT_TYPE.SALES_TAX,
-      )
-      const cartTotalTax = ctCart.taxedPrice?.totalTax?.centAmount
-
-      if (!sessionSalesTaxItem || sessionSalesTaxItem.totalTaxAmount !== cartTotalTax) {
-        appLogger.info(
-          {
-            sessionSalesTaxAmount: sessionSalesTaxItem?.totalTaxAmount,
-            cartTotalTax,
-          },
-          'Sales tax amount mismatch or missing sales_tax item in session',
-        )
-        return false
-      }
     }
 
     // Get the locale to use

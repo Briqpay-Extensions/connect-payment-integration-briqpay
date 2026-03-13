@@ -195,16 +195,6 @@ export interface SalesTaxCartItem {
 
 export type CartItem = RegularCartItem | SalesTaxCartItem
 
-/**
- * Passed to BriqpayService capture/refund when US sales-tax mode is active.
- * Signals the service to zero-out tax on regular items and append a synthetic
- * sales_tax cart item with the given total tax amount.
- */
-export interface SalesTaxOverride {
-  enabled: true
-  totalTaxCentAmount: number
-}
-
 export interface DataCompany {
   cin?: string
   name?: string
