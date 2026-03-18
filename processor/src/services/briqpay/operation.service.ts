@@ -18,6 +18,7 @@ import { PaymentOutcome, PaymentResponseSchemaDTO } from '../../dtos/briqpay-pay
 import { TransactionDraftDTO, TransactionResponseDTO } from '../../dtos/operations/transaction.dto'
 import {
   getCartIdFromContext,
+  getCheckoutTransactionItemIdFromContext,
   getFutureOrderNumberFromContext,
   getPaymentInterfaceFromContext,
 } from '../../libs/fastify/context/context'
@@ -265,6 +266,7 @@ export class BriqpayOperationService {
       paymentMethodInfo: {
         paymentInterface: getPaymentInterfaceFromContext() || 'Briqpay',
       },
+      checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext(),
       ...(ctCart.customerId && {
         customer: {
           typeId: 'customer',
@@ -345,6 +347,7 @@ export class BriqpayOperationService {
       paymentMethodInfo: {
         paymentInterface: transactionDraft.paymentInterface,
       },
+      checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext(),
     })
 
     // Re-fetch cart to get the current version (cart may have been modified)
