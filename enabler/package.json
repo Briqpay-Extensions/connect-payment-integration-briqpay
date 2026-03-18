@@ -37,7 +37,7 @@
     "vite-plugin-css-injected-by-js": "3.5.2"
   },
   "overrides": {
-    "minimatch": "10.2.3",
+    "minimatch": "5.1.6",
     "glob": "11.1.0"
   }
 }
