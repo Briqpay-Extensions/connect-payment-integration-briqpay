@@ -118,6 +118,20 @@ export class BriqpaySessionService {
     const briqpaySession = await Briqpay.getSession(existingSessionId)
     appLogger.info({ existingSessionId }, 'Retrieved Briqpay session:')
 
+    // If the session has active payment activity (e.g. user completed PayPal HPP flow),
+    // return the existing session to avoid resetting the checkout after HPP redirect.
+    const paymentStatus = briqpaySession.moduleStatus?.payment
+    if (
+      paymentStatus?.orderStatus === 'order_pending' ||
+      paymentStatus?.orderStatus === 'order_approved_not_captured'
+    ) {
+      appLogger.info(
+        { orderStatus: paymentStatus.orderStatus, uiStatus: paymentStatus.uiStatus },
+        'Session has active payment in progress, reusing existing session',
+      )
+      return briqpaySession
+    }
+
     // Compare cart with session data
     const isCartMatching = await this.compareCartWithSession(ctCart, briqpaySession)
     appLogger.info({ isCartMatching }, 'Cart matching result:')
