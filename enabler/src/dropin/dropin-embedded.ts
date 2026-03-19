@@ -244,7 +244,7 @@ export class DropinComponents implements DropinComponent {
 }
 
 export class DropinEmbeddedBuilder implements PaymentDropinBuilder {
-  public dropinHasSubmit = true;
+  public dropinHasSubmit = false;
   private baseOptions: BaseOptions;
 
   constructor(_baseOptions: BaseOptions) {

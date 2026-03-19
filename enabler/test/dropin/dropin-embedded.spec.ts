@@ -33,9 +33,9 @@ describe("DropinEmbeddedBuilder", () => {
     );
   });
 
-  test("should set dropinHasSubmit to true by default", () => {
+  test("should set dropinHasSubmit to false since Briqpay iframe handles its own submit", () => {
     const builder = new DropinEmbeddedBuilder({} as any);
-    expect(builder.dropinHasSubmit).toBe(true);
+    expect(builder.dropinHasSubmit).toBe(false);
   });
 });
 
