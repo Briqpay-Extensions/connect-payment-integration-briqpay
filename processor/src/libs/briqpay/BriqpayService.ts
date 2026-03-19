@@ -309,7 +309,7 @@ class BriqpayService {
   }
 
   async healthCheck() {
-    const response = await fetch(new URL(this.baseUrl).origin)
+    const response = await fetch('https://api.briqpay.com/')
     if (!response.ok) {
       throw new Error(`Health check failed with status ${response.status}`)
     }

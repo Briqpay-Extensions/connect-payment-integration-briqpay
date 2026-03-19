@@ -389,7 +389,7 @@ describe('BriqpayService', () => {
 
       const result = await BriqpayService.healthCheck()
 
-      expect(global.fetch).toHaveBeenCalledWith('https://mock-briqpay.api')
+      expect(global.fetch).toHaveBeenCalledWith('https://api.briqpay.com/')
       expect(result).toBe(mockResponse)
     })
 

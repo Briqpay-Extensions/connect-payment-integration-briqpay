@@ -219,14 +219,24 @@ export class BriqpaySessionService {
       return false
     }
 
-    // Compare order lines
-    const sessionItems = briqpaySession.data?.order?.cart || []
+    // Compare order lines — filter out shipping, discount, and sales_tax items
+    // that are added by the processor (addShippingItem/addDiscountItem) and not
+    // present in ctCart.lineItems, to avoid false mismatches on HPP return.
+    const NON_PRODUCT_TYPES = new Set(['shipping_fee', 'shipping_line', 'discount', 'sales_tax'])
+    const allSessionItems = briqpaySession.data?.order?.cart || []
+    const sessionItems = allSessionItems.filter(
+      (item) => !('productType' in item && NON_PRODUCT_TYPES.has(String(item.productType))),
+    )
     const cartItems = ctCart.lineItems
 
     if (sessionItems.length !== cartItems.length) {
       appLogger.info(
-        { briqpayCartLength: sessionItems.length, ctCartLength: cartItems.length },
-        'Number of items does not match',
+        {
+          briqpayCartLength: sessionItems.length,
+          allSessionCartLength: allSessionItems.length,
+          ctCartLength: cartItems.length,
+        },
+        'Number of product items does not match',
       )
       return false
     }
