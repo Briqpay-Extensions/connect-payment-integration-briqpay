@@ -118,24 +118,15 @@ export class BriqpaySessionService {
     const briqpaySession = await Briqpay.getSession(existingSessionId)
     appLogger.info({ existingSessionId, hasHtmlSnippet: !!briqpaySession.htmlSnippet }, 'Retrieved Briqpay session')
 
-    // Check session status to determine reusability.
-    // Reuse the session if it has active/pending payment activity (HPP success, cancel, or in-progress).
-    // Only recreate if the session is truly terminal AND cart content has changed.
+    // If the session has active payment activity (e.g. user completed PayPal HPP flow),
+    // return the existing session to avoid resetting the checkout after HPP redirect.
     const paymentStatus = briqpaySession.moduleStatus?.payment
-    const sessionStatus = briqpaySession.status
-
-    // Sessions with active payment activity should ALWAYS be reused.
-    // This covers: HPP success return, HPP cancel return, payment in progress.
-    const hasActivePayment =
-      paymentStatus?.orderStatus === 'order_pending' || paymentStatus?.orderStatus === 'order_approved_not_captured'
-
-    // Sessions that are still usable (not expired/completed with captures) should be reused
-    // when the cart content matches, to avoid losing payment method selection and user state.
-    const isSessionReusable = sessionStatus !== 'expired' && briqpaySession.sessionId
-
-    if (hasActivePayment) {
+    if (
+      paymentStatus?.orderStatus === 'order_pending' ||
+      paymentStatus?.orderStatus === 'order_approved_not_captured'
+    ) {
       appLogger.info(
-        { orderStatus: paymentStatus?.orderStatus, uiStatus: paymentStatus?.uiStatus },
+        { orderStatus: paymentStatus.orderStatus, uiStatus: paymentStatus.uiStatus },
         'Session has active payment in progress, reusing existing session',
       )
       if (!briqpaySession.htmlSnippet) {
@@ -149,31 +140,12 @@ export class BriqpaySessionService {
 
     // Compare cart with session data
     const isCartMatching = await this.compareCartWithSession(ctCart, briqpaySession)
-    appLogger.info(
-      { isCartMatching, sessionStatus, orderStatus: paymentStatus?.orderStatus, isSessionReusable },
-      'Cart matching result',
-    )
+    appLogger.info({ isCartMatching }, 'Cart matching result:')
 
     if (isCartMatching) {
-      // Cart matches - reuse the existing session (user may have cancelled HPP and returned)
-      if (!briqpaySession.htmlSnippet) {
-        appLogger.error(
-          { existingSessionId },
-          'htmlSnippet missing from matching session - checkout iframe will fail to render',
-        )
-      }
       return briqpaySession
     }
 
-    // Cart doesn't match. If the session is still reusable, prefer updating over recreating
-    // to preserve user state (payment method selection, etc.)
-    if (isSessionReusable) {
-      appLogger.info({ existingSessionId }, 'Cart changed but session is reusable, updating session')
-      return this.updateOrCreateSession(ctCart, amountPlanned, hostname, existingSessionId, futureOrderNumber)
-    }
-
-    // Session is expired or invalid - create a new one
-    appLogger.info({ existingSessionId, sessionStatus }, 'Session not reusable, creating new session')
     return this.updateOrCreateSession(ctCart, amountPlanned, hostname, existingSessionId, futureOrderNumber)
   }
 
