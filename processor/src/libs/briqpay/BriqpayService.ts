@@ -833,13 +833,17 @@ class BriqpayService {
   getSession(sessionId: string): Promise<MediumBriqpayResponse> {
     // Fetch moduleStatus, captures, and refunds to get actual status from Briqpay
     // This is critical for security until HMAC webhook validation is implemented
-    return fetch(`${this.baseUrl}/session/${sessionId}?fields=data,snippet,sessionId,moduleStatus,captures,refunds`, {
-      method: 'GET',
-      headers: {
-        Authorization: `Basic ${btoa(this.username + ':' + this.secret)}`,
-        'content-type': 'application/json',
+    // Request both 'snippet' and 'htmlSnippet' field names to handle API naming inconsistency
+    return fetch(
+      `${this.baseUrl}/session/${sessionId}?fields=data,snippet,htmlSnippet,sessionId,moduleStatus,captures,refunds`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Basic ${btoa(this.username + ':' + this.secret)}`,
+          'content-type': 'application/json',
+        },
       },
-    }).then(async (response) => {
+    ).then(async (response) => {
       if (!response.ok) {
         const errorText = await response.text()
         appLogger.error(
@@ -851,7 +855,17 @@ class BriqpayService {
         )
         throw new Error(`Briqpay API error: ${errorText}`)
       }
-      return response.json()
+      const json = await response.json()
+      // Briqpay's GET /session may return the HTML snippet as 'snippet' instead of 'htmlSnippet'.
+      // Normalize to 'htmlSnippet' to match our MediumBriqpayResponse type and createSession response.
+      if (!json.htmlSnippet && json.snippet) {
+        json.htmlSnippet = json.snippet
+      }
+      appLogger.info(
+        { sessionId, hasHtmlSnippet: !!json.htmlSnippet, hasSnippet: !!json.snippet },
+        'getSession response snippet check',
+      )
+      return json
     })
   }
 

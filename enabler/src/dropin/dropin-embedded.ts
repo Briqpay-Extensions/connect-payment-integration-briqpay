@@ -198,6 +198,12 @@ export class DropinComponents implements DropinComponent {
     if (!container) {
       throw new Error(`Container with selector '${selector}' not found`);
     }
+    if (!this.baseOptions.snippet) {
+      throw new Error(
+        "Briqpay HTML snippet is missing from processor /config response. " +
+          "This typically happens after an HPP redirect when the session is reused.",
+      );
+    }
     container.insertAdjacentHTML("afterbegin", this.baseOptions.snippet);
   }
 

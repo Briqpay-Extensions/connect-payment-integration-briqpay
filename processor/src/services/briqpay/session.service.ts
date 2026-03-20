@@ -116,7 +116,7 @@ export class BriqpaySessionService {
     futureOrderNumber?: string,
   ): Promise<MediumBriqpayResponse> {
     const briqpaySession = await Briqpay.getSession(existingSessionId)
-    appLogger.info({ existingSessionId }, 'Retrieved Briqpay session:')
+    appLogger.info({ existingSessionId, hasHtmlSnippet: !!briqpaySession.htmlSnippet }, 'Retrieved Briqpay session')
 
     // If the session has active payment activity (e.g. user completed PayPal HPP flow),
     // return the existing session to avoid resetting the checkout after HPP redirect.
@@ -129,6 +129,14 @@ export class BriqpaySessionService {
         { orderStatus: paymentStatus.orderStatus, uiStatus: paymentStatus.uiStatus },
         'Session has active payment in progress, reusing existing session',
       )
+      if (!briqpaySession.htmlSnippet) {
+        // This should not happen now that getSession requests the 'htmlSnippet' field,
+        // but log an error if it does so we can diagnose.
+        appLogger.error(
+          { existingSessionId },
+          'htmlSnippet missing from getSession despite requesting it - checkout iframe will fail to render',
+        )
+      }
       return briqpaySession
     }
 
@@ -138,6 +146,13 @@ export class BriqpaySessionService {
 
     if (!isCartMatching) {
       return this.updateOrCreateSession(ctCart, amountPlanned, hostname, existingSessionId, futureOrderNumber)
+    }
+
+    if (!briqpaySession.htmlSnippet) {
+      appLogger.error(
+        { existingSessionId },
+        'htmlSnippet missing from matching session - checkout iframe will fail to render',
+      )
     }
 
     return briqpaySession
