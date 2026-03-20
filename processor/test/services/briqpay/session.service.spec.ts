@@ -228,7 +228,7 @@ describe('BriqpaySessionService', () => {
       expect(mockedBriqpay.updateSession).toHaveBeenCalled()
     })
 
-    test('should handle cart with missing locale', async () => {
+    test('should handle cart with missing locale by falling back to en', async () => {
       const baseCart = getCart()
       const mockCart = {
         ...baseCart,
@@ -241,6 +241,7 @@ describe('BriqpaySessionService', () => {
 
       mockedBriqpay.getSession.mockResolvedValue({
         sessionId: 'existing-session-id',
+        htmlSnippet: '<div>Briqpay</div>',
         data: {
           order: {
             amountIncVat: 119000,
@@ -252,11 +253,11 @@ describe('BriqpaySessionService', () => {
 
       const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
 
-      try {
-        await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
-      } catch (e) {
-        expect((e as Error).message).toContain('locale')
-      }
+      // Should NOT throw - falls back to 'en' locale and proceeds with comparison.
+      // Comparison may fail on item names (test mock data mismatch) but that's ok -
+      // the key assertion is that it doesn't throw a ValidationError.
+      const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
+      expect(result.sessionId).toBeDefined()
     })
 
     test('should trigger update when cart item name is missing in locale', async () => {

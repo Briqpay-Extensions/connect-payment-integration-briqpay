@@ -6,7 +6,7 @@ import { appLogger } from '../../payment-sdk'
 import { CartItem, MediumBriqpayResponse } from '../types/briqpay-payment.type'
 import Briqpay from '../../libs/briqpay/BriqpayService'
 import { apiRoot } from '../../libs/commercetools/api-root'
-import { SessionError, ValidationError } from '../../libs/errors/briqpay-errors'
+import { SessionError } from '../../libs/errors/briqpay-errors'
 import { getBriqpayTypeKey } from '../../connectors/actions'
 
 export class BriqpaySessionService {
@@ -289,12 +289,10 @@ export class BriqpaySessionService {
       return false
     }
 
-    // Get the locale to use
-    // STRICT: No fallback to 'en' or first key. Locale must be present.
-    if (!ctCart.locale) {
-      throw new ValidationError('Cart is missing locale, cannot compare sessions accurately.')
-    }
-    const locale = ctCart.locale
+    // Get the locale to use for item name comparison.
+    // Fall back to 'en' or the first available key if cart locale is not set,
+    // to avoid throwing and accidentally creating a new Briqpay session.
+    const locale = ctCart.locale || 'en'
 
     // Compare each cart item with session items
     for (const cartItem of cartItems) {
@@ -308,11 +306,9 @@ export class BriqpaySessionService {
   }
 
   private isCartItemInSession(cartItem: LineItem, sessionItems: CartItem[], locale: string): boolean {
-    const cartItemName = cartItem.name[locale]
+    const nameRecord = cartItem.name as Record<string, string>
+    const cartItemName = nameRecord[locale] || nameRecord['en'] || Object.values(nameRecord)[0]
     if (!cartItemName) {
-      // If name is missing in the specific locale, we might fail or try another.
-      // But since we are strict, we should probably fail if the name for the locale is missing.
-      // However, isCartItemInSession returns boolean.
       return false
     }
     const cartItemId = cartItem.id
