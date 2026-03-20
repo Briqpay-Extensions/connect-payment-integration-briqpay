@@ -380,6 +380,8 @@ export interface BriqpayRefund {
 }
 
 export type MediumBriqpayResponse = MinimalBriqpayResponse & {
+  /** Session-level status from Briqpay (e.g. 'started', 'in_progress', 'completed') */
+  status?: string
   data?: {
     order?: {
       amountIncVat: number

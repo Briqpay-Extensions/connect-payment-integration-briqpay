@@ -835,7 +835,7 @@ class BriqpayService {
     // This is critical for security until HMAC webhook validation is implemented
     // Request both 'snippet' and 'htmlSnippet' field names to handle API naming inconsistency
     return fetch(
-      `${this.baseUrl}/session/${sessionId}?fields=data,snippet,htmlSnippet,sessionId,moduleStatus,captures,refunds`,
+      `${this.baseUrl}/session/${sessionId}?fields=data,snippet,htmlSnippet,sessionId,status,moduleStatus,captures,refunds`,
       {
         method: 'GET',
         headers: {
