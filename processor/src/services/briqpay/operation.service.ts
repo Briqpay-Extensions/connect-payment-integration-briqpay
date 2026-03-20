@@ -22,10 +22,15 @@ import {
   getFutureOrderNumberFromContext,
   getPaymentInterfaceFromContext,
 } from '../../libs/fastify/context/context'
-import { randomUUID } from 'crypto'
 import { appLogger } from '../../payment-sdk'
 import Briqpay from '../../libs/briqpay/BriqpayService'
-import { convertPaymentModificationStatusCode, convertPaymentResultCode } from './utils'
+import {
+  convertNotificationStatus,
+  convertPaymentModificationStatusCode,
+  convertPaymentResultCode,
+  getActualOrderStatus,
+  orderStatusToWebhookStatus,
+} from './utils'
 import { SessionError, ValidationError } from '../../libs/errors/briqpay-errors'
 
 export class BriqpayOperationService {
@@ -314,12 +319,7 @@ export class BriqpayOperationService {
 
   public async handleTransaction(transactionDraft: TransactionDraftDTO): Promise<TransactionResponseDTO> {
     const TRANSACTION_AUTHORIZATION_TYPE: TransactionType = 'Authorization'
-    const TRANSACTION_STATE_SUCCESS: TransactionState = 'Success'
-    const TRANSACTION_STATE_FAILURE: TransactionState = 'Failure'
 
-    const maxCentAmountIfSuccess = 10000
-
-    // Log the futureOrderNumber from both the transaction DTO and the context
     const futureOrderNumberFromDto = transactionDraft.futureOrderNumber
     const futureOrderNumberFromContext = getFutureOrderNumberFromContext()
 
@@ -340,7 +340,33 @@ export class BriqpayOperationService {
       amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart })
     }
 
-    const isBelowSuccessStateThreshold = amountPlanned.centAmount < maxCentAmountIfSuccess
+    // Retrieve the Briqpay session ID stored on the cart during the checkout flow
+    const briqpaySessionIdFieldName = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
+    const briqpaySessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName] as string | undefined
+
+    if (!briqpaySessionId) {
+      appLogger.error({ cartId: ctCart.id }, 'No Briqpay session ID found on cart')
+      return {
+        transactionStatus: {
+          errors: [{ code: 'PaymentRejected', message: 'No Briqpay session found for this cart.' }],
+          state: 'Failed',
+        },
+      }
+    }
+
+    // Fetch the Briqpay session to determine the actual authorization status
+    const briqpaySession = await Briqpay.getSession(briqpaySessionId)
+    const orderStatus = getActualOrderStatus(briqpaySession)
+
+    appLogger.info(
+      { briqpaySessionId, orderStatus, cartId: ctCart.id },
+      'handleTransaction: fetched Briqpay session status',
+    )
+
+    // Map Briqpay order status → CT transaction state
+    const transactionState: TransactionState = orderStatus
+      ? convertNotificationStatus(orderStatusToWebhookStatus(orderStatus))
+      : 'Pending'
 
     const newlyCreatedPayment = await this.ctPaymentService.createPayment({
       amountPlanned,
@@ -363,42 +389,36 @@ export class BriqpayOperationService {
       paymentId: newlyCreatedPayment.id,
     })
 
-    const transactionState: TransactionState = isBelowSuccessStateThreshold
-      ? TRANSACTION_STATE_SUCCESS
-      : TRANSACTION_STATE_FAILURE
-
-    const pspReference = randomUUID().toString()
-
     await this.ctPaymentService.updatePayment({
       id: newlyCreatedPayment.id,
-      pspReference: pspReference,
+      pspReference: briqpaySessionId,
       transaction: {
         amount: amountPlanned,
         type: TRANSACTION_AUTHORIZATION_TYPE,
         state: transactionState,
-        interactionId: pspReference,
+        interactionId: briqpaySessionId,
       },
     })
 
-    if (isBelowSuccessStateThreshold) {
-      return {
-        transactionStatus: {
-          errors: [],
-          state: 'Pending',
-        },
-      }
-    } else {
+    if (transactionState === 'Failure') {
       return {
         transactionStatus: {
           errors: [
             {
               code: 'PaymentRejected',
-              message: `Payment '${newlyCreatedPayment.id}' has been rejected.`,
+              message: `Payment '${newlyCreatedPayment.id}' has been rejected by Briqpay (orderStatus: ${orderStatus}).`,
             },
           ],
           state: 'Failed',
         },
       }
+    }
+
+    return {
+      transactionStatus: {
+        errors: [],
+        state: 'Pending',
+      },
     }
   }
 }

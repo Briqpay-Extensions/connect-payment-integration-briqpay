@@ -555,7 +555,7 @@ class BriqpayService {
 
     // Add shipping item at original price
     const shippingItem: RegularCartItem = {
-      productType: 'shipping_fee' as any,
+      productType: ITEM_PRODUCT_TYPE.SHIPPING_FEE,
       reference: 'shippingfee',
       name: 'Shipping fee',
       quantity: 1,
@@ -758,7 +758,18 @@ class BriqpayService {
         'content-type': 'application/json',
       },
       body: JSON.stringify(briqpayCaptureRequest),
-    }).then((res) => {
+    }).then(async (res) => {
+      if (!res.ok) {
+        const errorText = await res.text()
+        appLogger.error(
+          {
+            status: res.status,
+            data: errorText,
+          },
+          'Briqpay capture error details:',
+        )
+        throw new Error(`Briqpay capture error: ${errorText}`)
+      }
       return res.json()
     })
   }
@@ -911,7 +922,7 @@ class BriqpayService {
 
     // Add shipping item at original price
     const shippingItem: RegularCartItem = {
-      productType: 'shipping_fee' as any,
+      productType: ITEM_PRODUCT_TYPE.SHIPPING_FEE,
       reference: 'shippingfee',
       name: 'Shipping fee',
       quantity: 1,
@@ -1097,11 +1108,72 @@ class BriqpayService {
   }
 }
 
-// Singleton
-const Briqpay = new BriqpayService(
-  process.env.BRIQPAY_USERNAME as string,
-  process.env.BRIQPAY_SECRET as string,
-  process.env.BRIQPAY_BASE_URL as string,
-)
+// Lazy singleton — defers construction until first method call (after env validation in main.ts).
+// Uses a subclass so the exported object is a real BriqpayService instance (compatible with jest.spyOn).
+class LazyBriqpayService extends BriqpayService {
+  private _initialised = false
+
+  constructor() {
+    // Pass empty strings; they will be overwritten on first use.
+    super('', '', '')
+  }
+
+  private ensureInitialised(): void {
+    if (this._initialised) return
+
+    const username = process.env.BRIQPAY_USERNAME
+    const secret = process.env.BRIQPAY_SECRET
+    const baseUrl = process.env.BRIQPAY_BASE_URL
+
+    if (!username || !secret || !baseUrl) {
+      throw new Error(
+        'BriqpayService cannot be initialised: BRIQPAY_USERNAME, BRIQPAY_SECRET, and BRIQPAY_BASE_URL must be set',
+      )
+    }
+
+    // Overwrite the fields inherited from BriqpayService
+    ;(this as any).username = username
+    ;(this as any).secret = secret
+    ;(this as any).baseUrl = baseUrl
+    this._initialised = true
+  }
+
+  // Override every public method to ensure lazy init runs first.
+  // The compiler enforces we don't miss any because the base class is concrete.
+  override async createSession(...args: Parameters<BriqpayService['createSession']>) {
+    this.ensureInitialised()
+    return super.createSession(...args)
+  }
+  override async getSession(...args: Parameters<BriqpayService['getSession']>) {
+    this.ensureInitialised()
+    return super.getSession(...args)
+  }
+  override async updateSession(...args: Parameters<BriqpayService['updateSession']>) {
+    this.ensureInitialised()
+    return super.updateSession(...args)
+  }
+  override async capture(...args: Parameters<BriqpayService['capture']>) {
+    this.ensureInitialised()
+    return super.capture(...args)
+  }
+  override async refund(...args: Parameters<BriqpayService['refund']>) {
+    this.ensureInitialised()
+    return super.refund(...args)
+  }
+  override makeDecision(...args: Parameters<BriqpayService['makeDecision']>) {
+    this.ensureInitialised()
+    return super.makeDecision(...args)
+  }
+  override async cancel(...args: Parameters<BriqpayService['cancel']>) {
+    this.ensureInitialised()
+    return super.cancel(...args)
+  }
+  override async healthCheck() {
+    this.ensureInitialised()
+    return super.healthCheck()
+  }
+}
+
+const Briqpay = new LazyBriqpayService()
 
 export default Briqpay

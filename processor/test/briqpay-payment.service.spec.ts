@@ -1032,7 +1032,77 @@ describe('briqpay-payment.service', () => {
   })
 
   describe('handleTransaction', () => {
-    test('should create the payment in CoCo and return it with a success state', async () => {
+    const cartWithBriqpaySession = () => ({
+      ...mockGetCartResult(),
+      custom: {
+        type: { typeId: 'type' as const, id: 'type-id' },
+        fields: { 'briqpay-session-id': 'briqpay-session-123' },
+      },
+    })
+
+    test('should create the payment in CoCo and return Pending when Briqpay order is approved', async () => {
+      const createPaymentOpts: TransactionDraftDTO = {
+        cartId: 'dd4b7669-698c-4175-8e4c-bed178abfed3',
+        paymentInterface: '42251cfc-0660-4ab3-80f6-c32829aa7a8b',
+        amount: {
+          centAmount: 1000,
+          currencyCode: 'EUR',
+        },
+      }
+
+      const cart = cartWithBriqpaySession()
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest.spyOn(Briqpay, 'getSession').mockResolvedValue(
+        createMockBriqpaySession({
+          sessionId: 'briqpay-session-123',
+          orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        }),
+      )
+
+      const result = await briqpayPaymentService.handleTransaction(createPaymentOpts)
+      expect(result).toStrictEqual({
+        transactionStatus: {
+          errors: [],
+          state: 'Pending',
+        },
+      })
+    })
+
+    test('should create the payment in CoCo and return Failed when Briqpay order is rejected', async () => {
+      const createPaymentOpts: TransactionDraftDTO = {
+        cartId: 'dd4b7669-698c-4175-8e4c-bed178abfed3',
+        paymentInterface: '42251cfc-0660-4ab3-80f6-c32829aa7a8b',
+        amount: {
+          centAmount: 10000,
+          currencyCode: 'EUR',
+        },
+      }
+
+      const cart = cartWithBriqpaySession()
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(Briqpay, 'getSession')
+        .mockResolvedValue(
+          createMockBriqpaySession({ sessionId: 'briqpay-session-123', orderStatus: ORDER_STATUS.ORDER_REJECTED }),
+        )
+
+      const result = await briqpayPaymentService.handleTransaction(createPaymentOpts)
+      expect(result).toStrictEqual({
+        transactionStatus: {
+          errors: [
+            {
+              code: 'PaymentRejected',
+              message: `Payment '${mockGetPaymentResult.id}' has been rejected by Briqpay (orderStatus: order_rejected).`,
+            },
+          ],
+          state: 'Failed',
+        },
+      })
+    })
+
+    test('should return Failed when cart has no Briqpay session', async () => {
       const createPaymentOpts: TransactionDraftDTO = {
         cartId: 'dd4b7669-698c-4175-8e4c-bed178abfed3',
         paymentInterface: '42251cfc-0660-4ab3-80f6-c32829aa7a8b',
@@ -1043,52 +1113,11 @@ describe('briqpay-payment.service', () => {
       }
 
       jest.spyOn(DefaultCartService.prototype, 'getCart').mockReturnValueOnce(Promise.resolve(mockGetCartResult()))
-      jest
-        .spyOn(DefaultPaymentService.prototype, 'createPayment')
-        .mockReturnValueOnce(Promise.resolve(mockGetPaymentResult))
-      jest.spyOn(DefaultCartService.prototype, 'addPayment').mockReturnValueOnce(Promise.resolve(mockGetCartResult()))
-      jest
-        .spyOn(DefaultPaymentService.prototype, 'updatePayment')
-        .mockReturnValue(Promise.resolve(mockUpdatePaymentResult))
 
-      const resultPromise = briqpayPaymentService.handleTransaction(createPaymentOpts)
-      expect(resultPromise).resolves.toStrictEqual({
+      const result = await briqpayPaymentService.handleTransaction(createPaymentOpts)
+      expect(result).toStrictEqual({
         transactionStatus: {
-          errors: [],
-          state: 'Pending',
-        },
-      })
-    })
-
-    test('should create the payment in CoCo and return it with a failed state', async () => {
-      const createPaymentOpts: TransactionDraftDTO = {
-        cartId: 'dd4b7669-698c-4175-8e4c-bed178abfed3',
-        paymentInterface: '42251cfc-0660-4ab3-80f6-c32829aa7a8b',
-        amount: {
-          centAmount: 10000,
-          currencyCode: 'EUR',
-        },
-      }
-
-      jest.spyOn(DefaultCartService.prototype, 'getCart').mockReturnValueOnce(Promise.resolve(mockGetCartResult()))
-      jest
-        .spyOn(DefaultPaymentService.prototype, 'createPayment')
-        .mockReturnValueOnce(Promise.resolve(mockGetPaymentResult))
-      jest.spyOn(DefaultCartService.prototype, 'addPayment').mockReturnValueOnce(Promise.resolve(mockGetCartResult()))
-      jest
-        .spyOn(DefaultPaymentService.prototype, 'updatePayment')
-        .mockReturnValue(Promise.resolve(mockUpdatePaymentResult))
-
-      const resultPromise = briqpayPaymentService.handleTransaction(createPaymentOpts)
-
-      expect(resultPromise).resolves.toStrictEqual({
-        transactionStatus: {
-          errors: [
-            {
-              code: 'PaymentRejected',
-              message: `Payment '${mockGetPaymentResult.id}' has been rejected.`,
-            },
-          ],
+          errors: [{ code: 'PaymentRejected', message: 'No Briqpay session found for this cart.' }],
           state: 'Failed',
         },
       })
