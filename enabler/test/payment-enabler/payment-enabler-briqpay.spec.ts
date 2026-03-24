@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 
 import { BriqpayPaymentEnabler } from "../../src/payment-enabler/payment-enabler-briqpay";
-import { DropinType } from "../../src/payment-enabler/payment-enabler";
+import { DropinType, EnablerOptions } from "../../src/payment-enabler/payment-enabler";
 
 describe("BriqpayPaymentEnabler", () => {
   beforeEach(() => {
@@ -22,22 +22,13 @@ describe("BriqpayPaymentEnabler", () => {
     const enabler = await BriqpayPaymentEnabler.create({
       processorUrl: "https://mock-processor.com",
       sessionId: "sess-123",
-      onComplete: jest.fn() as jest.MockedFunction<
-        import("../../src/payment-enabler/payment-enabler").PaymentResult extends infer T
-          ? (_result: T) => void | Promise<void>
-          : never
-      >,
-      onError: jest.fn() as jest.MockedFunction<
-        (
-          _error: unknown,
-          _context?: { paymentReference?: string },
-        ) => void | Promise<void>
-      >,
+      onComplete: jest.fn() as jest.MockedFunction<NonNullable<EnablerOptions['onComplete']>>,
+      onError: jest.fn() as jest.MockedFunction<NonNullable<EnablerOptions['onError']>>,
     });
 
-    await expect(enabler.createComponentBuilder("unsupported")).rejects.toThrow(
-      /Component type not supported/,
-    );
+    const builder = await enabler.createComponentBuilder("briqpay");
+    expect(builder).toBeDefined();
+    expect(builder.constructor.name).toBe("BriqpayBuilder");
   });
 
   test("should throw for unsupported component type", async () => {
@@ -84,6 +75,7 @@ describe("BriqpayPaymentEnabler", () => {
     expect(builder.constructor.name).toBe("DropinEmbeddedBuilder");
   });
 
+
   test("should throw for unsupported dropin type", async () => {
     const enabler = await BriqpayPaymentEnabler.create({
       processorUrl: "https://mock-processor.com",
@@ -102,8 +94,7 @@ describe("BriqpayPaymentEnabler", () => {
     });
 
     await expect(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      enabler.createDropinBuilder("_unsupported" as any),
+      enabler.createDropinBuilder("_unsupported" as DropinType),
     ).rejects.toThrow(/Component type not supported/);
   });
 

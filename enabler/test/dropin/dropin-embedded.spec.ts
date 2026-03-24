@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, expect, jest, test } from "@jest/globals";
 import {
   BRIQPAY_DECISION,
@@ -7,6 +6,7 @@ import {
 } from "../../src/dropin/dropin-embedded";
 import { DropinOptions } from "../../src/payment-enabler/payment-enabler";
 import { BriqpaySdk } from "../../src/briqpay-sdk";
+import { BaseOptions } from "../../src/payment-enabler/payment-enabler-briqpay";
 
 describe("DropinEmbeddedBuilder", () => {
   // Mock fetch
@@ -18,23 +18,23 @@ describe("DropinEmbeddedBuilder", () => {
   ) as unknown as typeof fetch;
 
   test("should create DropinComponents with correct config", () => {
-    const baseOptions = { sdk: {} } as any;
+    const baseOptions = { sdk: {} } as BaseOptions;
     const builder = new DropinEmbeddedBuilder(baseOptions);
 
     const config: DropinOptions = {
-      onDropinReady: jest.fn<any>().mockResolvedValue(undefined), // Mock it to return a Promise
+      onDropinReady: jest.fn<() => Promise<void>>().mockResolvedValue(undefined), // Mock it to return a Promise
     };
 
     const dropin = builder.build(config);
 
     expect(dropin).toBeInstanceOf(DropinComponents);
-    expect((dropin as any)["dropinOptions"].onDropinReady).toBe(
+    expect((dropin as unknown as { dropinOptions: DropinOptions })["dropinOptions"].onDropinReady).toBe(
       config.onDropinReady,
     );
   });
 
   test("should set dropinHasSubmit to false since Briqpay iframe handles its own submit", () => {
-    const builder = new DropinEmbeddedBuilder({} as any);
+    const builder = new DropinEmbeddedBuilder({} as BaseOptions);
     expect(builder.dropinHasSubmit).toBe(false);
   });
 });
@@ -144,9 +144,9 @@ describe("DropinComponents", () => {
     const addEventListenerSpy = jest.spyOn(document, "addEventListener");
     let _eventCallback: ((event: Event) => void) | null = null;
 
-    addEventListenerSpy.mockImplementation((_event: string, callback: any) => {
-      if (_event === "briqpayDecisionResponse") {
-        _eventCallback = callback;
+    addEventListenerSpy.mockImplementation((_event: string, callback: EventListenerOrEventListenerObject) => {
+      if (_event === "briqpayDecisionResponse" && typeof callback === "function") {
+        _eventCallback = callback as (event: Event) => void;
       }
     });
 
@@ -162,7 +162,7 @@ describe("DropinComponents", () => {
     const dropin = new DropinComponents(
       {
         dropinOptions: {
-          onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+          onDropinReady: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
         },
       },
       {
@@ -201,7 +201,7 @@ describe("DropinComponents", () => {
     // Mock document.addEventListener to capture the callback
     const addEventListenerSpy = jest.spyOn(document, "addEventListener");
     let _eventCallback: ((event: Event) => void) | null = null;
-    const onBeforeDecision = jest.fn<any>().mockResolvedValue(undefined);
+    const onBeforeDecision = jest.fn<Promise<void>, [BriqpaySdk]>().mockResolvedValue(undefined);
 
     addEventListenerSpy.mockImplementation(
       (_event: string, callback: any, _options?: any) => {
@@ -285,8 +285,8 @@ describe("DropinComponents", () => {
       },
     };
 
-    const onPayButtonClick = jest.fn<any>().mockResolvedValue(undefined);
-    const onBeforeDecision = jest.fn<any>().mockResolvedValue(undefined);
+    const onPayButtonClick = jest.fn<(_sdk: BriqpaySdk) => Promise<void>>().mockResolvedValue(undefined);
+    const onBeforeDecision = jest.fn<(_sdk: BriqpaySdk) => Promise<void>>().mockResolvedValue(undefined);
 
     const dropin = new DropinComponents(
       {

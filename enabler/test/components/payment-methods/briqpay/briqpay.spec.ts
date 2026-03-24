@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 import {
   Briqpay,
@@ -97,18 +96,18 @@ describe("Briqpay", () => {
     component.mount("#container");
 
     // The script should be in the head
-    const scriptElement = document.querySelector("head script");
+    const scriptElement = document.querySelector("head script") as HTMLScriptElement;
     const divElement = document.querySelector("#briqpay");
 
     expect(scriptElement).toBeTruthy();
-    expect((scriptElement as any)?.src).toContain("briqpay.com/briq.min.js");
+    expect(scriptElement?.src).toContain("briqpay.com/briq.min.js");
     expect(divElement).toBeTruthy();
   });
 
   test("mount() injects script and renders snippet", async () => {
     component.mount("#container");
 
-    await (component as any).handleDecision({ allow: true });
+    await (component as Briqpay).handleDecision({ allow: true });
   });
 
   test("should execute session_complete and make_decision callbacks", () => {
