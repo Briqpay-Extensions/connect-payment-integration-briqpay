@@ -35,6 +35,10 @@ describe("BriqpayPaymentEnabler", () => {
       >,
     });
 
+    const builder = await enabler.createComponentBuilder("briqpay");
+    expect(builder).toBeDefined();
+    expect(builder.constructor.name).toBe("BriqpayBuilder");
+
     await expect(enabler.createComponentBuilder("unsupported")).rejects.toThrow(
       /Component type not supported/,
     );
@@ -107,6 +111,28 @@ describe("BriqpayPaymentEnabler", () => {
     ).rejects.toThrow(/Component type not supported/);
   });
 
+  test('should create a DropinEmbeddedBuilder for type "briqpay"', async () => {
+    const enabler = await BriqpayPaymentEnabler.create({
+      processorUrl: "https://mock-processor.com",
+      sessionId: "sess-123",
+      onComplete: jest.fn() as jest.MockedFunction<
+        import("../../src/payment-enabler/payment-enabler").PaymentResult extends infer T
+          ? (_result: T) => void | Promise<void>
+          : never
+      >,
+      onError: jest.fn() as jest.MockedFunction<
+        (
+          _error: unknown,
+          _context?: { paymentReference?: string },
+        ) => void | Promise<void>
+      >,
+    });
+
+    const builder = await enabler.createDropinBuilder(DropinType._briqpay);
+    expect(builder).toBeDefined();
+    expect(builder.constructor.name).toBe("DropinEmbeddedBuilder");
+  });
+
   test("should propagate error if fetch fails", async () => {
     (global.fetch as jest.Mock).mockImplementationOnce(() =>
       Promise.reject(new Error("Fetch failed")),
@@ -128,7 +154,7 @@ describe("BriqpayPaymentEnabler", () => {
       >,
     });
 
-    await expect(enabler.createComponentBuilder("_briqpay")).rejects.toThrow(
+    await expect(enabler.createComponentBuilder("briqpay")).rejects.toThrow(
       "Fetch failed",
     );
   });

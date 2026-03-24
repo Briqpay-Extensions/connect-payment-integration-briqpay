@@ -8,6 +8,7 @@ import {
   PaymentResult,
 } from "./payment-enabler";
 import { DropinEmbeddedBuilder } from "../dropin/dropin-embedded";
+import { BriqpayBuilder } from "../components/payment-methods/briqpay/briqpay";
 
 declare global {
   interface ImportMeta {
@@ -24,7 +25,10 @@ export type BaseOptions = {
   snippet: string;
   briqpaySessionId: string;
   onComplete: (_result: PaymentResult) => void | Promise<void>;
-  onError: (_error: unknown, _context?: { paymentReference?: string }) => void | Promise<void>;
+  onError: (
+    _error: unknown,
+    _context?: { paymentReference?: string },
+  ) => void | Promise<void>;
 };
 
 export class BriqpayPaymentEnabler implements PaymentEnabler {
@@ -86,7 +90,9 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
     const supportedMethods: Record<
       string,
       new (_baseOptions: BaseOptions) => PaymentComponentBuilder
-    > = {};
+    > = {
+      briqpay: BriqpayBuilder,
+    };
 
     const Builder = supportedMethods[_type as keyof typeof supportedMethods];
 
@@ -113,6 +119,7 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
       >
     > = {
       [DropinType._embedded]: DropinEmbeddedBuilder,
+      [DropinType._briqpay]: DropinEmbeddedBuilder,
     };
 
     const Builder = supportedMethods[_type as keyof typeof supportedMethods];

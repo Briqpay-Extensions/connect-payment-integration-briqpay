@@ -149,7 +149,10 @@ export type EnablerOptions = {
    * @param error - The error that occurred.
    * @param paymentReference - The payment reference.
    */
-  onError?: (_error: unknown, _context?: { paymentReference?: string }) => void | Promise<void>;
+  onError?: (
+    _error: unknown,
+    _context?: { paymentReference?: string },
+  ) => void | Promise<void>;
 };
 
 /**
@@ -204,6 +207,11 @@ export enum DropinType {
    * The hosted payment page (HPP) drop-in type which redirects the user to a hosted payment page.
    */
   _hpp = "hpp",
+  /*
+   * The Briqpay drop-in type — functionally identical to embedded, but matches the
+   * Payment Integration type string set by the connector in commercetools Checkout.
+   */
+  _briqpay = "briqpay",
 }
 
 /**
