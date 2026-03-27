@@ -32,6 +32,7 @@ import {
   orderStatusToWebhookStatus,
 } from './utils'
 import { SessionError, ValidationError } from '../../libs/errors/briqpay-errors'
+import { briqpaySessionIdFieldName } from '../../custom-types/custom-types'
 
 export class BriqpayOperationService {
   constructor(
@@ -297,8 +298,7 @@ export class BriqpayOperationService {
       paymentId: ctPayment.id,
     })
 
-    const briqpaySessionIdCustomFieldKey = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
-    const pspReference = freshCart.custom?.fields?.[briqpaySessionIdCustomFieldKey]
+    const pspReference = freshCart.custom?.fields?.[briqpaySessionIdFieldName]
 
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: ctPayment.id,
@@ -341,7 +341,6 @@ export class BriqpayOperationService {
     }
 
     // Retrieve the Briqpay session ID stored on the cart during the checkout flow
-    const briqpaySessionIdFieldName = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
     const briqpaySessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName] as string | undefined
 
     if (!briqpaySessionId) {

@@ -8,6 +8,7 @@ import Briqpay from '../../libs/briqpay/BriqpayService'
 import { apiRoot } from '../../libs/commercetools/api-root'
 import { SessionError } from '../../libs/errors/briqpay-errors'
 import { getBriqpayTypeKey } from '../../connectors/actions'
+import { briqpaySessionIdFieldName } from '../../custom-types/custom-types'
 
 export class BriqpaySessionService {
   constructor(private readonly ctCartService: CommercetoolsCartService) {}
@@ -19,8 +20,6 @@ export class BriqpaySessionService {
    * @param briqpaySessionId - Briqpay session id
    */
   public async updateCartWithBriqpaySessionId(ctCart: Cart, briqpaySessionId: string): Promise<void> {
-    // Field name for the session ID field (may be prefixed if there was a conflict)
-    const briqpaySessionIdFieldName = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
     const existingBriqpaySessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName]
 
     let updatedCart = ctCart
@@ -78,8 +77,7 @@ export class BriqpaySessionService {
     hostname: string,
     futureOrderNumber?: string,
   ): Promise<MediumBriqpayResponse> {
-    const briqpaySessionIdCustomFieldKey = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
-    const existingSessionId = ctCart.custom?.fields?.[briqpaySessionIdCustomFieldKey] as string
+    const existingSessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName] as string
     appLogger.info({ existingSessionId }, 'Existing session ID:')
 
     try {

@@ -29,6 +29,7 @@ import { BriqpaySessionService } from './briqpay/session.service'
 import { BriqpayOperationService } from './briqpay/operation.service'
 import { BriqpayNotificationService } from './briqpay/notification.service'
 import { SessionError, UpstreamError, ValidationError } from '../libs/errors/briqpay-errors'
+import { briqpaySessionIdFieldName } from '../custom-types/custom-types'
 
 export class BriqpayPaymentService extends AbstractPaymentService {
   private sessionService: BriqpaySessionService
@@ -234,8 +235,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
 
     // SECURITY: Validate that the session belongs to the cart from the authenticated context
     const ctCart = await this.ctCartService.getCart({ id: cartId })
-    const briqpaySessionIdCustomFieldKey = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
-    const cartSessionId = ctCart.custom?.fields?.[briqpaySessionIdCustomFieldKey] as string | undefined
+    const cartSessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName] as string | undefined
 
     if (!cartSessionId) {
       appLogger.error({ cartId, sessionId }, 'Cart does not have a Briqpay session associated')

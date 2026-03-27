@@ -1,7 +1,12 @@
 export const briqpayCustomTypeKey = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id'
 
+// The field name for storing the Briqpay session ID on carts/orders.
+// This is intentionally NOT derived from BRIQPAY_SESSION_CUSTOM_TYPE_KEY,
+// which controls the custom type key (not the field name).
+export const briqpaySessionIdFieldName = 'briqpay-session-id'
+
 export const briqpaySessionIdCustomType = {
-  name: process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id',
+  name: briqpaySessionIdFieldName,
 }
 
 export interface BriqpayFieldDefinition {
@@ -15,7 +20,7 @@ export interface BriqpayFieldDefinition {
 export const briqpayFieldDefinitions: BriqpayFieldDefinition[] = [
   // Session ID
   {
-    name: process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id',
+    name: briqpaySessionIdFieldName,
     label: 'Briqpay Session ID',
     type: 'String',
     required: false,

@@ -359,7 +359,7 @@ export class BriqpaySessionDataService {
    */
   private getPossibleBriqpayFieldNames(): string[] {
     return [
-      process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY || 'briqpay-session-id',
+      'briqpay-session-id',
       process.env.BRIQPAY_PSP_META_DATA_CUSTOMER_FACING_REFERENCE_KEY ||
         'briqpay-psp-meta-data-customer-facing-reference',
       process.env.BRIQPAY_PSP_META_DATA_DESCRIPTION_KEY || 'briqpay-psp-meta-data-description',
