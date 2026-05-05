@@ -30,7 +30,7 @@ import {
 } from '../src/dtos/briqpay-payment.dto'
 import { apiRoot } from '../src/libs/commercetools/api-root'
 import Briqpay from '../src/libs/briqpay/BriqpayService'
-import { Cart } from '@commercetools/platform-sdk'
+import { Cart, Payment } from '@commercetools/platform-sdk'
 import { TransactionDraftDTO } from '../src/dtos/operations/transaction.dto'
 import { briqpaySessionIdCustomType } from '../src/custom-types/custom-types'
 
@@ -101,6 +101,7 @@ jest.mock('../src/libs/commercetools/api-root', () => ({
         }),
       }),
     }),
+    payments: jest.fn(),
   },
 }))
 
@@ -1143,6 +1144,137 @@ describe('briqpay-payment.service', () => {
       expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({ interfaceId: 'briqpay-session-dedupe-1' }))
       expect(addPaymentSpy).toHaveBeenCalledTimes(1)
     })
+
+    test('sets a deterministic Payment.key on creation to enable atomic CT-side dedupe', async () => {
+      const cart = cartWithBriqpaySession()
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValue(mockGetPaymentResult)
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue(mockUpdatePaymentResult)
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'briqpay-session-dedupe-1',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({ key: 'briqpay-briqpay-session-dedupe-1' }))
+    })
+
+    test('recovers from a concurrent DuplicateField on key by fetching the winner via apiRoot.payments().withKey()', async () => {
+      const cart = cartWithBriqpaySession()
+      const winnerPaymentId = 'winner-payment-from-concurrent-create'
+      const winnerPayment: Payment = {
+        ...mockGetPaymentResult,
+        id: winnerPaymentId,
+        interfaceId: 'briqpay-session-dedupe-1',
+        key: 'briqpay-briqpay-session-dedupe-1',
+      }
+
+      const duplicateKeyError = Object.assign(new Error('Duplicate field key'), {
+        httpErrorStatus: 400,
+        code: 'DuplicateField',
+        fields: [{ code: 'DuplicateField', field: 'key' }],
+      })
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockRejectedValue(duplicateKeyError)
+      const addPaymentSpy = jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      const updateSpy = jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: winnerPaymentId })
+
+      const executeMock = jest.fn<any>().mockResolvedValue({ body: winnerPayment })
+      ;(apiRoot.payments as jest.Mock<any>).mockReturnValue({
+        withKey: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({ execute: executeMock }),
+        }),
+      })
+
+      const result = await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'briqpay-session-dedupe-1',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      expect(result?.paymentReference).toStrictEqual(winnerPaymentId)
+      expect(createSpy).toHaveBeenCalledTimes(1)
+      expect(executeMock).toHaveBeenCalled()
+      // Cart didn't already have the winner attached → recovery should attach it
+      expect(addPaymentSpy).toHaveBeenCalledWith(expect.objectContaining({ paymentId: winnerPaymentId }))
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: winnerPaymentId,
+          pspReference: 'briqpay-session-dedupe-1',
+        }),
+      )
+    })
+
+    test('rethrows DuplicateField errors that are not on the key field', async () => {
+      const cart = cartWithBriqpaySession()
+      const duplicateOtherFieldError = Object.assign(new Error('Duplicate field interfaceId'), {
+        httpErrorStatus: 400,
+        code: 'DuplicateField',
+        fields: [{ code: 'DuplicateField', field: 'interfaceId' }],
+      })
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockRejectedValue(duplicateOtherFieldError)
+
+      await expect(
+        briqpayPaymentService.createPayment({
+          cartId: cart.id,
+          data: {
+            paymentMethod: { type: PaymentMethodType.BRIQPAY },
+            briqpaySessionId: 'briqpay-session-dedupe-1',
+            paymentOutcome: PaymentOutcome.APPROVED,
+          },
+        }),
+      ).rejects.toBe(duplicateOtherFieldError)
+    })
+
+    test('rethrows the original error when DuplicateField recovery cannot find the Payment by key', async () => {
+      const cart = cartWithBriqpaySession()
+      const duplicateKeyError = Object.assign(new Error('Duplicate field key'), {
+        httpErrorStatus: 400,
+        code: 'DuplicateField',
+        fields: [{ code: 'DuplicateField', field: 'key' }],
+      })
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockRejectedValue(duplicateKeyError)
+
+      const notFoundError = Object.assign(new Error('not found'), { httpErrorStatus: 404 })
+      ;(apiRoot.payments as jest.Mock<any>).mockReturnValue({
+        withKey: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({
+            execute: jest.fn<any>().mockRejectedValue(notFoundError),
+          }),
+        }),
+      })
+
+      await expect(
+        briqpayPaymentService.createPayment({
+          cartId: cart.id,
+          data: {
+            paymentMethod: { type: PaymentMethodType.BRIQPAY },
+            briqpaySessionId: 'briqpay-session-dedupe-1',
+            paymentOutcome: PaymentOutcome.APPROVED,
+          },
+        }),
+      ).rejects.toBe(duplicateKeyError)
+    })
   })
 
   describe('handleTransaction', () => {
@@ -1308,6 +1440,84 @@ describe('briqpay-payment.service', () => {
       expect(createSpy).toHaveBeenCalledTimes(1)
       expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({ interfaceId: 'briqpay-session-123' }))
       expect(addPaymentSpy).toHaveBeenCalledTimes(1)
+    })
+
+    test('sets a deterministic Payment.key on creation', async () => {
+      const cart = cartWithBriqpaySession()
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(Briqpay, 'getSession').mockResolvedValue(
+        createMockBriqpaySession({
+          sessionId: 'briqpay-session-123',
+          orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        }),
+      )
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValue(mockGetPaymentResult)
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+
+      await briqpayPaymentService.handleTransaction({
+        cartId: cart.id,
+        paymentInterface: '42251cfc-0660-4ab3-80f6-c32829aa7a8b',
+        amount: { centAmount: 1000, currencyCode: 'EUR' },
+      })
+
+      expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({ key: 'briqpay-briqpay-session-123' }))
+    })
+
+    test('recovers from a concurrent DuplicateField on key by fetching the winner via apiRoot.payments().withKey()', async () => {
+      const cart = cartWithBriqpaySession()
+      const winnerPaymentId = 'handletx-winner'
+      const winnerPayment: Payment = {
+        ...mockGetPaymentResult,
+        id: winnerPaymentId,
+        interfaceId: 'briqpay-session-123',
+        key: 'briqpay-briqpay-session-123',
+      }
+      const duplicateKeyError = Object.assign(new Error('Duplicate field key'), {
+        httpErrorStatus: 400,
+        code: 'DuplicateField',
+        fields: [{ code: 'DuplicateField', field: 'key' }],
+      })
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(Briqpay, 'getSession').mockResolvedValue(
+        createMockBriqpaySession({
+          sessionId: 'briqpay-session-123',
+          orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        }),
+      )
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockRejectedValue(duplicateKeyError)
+      const addPaymentSpy = jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      const updateSpy = jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: winnerPaymentId })
+
+      const executeMock = jest.fn<any>().mockResolvedValue({ body: winnerPayment })
+      ;(apiRoot.payments as jest.Mock<any>).mockReturnValue({
+        withKey: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({ execute: executeMock }),
+        }),
+      })
+
+      const result = await briqpayPaymentService.handleTransaction({
+        cartId: cart.id,
+        paymentInterface: '42251cfc-0660-4ab3-80f6-c32829aa7a8b',
+        amount: { centAmount: 1000, currencyCode: 'EUR' },
+      })
+
+      expect(result).toStrictEqual({
+        transactionStatus: { errors: [], state: 'Pending' },
+      })
+      expect(createSpy).toHaveBeenCalledTimes(1)
+      expect(executeMock).toHaveBeenCalled()
+      expect(addPaymentSpy).toHaveBeenCalledWith(expect.objectContaining({ paymentId: winnerPaymentId }))
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: winnerPaymentId,
+          pspReference: 'briqpay-session-123',
+        }),
+      )
     })
   })
 
