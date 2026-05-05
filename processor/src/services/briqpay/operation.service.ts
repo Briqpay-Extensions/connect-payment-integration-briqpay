@@ -1,7 +1,9 @@
 import {
+  Cart,
   CommercetoolsCartService,
   CommercetoolsPaymentService,
   ErrorInvalidOperation,
+  Payment,
   TransactionState,
   TransactionType,
 } from '@commercetools/connect-payments-sdk'
@@ -265,6 +267,32 @@ export class BriqpayOperationService {
       id: cartId,
     })
 
+    const briqpaySessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName] as string | undefined
+
+    // Dedupe: a CT Cart with multiple Payments blocks Checkout's automatic Order creation.
+    // Reuse the existing Payment for this Briqpay session instead of creating a duplicate
+    // when the connector is invoked more than once for the same session (retries, double-submit,
+    // out-of-order webhooks, browser back-and-forth in Checkout).
+    if (briqpaySessionId) {
+      const existing = await this.findOrAttachExistingPaymentForSession(ctCart, briqpaySessionId)
+      if (existing) {
+        const updatedPayment = await this.ctPaymentService.updatePayment({
+          id: existing.id,
+          pspReference: briqpaySessionId,
+          paymentMethod: request.data.paymentMethod.type,
+          transaction: {
+            type: 'Authorization',
+            amount: existing.amountPlanned,
+            interactionId: briqpaySessionId,
+            state: convertPaymentResultCode(request.data.paymentOutcome),
+          },
+        })
+        return {
+          paymentReference: updatedPayment.id,
+        }
+      }
+    }
+
     const ctPayment = await this.ctPaymentService.createPayment({
       amountPlanned: await this.ctCartService.getPaymentAmount({
         cart: ctCart,
@@ -273,6 +301,9 @@ export class BriqpayOperationService {
         paymentInterface: getPaymentInterfaceFromContext() || 'Briqpay',
       },
       checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext(),
+      // Set interfaceId at creation so a concurrent webhook lookup by Briqpay sessionId
+      // can find this Payment and avoid creating a duplicate.
+      ...(briqpaySessionId && { interfaceId: briqpaySessionId }),
       ...(ctCart.customerId && {
         customer: {
           typeId: 'customer',
@@ -367,29 +398,45 @@ export class BriqpayOperationService {
       ? convertNotificationStatus(orderStatusToWebhookStatus(orderStatus))
       : 'Pending'
 
-    const newlyCreatedPayment = await this.ctPaymentService.createPayment({
-      amountPlanned,
-      paymentMethodInfo: {
-        paymentInterface: transactionDraft.paymentInterface,
-      },
-      checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext(),
-    })
+    // Dedupe: a CT Cart with multiple Payments blocks Checkout's automatic Order creation.
+    // Reuse the existing Payment for this Briqpay session instead of creating a duplicate.
+    const existingPayment = await this.findOrAttachExistingPaymentForSession(ctCart, briqpaySessionId)
 
-    // Re-fetch cart to get the current version (cart may have been modified)
-    const freshCart = await this.ctCartService.getCart({
-      id: ctCart.id,
-    })
+    let paymentForTransaction: Payment
+    if (existingPayment) {
+      paymentForTransaction = existingPayment
+      appLogger.info(
+        { paymentId: existingPayment.id, briqpaySessionId, cartId: ctCart.id },
+        'handleTransaction: reusing existing CT Payment for Briqpay session',
+      )
+    } else {
+      paymentForTransaction = await this.ctPaymentService.createPayment({
+        amountPlanned,
+        paymentMethodInfo: {
+          paymentInterface: transactionDraft.paymentInterface,
+        },
+        checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext(),
+        // Set interfaceId at creation so a concurrent webhook lookup by Briqpay sessionId
+        // can find this Payment and avoid creating a duplicate.
+        interfaceId: briqpaySessionId,
+      })
 
-    await this.ctCartService.addPayment({
-      resource: {
-        id: freshCart.id,
-        version: freshCart.version,
-      },
-      paymentId: newlyCreatedPayment.id,
-    })
+      // Re-fetch cart to get the current version (cart may have been modified)
+      const freshCart = await this.ctCartService.getCart({
+        id: ctCart.id,
+      })
+
+      await this.ctCartService.addPayment({
+        resource: {
+          id: freshCart.id,
+          version: freshCart.version,
+        },
+        paymentId: paymentForTransaction.id,
+      })
+    }
 
     await this.ctPaymentService.updatePayment({
-      id: newlyCreatedPayment.id,
+      id: paymentForTransaction.id,
       pspReference: briqpaySessionId,
       transaction: {
         amount: amountPlanned,
@@ -405,7 +452,7 @@ export class BriqpayOperationService {
           errors: [
             {
               code: 'PaymentRejected',
-              message: `Payment '${newlyCreatedPayment.id}' has been rejected by Briqpay (orderStatus: ${orderStatus}).`,
+              message: `Payment '${paymentForTransaction.id}' has been rejected by Briqpay (orderStatus: ${orderStatus}).`,
             },
           ],
           state: 'Failed',
@@ -419,5 +466,55 @@ export class BriqpayOperationService {
         state: 'Pending',
       },
     }
+  }
+
+  /**
+   * Returns the CT Payment that already represents this Briqpay session, attaching it to the
+   * cart if it exists in CT but isn't linked yet. Returns undefined when no such Payment exists.
+   *
+   * Used to dedupe Payment creation across retries / double-submits / out-of-order webhooks —
+   * a CT Cart with multiple attached Payments blocks Checkout's automatic Order creation.
+   */
+  private async findOrAttachExistingPaymentForSession(
+    cart: Cart,
+    briqpaySessionId: string,
+  ): Promise<Payment | undefined> {
+    if (!briqpaySessionId) {
+      return undefined
+    }
+
+    const candidates =
+      (await this.ctPaymentService.findPaymentsByInterfaceId({
+        interfaceId: briqpaySessionId,
+      })) ?? []
+
+    if (candidates.length === 0) {
+      return undefined
+    }
+
+    if (candidates.length > 1) {
+      appLogger.warn(
+        { briqpaySessionId, paymentIds: candidates.map((p) => p.id), cartId: cart.id },
+        'Multiple CT Payments found for the same Briqpay session — using the first',
+      )
+    }
+
+    const payment = candidates[0]
+    const attachedPaymentIds = new Set(cart.paymentInfo?.payments?.map((p) => p.id) ?? [])
+
+    if (attachedPaymentIds.has(payment.id)) {
+      return payment
+    }
+
+    appLogger.info(
+      { paymentId: payment.id, briqpaySessionId, cartId: cart.id },
+      'Found existing CT Payment for Briqpay session not yet attached to cart — attaching',
+    )
+    await this.ctCartService.addPayment({
+      resource: { id: cart.id, version: cart.version },
+      paymentId: payment.id,
+    })
+
+    return payment
   }
 }
