@@ -1,10 +1,7 @@
 import {
-  Cart,
   CommercetoolsCartService,
   CommercetoolsPaymentService,
   ErrorInvalidOperation,
-  Money,
-  Payment,
   TransactionState,
   TransactionType,
 } from '@commercetools/connect-payments-sdk'
@@ -36,32 +33,6 @@ import {
 } from './utils'
 import { SessionError, ValidationError } from '../../libs/errors/briqpay-errors'
 import { briqpaySessionIdFieldName } from '../../custom-types/custom-types'
-import { apiRoot } from '../../libs/commercetools/api-root'
-
-const PAYMENT_KEY_PREFIX = 'briqpay-'
-
-const buildPaymentKey = (briqpaySessionId: string): string => `${PAYMENT_KEY_PREFIX}${briqpaySessionId}`
-
-type CtErrorShape = {
-  httpErrorStatus?: number
-  statusCode?: number
-  code?: string
-  fields?: Array<{ code?: string; field?: string }>
-}
-
-const isDuplicateKeyError = (err: unknown): boolean => {
-  if (!err || typeof err !== 'object') return false
-  const e = err as CtErrorShape
-  if (e.httpErrorStatus !== 400) return false
-  if (e.code !== 'DuplicateField') return false
-  return Array.isArray(e.fields) && e.fields.some((f) => f?.code === 'DuplicateField' && f?.field === 'key')
-}
-
-const isNotFoundError = (err: unknown): boolean => {
-  if (!err || typeof err !== 'object') return false
-  const e = err as CtErrorShape
-  return e.httpErrorStatus === 404 || e.statusCode === 404
-}
 
 export class BriqpayOperationService {
   constructor(
@@ -294,45 +265,44 @@ export class BriqpayOperationService {
       id: cartId,
     })
 
-    const briqpaySessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName] as string | undefined
+    const ctPayment = await this.ctPaymentService.createPayment({
+      amountPlanned: await this.ctCartService.getPaymentAmount({
+        cart: ctCart,
+      }),
+      paymentMethodInfo: {
+        paymentInterface: getPaymentInterfaceFromContext() || 'Briqpay',
+      },
+      checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext(),
+      ...(ctCart.customerId && {
+        customer: {
+          typeId: 'customer',
+          id: ctCart.customerId,
+        },
+      }),
+      ...(!ctCart.customerId &&
+        ctCart.anonymousId && {
+          anonymousId: ctCart.anonymousId,
+        }),
+    })
 
-    // Dedupe: a CT Cart with multiple Payments blocks Checkout's automatic Order creation.
-    // Reuse the existing Payment for this Briqpay session instead of creating a duplicate
-    // when the connector is invoked more than once for the same session (retries, double-submit,
-    // out-of-order webhooks, browser back-and-forth in Checkout).
-    if (briqpaySessionId) {
-      const existing = await this.findOrAttachExistingPaymentForSession(ctCart, briqpaySessionId)
-      if (existing) {
-        const updatedPayment = await this.ctPaymentService.updatePayment({
-          id: existing.id,
-          pspReference: briqpaySessionId,
-          paymentMethod: request.data.paymentMethod.type,
-          transaction: {
-            type: 'Authorization',
-            amount: existing.amountPlanned,
-            interactionId: briqpaySessionId,
-            state: convertPaymentResultCode(request.data.paymentOutcome),
-          },
-        })
-        return {
-          paymentReference: updatedPayment.id,
-        }
-      }
-    }
+    // Re-fetch cart to get the current version (cart may have been modified by session service)
+    const freshCart = await this.ctCartService.getCart({
+      id: ctCart.id,
+    })
 
-    // No existing Payment found via the search index. Try to create with a deterministic key
-    // (`briqpay-<sessionId>`). CT enforces key uniqueness atomically at the database level —
-    // concurrent createPayment calls with the same key result in exactly one success and a
-    // DuplicateField error for the rest. We catch that error and recover by fetching the
-    // winning Payment by key, ensuring it's attached to the cart, and returning its id.
-    // This closes the race window that `findPaymentsByInterfaceId` (search-index based) leaves
-    // open during truly concurrent invocations of this endpoint.
-    const ctPayment = await this.createOrRecoverPaymentForCheckout(ctCart, briqpaySessionId)
+    await this.ctCartService.addPayment({
+      resource: {
+        id: freshCart.id,
+        version: freshCart.version,
+      },
+      paymentId: ctPayment.id,
+    })
 
-    const pspReference = briqpaySessionId ?? ctCart.custom?.fields?.[briqpaySessionIdFieldName]
+    const pspReference = freshCart.custom?.fields?.[briqpaySessionIdFieldName]
+
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: ctPayment.id,
-      pspReference,
+      pspReference: pspReference,
       paymentMethod: request.data.paymentMethod.type,
       transaction: {
         type: 'Authorization',
@@ -397,28 +367,29 @@ export class BriqpayOperationService {
       ? convertNotificationStatus(orderStatusToWebhookStatus(orderStatus))
       : 'Pending'
 
-    // Dedupe: a CT Cart with multiple Payments blocks Checkout's automatic Order creation.
-    // Reuse the existing Payment for this Briqpay session instead of creating a duplicate.
-    const existingPayment = await this.findOrAttachExistingPaymentForSession(ctCart, briqpaySessionId)
+    const newlyCreatedPayment = await this.ctPaymentService.createPayment({
+      amountPlanned,
+      paymentMethodInfo: {
+        paymentInterface: transactionDraft.paymentInterface,
+      },
+      checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext(),
+    })
 
-    let paymentForTransaction: Payment
-    if (existingPayment) {
-      paymentForTransaction = existingPayment
-      appLogger.info(
-        { paymentId: existingPayment.id, briqpaySessionId, cartId: ctCart.id },
-        'handleTransaction: reusing existing CT Payment for Briqpay session',
-      )
-    } else {
-      paymentForTransaction = await this.createOrRecoverPaymentForTransaction(
-        ctCart,
-        briqpaySessionId,
-        amountPlanned,
-        transactionDraft.paymentInterface,
-      )
-    }
+    // Re-fetch cart to get the current version (cart may have been modified)
+    const freshCart = await this.ctCartService.getCart({
+      id: ctCart.id,
+    })
+
+    await this.ctCartService.addPayment({
+      resource: {
+        id: freshCart.id,
+        version: freshCart.version,
+      },
+      paymentId: newlyCreatedPayment.id,
+    })
 
     await this.ctPaymentService.updatePayment({
-      id: paymentForTransaction.id,
+      id: newlyCreatedPayment.id,
       pspReference: briqpaySessionId,
       transaction: {
         amount: amountPlanned,
@@ -434,7 +405,7 @@ export class BriqpayOperationService {
           errors: [
             {
               code: 'PaymentRejected',
-              message: `Payment '${paymentForTransaction.id}' has been rejected by Briqpay (orderStatus: ${orderStatus}).`,
+              message: `Payment '${newlyCreatedPayment.id}' has been rejected by Briqpay (orderStatus: ${orderStatus}).`,
             },
           ],
           state: 'Failed',
@@ -447,213 +418,6 @@ export class BriqpayOperationService {
         errors: [],
         state: 'Pending',
       },
-    }
-  }
-
-  /**
-   * Returns the CT Payment that already represents this Briqpay session, attaching it to the
-   * cart if it exists in CT but isn't linked yet. Returns undefined when no such Payment exists.
-   *
-   * Used to dedupe Payment creation across retries / double-submits / out-of-order webhooks —
-   * a CT Cart with multiple attached Payments blocks Checkout's automatic Order creation.
-   */
-  private async findOrAttachExistingPaymentForSession(
-    cart: Cart,
-    briqpaySessionId: string,
-  ): Promise<Payment | undefined> {
-    if (!briqpaySessionId) {
-      return undefined
-    }
-
-    const candidates =
-      (await this.ctPaymentService.findPaymentsByInterfaceId({
-        interfaceId: briqpaySessionId,
-      })) ?? []
-
-    if (candidates.length === 0) {
-      return undefined
-    }
-
-    if (candidates.length > 1) {
-      appLogger.warn(
-        { briqpaySessionId, paymentIds: candidates.map((p) => p.id), cartId: cart.id },
-        'Multiple CT Payments found for the same Briqpay session — using the first',
-      )
-    }
-
-    const payment = candidates[0]
-    const attachedPaymentIds = new Set(cart.paymentInfo?.payments?.map((p) => p.id) ?? [])
-
-    if (attachedPaymentIds.has(payment.id)) {
-      return payment
-    }
-
-    appLogger.info(
-      { paymentId: payment.id, briqpaySessionId, cartId: cart.id },
-      'Found existing CT Payment for Briqpay session not yet attached to cart — attaching',
-    )
-    await this.ctCartService.addPayment({
-      resource: { id: cart.id, version: cart.version },
-      paymentId: payment.id,
-    })
-
-    return payment
-  }
-
-  /**
-   * Creates a fresh CT Payment for the storefront-initiated checkout and attaches it to
-   * the cart, or — if a concurrent caller already won the deterministic key — recovers by
-   * fetching the winning Payment by key and attaching it to the cart instead.
-   *
-   * Used by createPayment when the cheap interfaceId-based dedupe missed.
-   *
-   * When the cart has no Briqpay session yet, no key is set and only the legacy create-
-   * and-attach happens (no race-recovery branch is needed because there's nothing to
-   * collide on).
-   */
-  private async createOrRecoverPaymentForCheckout(
-    ctCart: Cart,
-    briqpaySessionId: string | undefined,
-  ): Promise<Payment> {
-    const paymentKey = briqpaySessionId ? buildPaymentKey(briqpaySessionId) : undefined
-    try {
-      const newPayment = await this.ctPaymentService.createPayment({
-        ...(paymentKey && { key: paymentKey }),
-        amountPlanned: await this.ctCartService.getPaymentAmount({ cart: ctCart }),
-        paymentMethodInfo: {
-          paymentInterface: getPaymentInterfaceFromContext() || 'Briqpay',
-        },
-        checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext(),
-        ...(briqpaySessionId && { interfaceId: briqpaySessionId }),
-        ...(ctCart.customerId && { customer: { typeId: 'customer', id: ctCart.customerId } }),
-        ...(!ctCart.customerId &&
-          ctCart.anonymousId && {
-            anonymousId: ctCart.anonymousId,
-          }),
-      })
-
-      const freshCart = await this.ctCartService.getCart({ id: ctCart.id })
-      await this.ctCartService.addPayment({
-        resource: { id: freshCart.id, version: freshCart.version },
-        paymentId: newPayment.id,
-      })
-      return newPayment
-    } catch (err) {
-      if (!paymentKey || !isDuplicateKeyError(err)) {
-        throw err
-      }
-      return this.recoverPaymentAfterKeyConflict(ctCart, paymentKey, briqpaySessionId as string, err)
-    }
-  }
-
-  /**
-   * Creates a fresh CT Payment for the Briqpay session and attaches it to the cart, or — if
-   * a concurrent caller already won the deterministic key — recovers by fetching the winning
-   * Payment by key and attaching it to the cart instead.
-   *
-   * Used by handleTransaction when the cheap interfaceId-based dedupe missed (search index
-   * lag during a true concurrency burst).
-   */
-  private async createOrRecoverPaymentForTransaction(
-    ctCart: Cart,
-    briqpaySessionId: string,
-    amountPlanned: Money,
-    paymentInterface: string,
-  ): Promise<Payment> {
-    const paymentKey = buildPaymentKey(briqpaySessionId)
-    try {
-      const newPayment = await this.ctPaymentService.createPayment({
-        key: paymentKey,
-        amountPlanned,
-        paymentMethodInfo: { paymentInterface },
-        checkoutTransactionItemId: getCheckoutTransactionItemIdFromContext(),
-        interfaceId: briqpaySessionId,
-      })
-
-      const freshCart = await this.ctCartService.getCart({ id: ctCart.id })
-      await this.ctCartService.addPayment({
-        resource: { id: freshCart.id, version: freshCart.version },
-        paymentId: newPayment.id,
-      })
-
-      return newPayment
-    } catch (err) {
-      if (!isDuplicateKeyError(err)) {
-        throw err
-      }
-      return this.recoverPaymentAfterKeyConflict(ctCart, paymentKey, briqpaySessionId, err)
-    }
-  }
-
-  /**
-   * Looks up the Payment that won the createPayment race (identified by `paymentKey`),
-   * attaches it to the cart if needed, and returns it. Re-throws the original CT error if
-   * the Payment cannot be found by key (unexpected — would indicate a CT-side inconsistency).
-   */
-  private async recoverPaymentAfterKeyConflict(
-    ctCart: Cart,
-    paymentKey: string,
-    briqpaySessionId: string,
-    originalErr: unknown,
-  ): Promise<Payment> {
-    appLogger.info(
-      { paymentKey, cartId: ctCart.id, briqpaySessionId },
-      'concurrent dedupe — DuplicateField on key, recovering by lookup',
-    )
-    const recovered = await this.fetchPaymentByKey(paymentKey)
-    if (!recovered) {
-      appLogger.error(
-        { paymentKey, cartId: ctCart.id },
-        'DuplicateField on key but Payment not found by key — re-throwing original error',
-      )
-      throw originalErr
-    }
-    await this.attachPaymentToCartIfNeeded(ctCart, recovered.id)
-    return recovered
-  }
-
-  /**
-   * Fetches a Payment by its `key`. Returns undefined when no Payment exists with that key
-   * (404). Other errors propagate.
-   */
-  private async fetchPaymentByKey(key: string): Promise<Payment | undefined> {
-    try {
-      const response = await apiRoot.payments().withKey({ key }).get().execute()
-      return response.body as unknown as Payment
-    } catch (err) {
-      if (isNotFoundError(err)) {
-        return undefined
-      }
-      throw err
-    }
-  }
-
-  /**
-   * Ensures the given Payment is attached to the cart. Re-fetches the cart for a fresh
-   * version, checks whether the Payment is already linked, and only calls addPayment if
-   * not. If addPayment fails but a re-check shows the Payment is now on the cart (a
-   * concurrent caller won), it treats the situation as success rather than an error.
-   */
-  private async attachPaymentToCartIfNeeded(cart: Cart, paymentId: string): Promise<void> {
-    const freshCart = await this.ctCartService.getCart({ id: cart.id })
-    if (freshCart.paymentInfo?.payments?.some((p) => p.id === paymentId)) {
-      return
-    }
-    try {
-      await this.ctCartService.addPayment({
-        resource: { id: freshCart.id, version: freshCart.version },
-        paymentId,
-      })
-    } catch (err) {
-      const recheck = await this.ctCartService.getCart({ id: cart.id })
-      if (recheck.paymentInfo?.payments?.some((p) => p.id === paymentId)) {
-        appLogger.info(
-          { paymentId, cartId: cart.id },
-          'attachPaymentToCartIfNeeded: addPayment errored but Payment is now attached — treating as success',
-        )
-        return
-      }
-      throw err
     }
   }
 }
