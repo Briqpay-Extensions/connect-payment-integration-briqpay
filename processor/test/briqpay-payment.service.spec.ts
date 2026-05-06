@@ -1,9 +1,10 @@
 import { describe, test, expect, afterEach, jest, beforeEach } from '@jest/globals'
 import crypto from 'crypto'
 import { ConfigResponse, ModifyPayment, StatusResponse } from '../src/services/types/operation.type'
-import { paymentSDK } from '../src/payment-sdk'
+import { paymentSDK, appLogger } from '../src/payment-sdk'
 import { DefaultPaymentService } from '@commercetools/connect-payments-sdk/dist/commercetools/services/ct-payment.service'
 import { DefaultCartService } from '@commercetools/connect-payments-sdk/dist/commercetools/services/ct-cart.service'
+import { CommercetoolsAPIError } from '@commercetools/connect-payments-sdk/dist/commercetools/errors/ct-api.error'
 import { mockGetPaymentResult, mockUpdatePaymentResult } from './utils/mock-payment-results'
 import { mockGetCartResult } from './utils/mock-cart-data'
 import * as Config from '../src/config/config'
@@ -30,7 +31,7 @@ import {
 } from '../src/dtos/briqpay-payment.dto'
 import { apiRoot } from '../src/libs/commercetools/api-root'
 import Briqpay from '../src/libs/briqpay/BriqpayService'
-import { Cart } from '@commercetools/platform-sdk'
+import { Cart, Payment, Transaction, TransactionState, TransactionType } from '@commercetools/connect-payments-sdk'
 import { TransactionDraftDTO } from '../src/dtos/operations/transaction.dto'
 import { briqpaySessionIdCustomType } from '../src/custom-types/custom-types'
 
@@ -69,6 +70,37 @@ const createMockBriqpaySession = (opts: {
   }
 }
 
+const buildBriqpayPayment = (opts: {
+  id: string
+  interfaceId?: string
+  key?: string | null
+  paymentInterface?: string | null
+  authorizationStates?: TransactionState[]
+}): Payment => {
+  const transactions: Transaction[] = (opts.authorizationStates ?? []).map((state, idx) => ({
+    id: `tx-${opts.id}-${idx}`,
+    timestamp: '2026-05-06T00:00:00.000Z',
+    type: 'Authorization' as TransactionType,
+    amount: { type: 'centPrecision', centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 },
+    interactionId: opts.interfaceId ?? `session-${opts.id}`,
+    state,
+  }))
+  return {
+    id: opts.id,
+    version: 1,
+    amountPlanned: { type: 'centPrecision', centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 },
+    interfaceId: opts.interfaceId ?? `session-${opts.id}`,
+    ...(opts.key !== null && { key: opts.key ?? `briqpay-session-${opts.id}` }),
+    paymentMethodInfo: {
+      ...(opts.paymentInterface !== null && { paymentInterface: opts.paymentInterface ?? 'Briqpay' }),
+    },
+    transactions,
+    interfaceInteractions: [],
+    createdAt: '2026-05-06T00:00:00.000Z',
+    lastModifiedAt: '2026-05-06T00:00:00.000Z',
+  }
+}
+
 const createSignedWebhookRequest = (data: NotificationRequestSchemaDTO) => {
   const secret = process.env.BRIQPAY_WEBHOOK_SECRET
   if (!secret) {
@@ -101,6 +133,7 @@ jest.mock('../src/libs/commercetools/api-root', () => ({
         }),
       }),
     }),
+    payments: jest.fn(),
   },
 }))
 
@@ -1031,6 +1064,1274 @@ describe('briqpay-payment.service', () => {
     expect(getCartSpy).toHaveBeenCalledWith({ id: 'explicit-cart-id' })
   })
 
+  describe('createPayment dedupe', () => {
+    const cartWithBriqpaySession = (overrides?: Partial<Cart>): Cart => ({
+      ...mockGetCartResult(),
+      custom: {
+        type: { typeId: 'type' as const, id: 'type-id' },
+        fields: { 'briqpay-session-id': 'briqpay-session-dedupe-1' },
+      },
+      ...overrides,
+    })
+
+    test('reuses an existing CT Payment for the same Briqpay session and never creates a new one', async () => {
+      const existingPaymentId = 'existing-payment-for-session'
+      const cart = cartWithBriqpaySession({
+        paymentInfo: {
+          payments: [{ typeId: 'payment', id: existingPaymentId }],
+        },
+      })
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId')
+        .mockResolvedValue([
+          { ...mockGetPaymentResult, id: existingPaymentId, interfaceId: 'briqpay-session-dedupe-1' },
+        ])
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment')
+      const addPaymentSpy = jest.spyOn(paymentSDK.ctCartService, 'addPayment')
+      const updateSpy = jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: existingPaymentId })
+
+      const result = await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'briqpay-session-dedupe-1',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      expect(result?.paymentReference).toStrictEqual(existingPaymentId)
+      expect(createSpy).not.toHaveBeenCalled()
+      expect(addPaymentSpy).not.toHaveBeenCalled()
+      expect(updateSpy).toHaveBeenCalledTimes(1)
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: existingPaymentId,
+          pspReference: 'briqpay-session-dedupe-1',
+          transaction: expect.objectContaining({
+            type: 'Authorization',
+            interactionId: 'briqpay-session-dedupe-1',
+            state: 'Success',
+          }),
+        }),
+      )
+    })
+
+    test('attaches an existing CT Payment to the cart when CT has it but the cart does not', async () => {
+      const existingPaymentId = 'orphan-payment-for-session'
+      const cart = cartWithBriqpaySession()
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId')
+        .mockResolvedValue([
+          { ...mockGetPaymentResult, id: existingPaymentId, interfaceId: 'briqpay-session-dedupe-1' },
+        ])
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment')
+      const addPaymentSpy = jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: existingPaymentId })
+
+      const result = await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'briqpay-session-dedupe-1',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      expect(result?.paymentReference).toStrictEqual(existingPaymentId)
+      expect(createSpy).not.toHaveBeenCalled()
+      expect(addPaymentSpy).toHaveBeenCalledWith({
+        resource: { id: cart.id, version: cart.version },
+        paymentId: existingPaymentId,
+      })
+    })
+
+    test('falls back to creating a new Payment when no existing Payment matches the session', async () => {
+      const cart = cartWithBriqpaySession()
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValue(mockGetPaymentResult)
+      const addPaymentSpy = jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue(mockUpdatePaymentResult)
+
+      const result = await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'briqpay-session-dedupe-1',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      expect(result?.paymentReference).toStrictEqual(mockUpdatePaymentResult.id)
+      expect(createSpy).toHaveBeenCalledTimes(1)
+      expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({ interfaceId: 'briqpay-session-dedupe-1' }))
+      expect(addPaymentSpy).toHaveBeenCalledTimes(1)
+    })
+
+    test('sets a deterministic Payment.key on creation to enable atomic CT-side dedupe', async () => {
+      const cart = cartWithBriqpaySession()
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValue(mockGetPaymentResult)
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue(mockUpdatePaymentResult)
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'briqpay-session-dedupe-1',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({ key: 'briqpay-briqpay-session-dedupe-1' }))
+    })
+
+    test('recovers from a concurrent DuplicateField on key by fetching the winner via apiRoot.payments().withKey()', async () => {
+      const cart = cartWithBriqpaySession()
+      const winnerPaymentId = 'winner-payment-from-concurrent-create'
+      const winnerPayment: Payment = {
+        ...mockGetPaymentResult,
+        id: winnerPaymentId,
+        interfaceId: 'briqpay-session-dedupe-1',
+        key: 'briqpay-briqpay-session-dedupe-1',
+      }
+
+      const duplicateKeyError = Object.assign(new Error('Duplicate field key'), {
+        httpErrorStatus: 400,
+        code: 'DuplicateField',
+        fields: [{ code: 'DuplicateField', field: 'key' }],
+      })
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockRejectedValue(duplicateKeyError)
+      const addPaymentSpy = jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      const updateSpy = jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: winnerPaymentId })
+
+      const executeMock = jest.fn<any>().mockResolvedValue({ body: winnerPayment })
+      ;(apiRoot.payments as jest.Mock<any>).mockReturnValue({
+        withKey: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({ execute: executeMock }),
+        }),
+      })
+
+      const result = await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'briqpay-session-dedupe-1',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      expect(result?.paymentReference).toStrictEqual(winnerPaymentId)
+      expect(createSpy).toHaveBeenCalledTimes(1)
+      expect(executeMock).toHaveBeenCalled()
+      // Cart didn't already have the winner attached → recovery should attach it
+      expect(addPaymentSpy).toHaveBeenCalledWith(expect.objectContaining({ paymentId: winnerPaymentId }))
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: winnerPaymentId,
+          pspReference: 'briqpay-session-dedupe-1',
+        }),
+      )
+    })
+
+    test('rethrows DuplicateField errors that are not on the key field', async () => {
+      const cart = cartWithBriqpaySession()
+      const duplicateOtherFieldError = Object.assign(new Error('Duplicate field interfaceId'), {
+        httpErrorStatus: 400,
+        code: 'DuplicateField',
+        fields: [{ code: 'DuplicateField', field: 'interfaceId' }],
+      })
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockRejectedValue(duplicateOtherFieldError)
+
+      await expect(
+        briqpayPaymentService.createPayment({
+          cartId: cart.id,
+          data: {
+            paymentMethod: { type: PaymentMethodType.BRIQPAY },
+            briqpaySessionId: 'briqpay-session-dedupe-1',
+            paymentOutcome: PaymentOutcome.APPROVED,
+          },
+        }),
+      ).rejects.toBe(duplicateOtherFieldError)
+    })
+
+    test('rethrows the original error when DuplicateField recovery cannot find the Payment by key', async () => {
+      const cart = cartWithBriqpaySession()
+      const duplicateKeyError = Object.assign(new Error('Duplicate field key'), {
+        httpErrorStatus: 400,
+        code: 'DuplicateField',
+        fields: [{ code: 'DuplicateField', field: 'key' }],
+      })
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockRejectedValue(duplicateKeyError)
+
+      const notFoundError = Object.assign(new Error('not found'), { httpErrorStatus: 404 })
+      ;(apiRoot.payments as jest.Mock<any>).mockReturnValue({
+        withKey: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({
+            execute: jest.fn<any>().mockRejectedValue(notFoundError),
+          }),
+        }),
+      })
+
+      await expect(
+        briqpayPaymentService.createPayment({
+          cartId: cart.id,
+          data: {
+            paymentMethod: { type: PaymentMethodType.BRIQPAY },
+            briqpaySessionId: 'briqpay-session-dedupe-1',
+            paymentOutcome: PaymentOutcome.APPROVED,
+          },
+        }),
+      ).rejects.toBe(duplicateKeyError)
+    })
+
+    test('recovers when DuplicateField error exposes statusCode instead of httpErrorStatus', async () => {
+      const cart = cartWithBriqpaySession()
+      const winnerPaymentId = 'winner-payment-status-code-path'
+      const winnerPayment: Payment = {
+        ...mockGetPaymentResult,
+        id: winnerPaymentId,
+        interfaceId: 'briqpay-session-dedupe-1',
+        key: 'briqpay-briqpay-session-dedupe-1',
+      }
+
+      // Some CT SDK code paths surface errors with `statusCode` rather than `httpErrorStatus`
+      // (e.g. raw platform-sdk errors that bypass the CommercetoolsAPIError wrapper). The
+      // predicate must recognise both shapes — symmetrically with isNotFoundError.
+      const duplicateKeyError = Object.assign(new Error('Duplicate field key'), {
+        statusCode: 400,
+        code: 'DuplicateField',
+        fields: [{ code: 'DuplicateField', field: 'key' }],
+      })
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockRejectedValue(duplicateKeyError)
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: winnerPaymentId })
+
+      const executeMock = jest.fn<any>().mockResolvedValue({ body: winnerPayment })
+      ;(apiRoot.payments as jest.Mock<any>).mockReturnValue({
+        withKey: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({ execute: executeMock }),
+        }),
+      })
+
+      const result = await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'briqpay-session-dedupe-1',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      expect(result?.paymentReference).toStrictEqual(winnerPaymentId)
+      expect(executeMock).toHaveBeenCalled()
+    })
+
+    test('recovers when DuplicateField error is a real CommercetoolsAPIError instance built from a platform-sdk error', async () => {
+      const cart = cartWithBriqpaySession()
+      const winnerPaymentId = 'winner-payment-real-sdk-error'
+      const winnerPayment: Payment = {
+        ...mockGetPaymentResult,
+        id: winnerPaymentId,
+        interfaceId: 'briqpay-session-dedupe-1',
+        key: 'briqpay-briqpay-session-dedupe-1',
+      }
+
+      // Regression coverage: prove the predicate matches the actual shape produced by
+      // CommercetoolsBaseAPI.executeCall when the platform-sdk throws a 400 DuplicateField.
+      // If the SDK ever changes how it wraps errors, this test breaks first — before customers do.
+      const platformSdkError = {
+        statusCode: 400,
+        message: 'A duplicate value "briqpay-briqpay-session-dedupe-1" was sent for field "key".',
+        body: {
+          statusCode: 400,
+          message: 'A duplicate value "briqpay-briqpay-session-dedupe-1" was sent for field "key".',
+          errors: [
+            {
+              code: 'DuplicateField',
+              field: 'key',
+              message: 'A duplicate value "briqpay-briqpay-session-dedupe-1" was sent for field "key".',
+              duplicateValue: 'briqpay-briqpay-session-dedupe-1',
+            },
+          ],
+        },
+      }
+      const wrappedError = new CommercetoolsAPIError(platformSdkError as never)
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockRejectedValue(wrappedError)
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: winnerPaymentId })
+
+      const executeMock = jest.fn<any>().mockResolvedValue({ body: winnerPayment })
+      ;(apiRoot.payments as jest.Mock<any>).mockReturnValue({
+        withKey: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({ execute: executeMock }),
+        }),
+      })
+
+      const result = await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'briqpay-session-dedupe-1',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      expect(result?.paymentReference).toStrictEqual(winnerPaymentId)
+      expect(executeMock).toHaveBeenCalled()
+    })
+  })
+
+  describe('detachStaleBriqpayPayments', () => {
+    const cartWithBriqpaySession = () => ({
+      ...mockGetCartResult(),
+      custom: {
+        type: { typeId: 'type' as const, id: 'type-id' },
+        fields: { 'briqpay-session-id': 'session-current' },
+      },
+    })
+
+    type CartUpdateBody = { version: number; actions: Array<{ action: string; payment?: { id: string } }> }
+
+    const setupCartUpdateMock = () => {
+      const postMock = jest.fn<any>().mockReturnValue({
+        execute: jest.fn<any>().mockResolvedValue({ body: { version: 2 } }),
+      })
+      ;(apiRoot.carts as jest.Mock<any>).mockReturnValue({
+        withId: jest.fn<any>().mockReturnValue({ post: postMock }),
+      })
+      return postMock
+    }
+
+    test('detaches a Briqpay Payment with no Authorization transactions', async () => {
+      const stalePayment = buildBriqpayPayment({
+        id: 'stale-payment',
+        interfaceId: 'session-old',
+        authorizationStates: [],
+      })
+      const currentPayment = buildBriqpayPayment({
+        id: 'current-payment',
+        interfaceId: 'session-current',
+        authorizationStates: [],
+      })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'stale-payment' },
+            { typeId: 'payment' as const, id: 'current-payment' },
+          ],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([currentPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'current-payment' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'stale-payment') return stalePayment
+        if (id === 'current-payment') return currentPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-current',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      const removeUpdate = updateBodies.find((b) =>
+        b.actions.some((a) => a.action === 'removePayment' && a.payment?.id === 'stale-payment'),
+      )
+      expect(removeUpdate).toBeDefined()
+      const removedCurrent = updateBodies.some((b) =>
+        b.actions.some((a) => a.action === 'removePayment' && a.payment?.id === 'current-payment'),
+      )
+      expect(removedCurrent).toBe(false)
+    })
+
+    test('no-op when cart has only the current Payment', async () => {
+      const currentPayment = buildBriqpayPayment({ id: 'current-payment', authorizationStates: [] })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        paymentInfo: { payments: [{ typeId: 'payment' as const, id: 'current-payment' }] },
+      }
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([currentPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'current-payment' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockResolvedValue(currentPayment)
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-current',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      expect(updateBodies.some((b) => b.actions.some((a) => a.action === 'removePayment'))).toBe(false)
+    })
+
+    test('no-op when cart.paymentInfo is undefined', async () => {
+      const cart = { ...cartWithBriqpaySession(), paymentInfo: undefined }
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValue(mockGetPaymentResult)
+      jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue(mockUpdatePaymentResult)
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-current',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      expect(updateBodies.some((b) => b.actions.some((a) => a.action === 'removePayment'))).toBe(false)
+    })
+
+    test('preserves a Briqpay Payment with a Pending Authorization', async () => {
+      const stalePayment = buildBriqpayPayment({
+        id: 'stale-payment',
+        interfaceId: 'session-old',
+        authorizationStates: ['Pending'],
+      })
+      const currentPayment = buildBriqpayPayment({
+        id: 'current-payment',
+        interfaceId: 'session-current',
+        authorizationStates: [],
+      })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'stale-payment' },
+            { typeId: 'payment' as const, id: 'current-payment' },
+          ],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([currentPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'current-payment' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'stale-payment') return stalePayment
+        if (id === 'current-payment') return currentPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-current',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      const remove = updateBodies.find((b) =>
+        b.actions.some((a) => a.action === 'removePayment' && a.payment?.id === 'stale-payment'),
+      )
+      expect(remove).toBeUndefined()
+      expect(jest.mocked(appLogger.warn)).toHaveBeenCalledWith(
+        expect.objectContaining({ preservedPaymentId: 'stale-payment', authState: 'Pending' }),
+        expect.stringContaining('Preserved stale Briqpay Payment'),
+      )
+    })
+
+    test('preserves a Briqpay Payment with a Success Authorization', async () => {
+      const stalePayment = buildBriqpayPayment({
+        id: 'stale-payment',
+        interfaceId: 'session-old',
+        authorizationStates: ['Success'],
+      })
+      const currentPayment = buildBriqpayPayment({
+        id: 'current-payment',
+        interfaceId: 'session-current',
+        authorizationStates: [],
+      })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'stale-payment' },
+            { typeId: 'payment' as const, id: 'current-payment' },
+          ],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([currentPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'current-payment' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'stale-payment') return stalePayment
+        if (id === 'current-payment') return currentPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-current',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      const remove = updateBodies.find((b) =>
+        b.actions.some((a) => a.action === 'removePayment' && a.payment?.id === 'stale-payment'),
+      )
+      expect(remove).toBeUndefined()
+      expect(jest.mocked(appLogger.warn)).toHaveBeenCalledWith(
+        expect.objectContaining({ preservedPaymentId: 'stale-payment', authState: 'Success' }),
+        expect.stringContaining('Preserved stale Briqpay Payment'),
+      )
+    })
+
+    test('detaches a Briqpay Payment whose only Authorization is Failure', async () => {
+      const stalePayment = buildBriqpayPayment({
+        id: 'stale-payment',
+        interfaceId: 'session-old',
+        authorizationStates: ['Failure'],
+      })
+      const currentPayment = buildBriqpayPayment({
+        id: 'current-payment',
+        interfaceId: 'session-current',
+        authorizationStates: [],
+      })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'stale-payment' },
+            { typeId: 'payment' as const, id: 'current-payment' },
+          ],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([currentPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'current-payment' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'stale-payment') return stalePayment
+        if (id === 'current-payment') return currentPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-current',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      const remove = updateBodies.find((b) =>
+        b.actions.some((a) => a.action === 'removePayment' && a.payment?.id === 'stale-payment'),
+      )
+      expect(remove).toBeDefined()
+    })
+
+    test('detaches a Briqpay Payment whose only Authorization is Initial', async () => {
+      const stalePayment = buildBriqpayPayment({
+        id: 'stale-payment',
+        interfaceId: 'session-old',
+        authorizationStates: ['Initial'],
+      })
+      const currentPayment = buildBriqpayPayment({
+        id: 'current-payment',
+        interfaceId: 'session-current',
+        authorizationStates: [],
+      })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'stale-payment' },
+            { typeId: 'payment' as const, id: 'current-payment' },
+          ],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([currentPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'current-payment' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'stale-payment') return stalePayment
+        if (id === 'current-payment') return currentPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-current',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      const remove = updateBodies.find((b) =>
+        b.actions.some((a) => a.action === 'removePayment' && a.payment?.id === 'stale-payment'),
+      )
+      expect(remove).toBeDefined()
+    })
+
+    test('preserves a non-Briqpay Payment on a mixed-PSP cart', async () => {
+      const klarnaPayment = buildBriqpayPayment({
+        id: 'klarna-payment',
+        paymentInterface: 'Klarna',
+        authorizationStates: [],
+      })
+      const staleBriqpayPayment = buildBriqpayPayment({
+        id: 'stale-briqpay-payment',
+        interfaceId: 'session-old',
+        authorizationStates: [],
+      })
+      const currentPayment = buildBriqpayPayment({
+        id: 'current-payment',
+        interfaceId: 'session-current',
+        authorizationStates: [],
+      })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'klarna-payment' },
+            { typeId: 'payment' as const, id: 'stale-briqpay-payment' },
+            { typeId: 'payment' as const, id: 'current-payment' },
+          ],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([currentPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'current-payment' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'klarna-payment') return klarnaPayment
+        if (id === 'stale-briqpay-payment') return staleBriqpayPayment
+        if (id === 'current-payment') return currentPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-current',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      const removed = updateBodies.flatMap((b) =>
+        b.actions.filter((a) => a.action === 'removePayment').map((a) => a.payment?.id),
+      )
+      // Detach path actually ran (proven by stale-briqpay-payment removal)
+      expect(removed).toContain('stale-briqpay-payment')
+      // Klarna was correctly preserved by the paymentInterface filter
+      expect(removed).not.toContain('klarna-payment')
+    })
+
+    test('preserves a Payment whose key is missing the briqpay- prefix', async () => {
+      const noPrefixPayment = buildBriqpayPayment({
+        id: 'no-prefix-payment',
+        interfaceId: 'session-old',
+        key: 'foreign-key-format-abc',
+        authorizationStates: [],
+      })
+      const staleBriqpayPayment = buildBriqpayPayment({
+        id: 'stale-briqpay-payment',
+        interfaceId: 'session-old-2',
+        authorizationStates: [],
+      })
+      const currentPayment = buildBriqpayPayment({
+        id: 'current-payment',
+        interfaceId: 'session-current',
+        authorizationStates: [],
+      })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'no-prefix-payment' },
+            { typeId: 'payment' as const, id: 'stale-briqpay-payment' },
+            { typeId: 'payment' as const, id: 'current-payment' },
+          ],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([currentPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'current-payment' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'no-prefix-payment') return noPrefixPayment
+        if (id === 'stale-briqpay-payment') return staleBriqpayPayment
+        if (id === 'current-payment') return currentPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-current',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      const removed = updateBodies.flatMap((b) =>
+        b.actions.filter((a) => a.action === 'removePayment').map((a) => a.payment?.id),
+      )
+      // Detach path actually ran (proven by stale-briqpay-payment removal)
+      expect(removed).toContain('stale-briqpay-payment')
+      // No-prefix Payment was correctly preserved by the key.startsWith filter
+      expect(removed).not.toContain('no-prefix-payment')
+    })
+
+    test('detaches multiple stale Payments in a single atomic cart update', async () => {
+      const stale1 = buildBriqpayPayment({
+        id: 'stale-1',
+        interfaceId: 'session-old-1',
+        authorizationStates: ['Failure'],
+      })
+      const stale2 = buildBriqpayPayment({ id: 'stale-2', interfaceId: 'session-old-2', authorizationStates: [] })
+      const currentPayment = buildBriqpayPayment({
+        id: 'current-payment',
+        interfaceId: 'session-current',
+        authorizationStates: [],
+      })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'stale-1' },
+            { typeId: 'payment' as const, id: 'stale-2' },
+            { typeId: 'payment' as const, id: 'current-payment' },
+          ],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([currentPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'current-payment' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'stale-1') return stale1
+        if (id === 'stale-2') return stale2
+        if (id === 'current-payment') return currentPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-current',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      const detachUpdate = updateBodies.find(
+        (b) => b.actions.length > 0 && b.actions.every((a) => a.action === 'removePayment'),
+      )
+      expect(detachUpdate).toBeDefined()
+      const removedIds = detachUpdate!.actions.map((a) => a.payment?.id).sort()
+      expect(removedIds).toStrictEqual(['stale-1', 'stale-2'])
+    })
+
+    test('retries cart update once on 409 ConcurrentModification and succeeds', async () => {
+      const stalePayment = buildBriqpayPayment({
+        id: 'stale-payment',
+        interfaceId: 'session-old',
+        authorizationStates: [],
+      })
+      const currentPayment = buildBriqpayPayment({
+        id: 'current-payment',
+        interfaceId: 'session-current',
+        authorizationStates: [],
+      })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'stale-payment' },
+            { typeId: 'payment' as const, id: 'current-payment' },
+          ],
+        },
+      }
+
+      let getCartCallCount = 0
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockImplementation(async () => {
+        getCartCallCount++
+        return { ...cart, version: getCartCallCount } as never
+      })
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([currentPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'current-payment' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'stale-payment') return stalePayment
+        if (id === 'current-payment') return currentPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const conflictError = Object.assign(new Error('ConcurrentModification'), {
+        statusCode: 409,
+        httpErrorStatus: 409,
+        code: 'ConcurrentModification',
+      })
+
+      let attempt = 0
+      const executeMock = jest.fn<any>().mockImplementation(async () => {
+        attempt++
+        if (attempt === 1) throw conflictError
+        return { body: { version: 99 } }
+      })
+      ;(apiRoot.carts as jest.Mock<any>).mockReturnValue({
+        withId: jest.fn<any>().mockReturnValue({
+          post: jest.fn<any>().mockReturnValue({ execute: executeMock }),
+        }),
+      })
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-current',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      expect(attempt).toBe(2)
+    })
+
+    test('logs error and continues without throwing when all retry attempts fail', async () => {
+      const stalePayment = buildBriqpayPayment({
+        id: 'stale-payment',
+        interfaceId: 'session-old',
+        authorizationStates: [],
+      })
+      const currentPayment = buildBriqpayPayment({
+        id: 'current-payment',
+        interfaceId: 'session-current',
+        authorizationStates: [],
+      })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'stale-payment' },
+            { typeId: 'payment' as const, id: 'current-payment' },
+          ],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([currentPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'current-payment' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'stale-payment') return stalePayment
+        if (id === 'current-payment') return currentPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const persistentConflict = Object.assign(new Error('ConcurrentModification'), {
+        statusCode: 409,
+        httpErrorStatus: 409,
+        code: 'ConcurrentModification',
+      })
+      const executeMock = jest.fn<any>().mockRejectedValue(persistentConflict)
+      ;(apiRoot.carts as jest.Mock<any>).mockReturnValue({
+        withId: jest.fn<any>().mockReturnValue({
+          post: jest.fn<any>().mockReturnValue({ execute: executeMock }),
+        }),
+      })
+
+      // Must not throw
+      const result = await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-current',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      expect(result?.paymentReference).toBe('current-payment')
+      expect(executeMock).toHaveBeenCalledTimes(3)
+    })
+
+    test('skips a candidate Payment whose fetch fails (e.g. deleted) and continues with the rest', async () => {
+      const stalePresent = buildBriqpayPayment({
+        id: 'stale-present',
+        interfaceId: 'session-old-1',
+        authorizationStates: [],
+      })
+      const currentPayment = buildBriqpayPayment({
+        id: 'current-payment',
+        interfaceId: 'session-current',
+        authorizationStates: [],
+      })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'stale-deleted' },
+            { typeId: 'payment' as const, id: 'stale-present' },
+            { typeId: 'payment' as const, id: 'current-payment' },
+          ],
+        },
+      }
+
+      const notFoundError = Object.assign(new Error('not found'), { statusCode: 404, httpErrorStatus: 404 })
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([currentPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'current-payment' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'stale-deleted') throw notFoundError
+        if (id === 'stale-present') return stalePresent
+        if (id === 'current-payment') return currentPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-current',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      const removed = updateBodies.flatMap((b) =>
+        b.actions.filter((a) => a.action === 'removePayment').map((a) => a.payment?.id),
+      )
+      expect(removed).toContain('stale-present')
+      expect(removed).not.toContain('stale-deleted')
+    })
+
+    test('integration: abandoned cart return — old Payment with no transactions is detached', async () => {
+      const oldPayment = buildBriqpayPayment({ id: 'payment-old', interfaceId: 'session-A', authorizationStates: [] })
+      const newPayment = buildBriqpayPayment({ id: 'payment-new', interfaceId: 'session-B', authorizationStates: [] })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        custom: {
+          type: { typeId: 'type' as const, id: 'type-id' },
+          fields: { 'briqpay-session-id': 'session-B' },
+        },
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'payment-old' },
+            { typeId: 'payment' as const, id: 'payment-new' },
+          ],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([newPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'payment-new' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'payment-old') return oldPayment
+        if (id === 'payment-new') return newPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-B',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      const removed = updateBodies.flatMap((b) =>
+        b.actions.filter((a) => a.action === 'removePayment').map((a) => a.payment?.id),
+      )
+      expect(removed).toStrictEqual(['payment-old'])
+    })
+
+    test('integration: cart heavily modified mid-checkout — old Payment with Failure Authorization is detached', async () => {
+      const oldPayment = buildBriqpayPayment({
+        id: 'payment-old',
+        interfaceId: 'session-A',
+        authorizationStates: ['Failure'],
+      })
+      const newPayment = buildBriqpayPayment({ id: 'payment-new', interfaceId: 'session-B', authorizationStates: [] })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        custom: {
+          type: { typeId: 'type' as const, id: 'type-id' },
+          fields: { 'briqpay-session-id': 'session-B' },
+        },
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'payment-old' },
+            { typeId: 'payment' as const, id: 'payment-new' },
+          ],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([newPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'payment-new' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'payment-old') return oldPayment
+        if (id === 'payment-new') return newPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-B',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      const removed = updateBodies.flatMap((b) =>
+        b.actions.filter((a) => a.action === 'removePayment').map((a) => a.payment?.id),
+      )
+      expect(removed).toStrictEqual(['payment-old'])
+    })
+
+    test('integration: promo-code triggered new session id — old Payment is detached', async () => {
+      // Behaviorally identical to abandoned-cart-return case; just a different
+      // human-readable scenario name. Codifies that ANY session-id rotation
+      // produces clean cleanup of the old Payment.
+      const oldPayment = buildBriqpayPayment({
+        id: 'payment-pre-promo',
+        interfaceId: 'session-pre-promo',
+        authorizationStates: [],
+      })
+      const newPayment = buildBriqpayPayment({
+        id: 'payment-post-promo',
+        interfaceId: 'session-post-promo',
+        authorizationStates: [],
+      })
+      const cart = {
+        ...cartWithBriqpaySession(),
+        custom: {
+          type: { typeId: 'type' as const, id: 'type-id' },
+          fields: { 'briqpay-session-id': 'session-post-promo' },
+        },
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'payment-pre-promo' },
+            { typeId: 'payment' as const, id: 'payment-post-promo' },
+          ],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([newPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'payment-post-promo' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'payment-pre-promo') return oldPayment
+        if (id === 'payment-post-promo') return newPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cart.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-post-promo',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      const removed = updateBodies.flatMap((b) =>
+        b.actions.filter((a) => a.action === 'removePayment').map((a) => a.payment?.id),
+      )
+      expect(removed).toStrictEqual(['payment-pre-promo'])
+    })
+
+    test('integration: multi-tab race (sequential simulation) — final cart has exactly one Briqpay Payment', async () => {
+      // Simulates two sequential createPayment calls with different session ids.
+      // After the second call, the cart should reflect only the most recent
+      // Payment because the first one had no Pending/Success Auth.
+      const tab1Payment = buildBriqpayPayment({
+        id: 'payment-tab1',
+        interfaceId: 'session-tab1',
+        authorizationStates: [],
+      })
+      const tab2Payment = buildBriqpayPayment({
+        id: 'payment-tab2',
+        interfaceId: 'session-tab2',
+        authorizationStates: [],
+      })
+
+      const cartAfterTab1 = {
+        ...cartWithBriqpaySession(),
+        custom: {
+          type: { typeId: 'type' as const, id: 'type-id' },
+          fields: { 'briqpay-session-id': 'session-tab2' },
+        },
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'payment-tab1' },
+            { typeId: 'payment' as const, id: 'payment-tab2' },
+          ],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cartAfterTab1)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([tab2Payment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cartAfterTab1)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'payment-tab2' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'payment-tab1') return tab1Payment
+        if (id === 'payment-tab2') return tab2Payment
+        throw new Error(`unexpected id ${id}`)
+      })
+
+      const cartPost = setupCartUpdateMock()
+
+      await briqpayPaymentService.createPayment({
+        cartId: cartAfterTab1.id,
+        data: {
+          paymentMethod: { type: PaymentMethodType.BRIQPAY },
+          briqpaySessionId: 'session-tab2',
+          paymentOutcome: PaymentOutcome.APPROVED,
+        },
+      })
+
+      const updateBodies = cartPost.mock.calls.map(([args]) => args.body) as CartUpdateBody[]
+      const removed = updateBodies.flatMap((b) =>
+        b.actions.filter((a) => a.action === 'removePayment').map((a) => a.payment?.id),
+      )
+      expect(removed).toStrictEqual(['payment-tab1'])
+    })
+  })
+
   describe('handleTransaction', () => {
     const cartWithBriqpaySession = () => ({
       ...mockGetCartResult(),
@@ -1121,6 +2422,218 @@ describe('briqpay-payment.service', () => {
           state: 'Failed',
         },
       })
+    })
+
+    test('reuses an existing CT Payment for the same Briqpay session and never creates a new one', async () => {
+      const existingPaymentId = 'existing-handletx-payment'
+      const cart: Cart = {
+        ...cartWithBriqpaySession(),
+        paymentInfo: {
+          payments: [{ typeId: 'payment', id: existingPaymentId }],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId')
+        .mockResolvedValue([{ ...mockGetPaymentResult, id: existingPaymentId, interfaceId: 'briqpay-session-123' }])
+      jest.spyOn(Briqpay, 'getSession').mockResolvedValue(
+        createMockBriqpaySession({
+          sessionId: 'briqpay-session-123',
+          orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        }),
+      )
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment')
+      const addPaymentSpy = jest.spyOn(paymentSDK.ctCartService, 'addPayment')
+      const updateSpy = jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: existingPaymentId })
+
+      const result = await briqpayPaymentService.handleTransaction({
+        cartId: cart.id,
+        paymentInterface: '42251cfc-0660-4ab3-80f6-c32829aa7a8b',
+        amount: { centAmount: 1000, currencyCode: 'EUR' },
+      })
+
+      expect(result).toStrictEqual({
+        transactionStatus: { errors: [], state: 'Pending' },
+      })
+      expect(createSpy).not.toHaveBeenCalled()
+      expect(addPaymentSpy).not.toHaveBeenCalled()
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: existingPaymentId,
+          pspReference: 'briqpay-session-123',
+          transaction: expect.objectContaining({
+            type: 'Authorization',
+            interactionId: 'briqpay-session-123',
+          }),
+        }),
+      )
+    })
+
+    test('creates a new Payment with interfaceId set when no existing Payment is found', async () => {
+      const cart = cartWithBriqpaySession()
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(Briqpay, 'getSession').mockResolvedValue(
+        createMockBriqpaySession({
+          sessionId: 'briqpay-session-123',
+          orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        }),
+      )
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValue(mockGetPaymentResult)
+      const addPaymentSpy = jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+
+      await briqpayPaymentService.handleTransaction({
+        cartId: cart.id,
+        paymentInterface: '42251cfc-0660-4ab3-80f6-c32829aa7a8b',
+        amount: { centAmount: 1000, currencyCode: 'EUR' },
+      })
+
+      expect(createSpy).toHaveBeenCalledTimes(1)
+      expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({ interfaceId: 'briqpay-session-123' }))
+      expect(addPaymentSpy).toHaveBeenCalledTimes(1)
+    })
+
+    test('sets a deterministic Payment.key on creation', async () => {
+      const cart = cartWithBriqpaySession()
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(Briqpay, 'getSession').mockResolvedValue(
+        createMockBriqpaySession({
+          sessionId: 'briqpay-session-123',
+          orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        }),
+      )
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValue(mockGetPaymentResult)
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+
+      await briqpayPaymentService.handleTransaction({
+        cartId: cart.id,
+        paymentInterface: '42251cfc-0660-4ab3-80f6-c32829aa7a8b',
+        amount: { centAmount: 1000, currencyCode: 'EUR' },
+      })
+
+      expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({ key: 'briqpay-briqpay-session-123' }))
+    })
+
+    test('recovers from a concurrent DuplicateField on key by fetching the winner via apiRoot.payments().withKey()', async () => {
+      const cart = cartWithBriqpaySession()
+      const winnerPaymentId = 'handletx-winner'
+      const winnerPayment: Payment = {
+        ...mockGetPaymentResult,
+        id: winnerPaymentId,
+        interfaceId: 'briqpay-session-123',
+        key: 'briqpay-briqpay-session-123',
+      }
+      const duplicateKeyError = Object.assign(new Error('Duplicate field key'), {
+        httpErrorStatus: 400,
+        code: 'DuplicateField',
+        fields: [{ code: 'DuplicateField', field: 'key' }],
+      })
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(Briqpay, 'getSession').mockResolvedValue(
+        createMockBriqpaySession({
+          sessionId: 'briqpay-session-123',
+          orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        }),
+      )
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockRejectedValue(duplicateKeyError)
+      const addPaymentSpy = jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      const updateSpy = jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: winnerPaymentId })
+
+      const executeMock = jest.fn<any>().mockResolvedValue({ body: winnerPayment })
+      ;(apiRoot.payments as jest.Mock<any>).mockReturnValue({
+        withKey: jest.fn<any>().mockReturnValue({
+          get: jest.fn<any>().mockReturnValue({ execute: executeMock }),
+        }),
+      })
+
+      const result = await briqpayPaymentService.handleTransaction({
+        cartId: cart.id,
+        paymentInterface: '42251cfc-0660-4ab3-80f6-c32829aa7a8b',
+        amount: { centAmount: 1000, currencyCode: 'EUR' },
+      })
+
+      expect(result).toStrictEqual({
+        transactionStatus: { errors: [], state: 'Pending' },
+      })
+      expect(createSpy).toHaveBeenCalledTimes(1)
+      expect(executeMock).toHaveBeenCalled()
+      expect(addPaymentSpy).toHaveBeenCalledWith(expect.objectContaining({ paymentId: winnerPaymentId }))
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: winnerPaymentId,
+          pspReference: 'briqpay-session-123',
+        }),
+      )
+    })
+
+    test('detaches stale Briqpay Payments after handleTransaction completes', async () => {
+      const oldPayment = buildBriqpayPayment({ id: 'payment-old', interfaceId: 'session-A', authorizationStates: [] })
+      const newPayment = buildBriqpayPayment({ id: 'payment-new', interfaceId: 'session-B', authorizationStates: [] })
+      const cart = {
+        ...mockGetCartResult(),
+        custom: {
+          type: { typeId: 'type' as const, id: 'type-id' },
+          fields: { 'briqpay-session-id': 'session-B' },
+        },
+        paymentInfo: {
+          payments: [
+            { typeId: 'payment' as const, id: 'payment-old' },
+            { typeId: 'payment' as const, id: 'payment-new' },
+          ],
+        },
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([newPayment])
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue({ ...mockUpdatePaymentResult, id: 'payment-new' })
+      jest.spyOn(paymentSDK.ctPaymentService, 'getPayment').mockImplementation(async ({ id }) => {
+        if (id === 'payment-old') return oldPayment
+        if (id === 'payment-new') return newPayment
+        throw new Error(`unexpected id ${id}`)
+      })
+      jest
+        .spyOn(Briqpay, 'getSession')
+        .mockResolvedValue(
+          createMockBriqpaySession({ sessionId: 'session-B', orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED }),
+        )
+
+      // Capture the cart-update calls — note: must use the local pattern from the
+      // detachStaleBriqpayPayments describe block, since the handleTransaction
+      // describe doesn't have its own setupCartUpdateMock helper.
+      type CartUpdateBody = { version: number; actions: Array<{ action: string; payment?: { id: string } }> }
+      const postMock = jest.fn<any>().mockReturnValue({
+        execute: jest.fn<any>().mockResolvedValue({ body: { version: 2 } }),
+      })
+      ;(apiRoot.carts as jest.Mock<any>).mockReturnValue({
+        withId: jest.fn<any>().mockReturnValue({ post: postMock }),
+      })
+
+      const transactionDraft: TransactionDraftDTO = {
+        cartId: cart.id,
+        paymentInterface: 'Briqpay',
+        amount: { centAmount: 119000, currencyCode: 'EUR' },
+      } as TransactionDraftDTO
+
+      await briqpayPaymentService.handleTransaction(transactionDraft)
+
+      const updateBodies = postMock.mock.calls.map(([args]: [{ body: CartUpdateBody }]) => args.body)
+      const removed = updateBodies.flatMap((b: CartUpdateBody) =>
+        b.actions.filter((a) => a.action === 'removePayment').map((a) => a.payment?.id),
+      )
+      expect(removed).toContain('payment-old')
+      expect(removed).not.toContain('payment-new')
     })
   })
 

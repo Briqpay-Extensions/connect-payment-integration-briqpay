@@ -31,9 +31,9 @@ The processor fetches cart and payment details from commercetools Composable Com
 | ----------------------------------- | ------------- |
 | Node.js                             | ES2022 target |
 | TypeScript                          | 5.9.3         |
-| Fastify                             | 5.6.2         |
-| @commercetools/connect-payments-sdk | 0.24.0        |
-| @commercetools/platform-sdk         | ^8.14.0       |
+| Fastify                             | ^5.8.5        |
+| @commercetools/connect-payments-sdk | 0.27.2        |
+| @commercetools/platform-sdk         | ^8.23.0       |
 | Jest                                | 30.2.0        |
 
 ## Project Structure
@@ -54,18 +54,22 @@ processor/
 │   │   └── operations/            # Operation DTOs (config, status, transactions, etc.)
 │   ├── libs/
 │   │   ├── briqpay/
-│   │   │   └── BriqpayService.ts  # Briqpay API client
+│   │   │   ├── BriqpayService.ts        # Briqpay API client
+│   │   │   └── webhook-verification.ts  # HMAC-SHA256 webhook signature verification
 │   │   ├── commercetools/         # commercetools API utilities
 │   │   ├── errors/                # Custom error classes
 │   │   ├── fastify/               # Fastify plugins and middleware
-│   │   └── logger/                # Application logger setup
+│   │   ├── logger/                # Application logger setup
+│   │   └── utils/                 # Shared utilities (e.g., CORS origin matching)
 │   ├── routes/
 │   │   ├── briqpay-payment.route.ts  # Briqpay-specific routes
 │   │   └── operation.route.ts        # Standard operation routes
 │   ├── server/
 │   │   ├── app.ts                 # Application services initialization
 │   │   ├── server.ts              # Fastify server setup
-│   │   └── plugins/               # Fastify plugins for routes
+│   │   └── plugins/
+│   │       ├── briqpay-payment.plugin.ts # Briqpay payment route plugin
+│   │       └── operation.plugin.ts       # Operation route plugin
 │   ├── services/
 │   │   ├── abstract-payment.service.ts   # Base payment service
 │   │   ├── briqpay-payment.service.ts    # Briqpay payment service implementation
@@ -76,6 +80,7 @@ processor/
 │   │   │   ├── session-data.service.ts   # Session data management
 │   │   │   └── utils.ts                  # Utility functions
 │   │   └── types/                 # Service type definitions
+│   ├── global.d.ts                # Global TypeScript declarations
 │   ├── main.ts                    # Application entry point
 │   └── payment-sdk.ts             # Payment SDK initialization
 ├── test/                          # Test files
@@ -175,6 +180,7 @@ Copy `.env.template` to `.env` and configure the following variables:
 | `BRIQPAY_TRANSACTION_DATA_PSP_ID_KEY`                   | Key for transaction PSP ID field                                                                                                                                                                                      | `briqpay-transaction-data-psp-id`                   |
 | `BRIQPAY_TRANSACTION_DATA_PSP_DISPLAY_NAME_KEY`         | Key for transaction PSP display name field                                                                                                                                                                            | `briqpay-transaction-data-psp-display-name`         |
 | `BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY`     | Key for transaction PSP integration name field                                                                                                                                                                        | `briqpay-transaction-data-psp-integration-name`     |
+| `BRIQPAY_AUTOCAPTURED_KEY`                              | Key for Boolean field indicating whether the order was auto-captured                                                                                                                                                  | `briqpay-autocaptured`                              |
 | `BRIQPAY_WEBHOOK_SECRET`                                | Briqpay webhook signing secret (Mandatory)                                                                                                                                                                            | -                                                   |
 | `ALLOWED_ORIGINS`                                       | Comma-separated list of allowed CORS origins. Supports wildcard patterns (e.g. `https://*.preview.example.com`).                                                                                                      | -                                                   |
 | `BRIQPAY_EXTERNAL_WEBHOOK_URL`                          | Optional external webhook URL to receive `order_status`, `capture_status`, and `refund_status` events from Briqpay. When set, additional hooks are registered alongside the internal connector hooks. Must use HTTPS. | `https://your-service.com/briqpay-events`           |
@@ -198,7 +204,7 @@ The API client must have the following scopes:
 
 - **Manage**:
   - `manage_orders` - Also grants permission to manage Carts (see [Cart and Order Management](https://docs.commercetools.com/api/scopes#cart-and-order-management))
-    , - `manage_sessions` (Manage Checkout sessions)
+  - `manage_sessions` (Manage Checkout sessions)
   - `manage_types`
   - `manage_payments`
   - `manage_checkout_transactions`
@@ -337,6 +343,7 @@ The default Briqpay fields (configurable via environment variables) are:
 - `briqpay-transaction-data-psp-id` - PSP ID
 - `briqpay-transaction-data-psp-display-name` - PSP display name
 - `briqpay-transaction-data-psp-integration-name` - PSP integration name
+- `briqpay-autocaptured` - Boolean flag indicating whether the order was auto-captured
 
 ### Pre-Undeploy Script
 
@@ -379,7 +386,7 @@ A `docker-compose.yaml` is provided for running a JWT mock server during local d
 ```yaml
 services:
   jwt-server:
-    image: node:24.11.1-alpine
+    image: node:24.13-alpine
     command: npx --package jwt-mock-server -y start
     ports:
       - 9002:9000
@@ -422,10 +429,12 @@ The processor reports support for:
 
 ```json
 {
-  "dropins": [{ "type": "embedded" }],
+  "dropins": [{ "type": "briqpay" }],
   "components": []
 }
 ```
+
+> **Note**: The dropin `type` is `"briqpay"` to match the Payment Integration type string set by the connector in commercetools Checkout. The enabler also accepts `"embedded"` as a backward-compatible alias for existing integrations.
 
 ## Security
 

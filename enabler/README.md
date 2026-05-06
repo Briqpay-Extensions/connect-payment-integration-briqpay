@@ -30,7 +30,7 @@ The enabler is designed to be loaded by the commercetools Checkout or directly i
 | Dependency        | Version |
 | ----------------- | ------- |
 | TypeScript        | 5.9.3   |
-| Vite              | 7.2.4   |
+| Vite              | ^7.3.2  |
 | Sass              | 1.94.2  |
 | Jest              | 30.2.0  |
 | @sinclair/typebox | 0.34.41 |
@@ -46,7 +46,7 @@ enabler/
 │   │   ├── base.ts                       # Base component class
 │   │   └── payment-methods/
 │   │       └── briqpay/
-│   │           └── briqpay.ts            # Briqpay payment component (currently unused)
+│   │           └── briqpay.ts            # Briqpay payment component (registered for createComponentBuilder('briqpay'))
 │   ├── dropin/
 │   │   └── dropin-embedded.ts            # Embedded drop-in component
 │   ├── dtos/
@@ -170,7 +170,9 @@ const enabler = await Enabler.create({
 });
 
 // Create and mount the drop-in
-const builder = await enabler.createDropinBuilder("embedded");
+// "briqpay" matches the Payment Integration type set by the connector in commercetools Checkout.
+// "embedded" is also accepted as a backward-compatible alias.
+const builder = await enabler.createDropinBuilder("briqpay");
 const dropin = builder.build({
   onDropinReady: async () => {
     console.log("Briqpay widget is ready");
@@ -215,7 +217,7 @@ The main enabler class exported as `Enabler`.
 | Method                                  | Returns                            | Description                                                      |
 | --------------------------------------- | ---------------------------------- | ---------------------------------------------------------------- |
 | `create(options: EnablerOptions)`       | `Promise<BriqpayPaymentEnabler>`   | Static factory method to create an enabler instance              |
-| `createDropinBuilder(type: DropinType)` | `Promise<PaymentDropinBuilder>`    | Creates a drop-in builder (supports `'embedded'`)                |
+| `createDropinBuilder(type: DropinType)` | `Promise<PaymentDropinBuilder>`    | Creates a drop-in builder (supports `'briqpay'` and the backward-compatible `'embedded'` alias) |
 | `createComponentBuilder(type: string)`  | `Promise<PaymentComponentBuilder>` | Creates a component builder (currently no components registered) |
 
 ### BriqpaySdk

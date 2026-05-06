@@ -101,6 +101,7 @@ client_credentials&scope=manage_orders:{projectKey} view_states:{projectKey} vie
    - `BRIQPAY_TRANSACTION_DATA_PSP_ID_KEY` - Default: `briqpay-transaction-data-psp-id`
    - `BRIQPAY_TRANSACTION_DATA_PSP_DISPLAY_NAME_KEY` - Default: `briqpay-transaction-data-psp-display-name`
    - `BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY` - Default: `briqpay-transaction-data-psp-integration-name`
+   - `BRIQPAY_AUTOCAPTURED_KEY` - Default: `briqpay-autocaptured` (Boolean field on the order indicating whether the order was auto-captured)
 
    > **Note**: The connector dynamically extends existing custom types for the `order` resource type instead of always creating separate types. If field name conflicts exist, Briqpay fields are prefixed with `briqpay-` to avoid data loss.
 
@@ -458,10 +459,15 @@ npx --package jwt-mock-server -y start
 │   ├── src
 │   │   ├── components/
 │   │   ├── dropin/
+│   │   ├── dtos/
 │   │   ├── payment-enabler/
+│   │   ├── style/
 │   │   ├── briqpay-sdk.ts
 │   │   └── main.ts
+│   ├── dev-utils/
 │   ├── test
+│   ├── index.html
+│   ├── vite.config.ts
 │   └── package.json
 ├── processor
 │   ├── src
@@ -473,6 +479,7 @@ npx --package jwt-mock-server -y start
 │   │   ├── routes/
 │   │   ├── server/
 │   │   ├── services/
+│   │   ├── global.d.ts
 │   │   ├── main.ts
 │   │   └── payment-sdk.ts
 │   ├── test
@@ -585,8 +592,15 @@ deployAs:
           description: Key of CustomType field to store transaction PSP integration name
           required: false
           default: briqpay-transaction-data-psp-integration-name
+        - key: BRIQPAY_AUTOCAPTURED_KEY
+          description: Key of CustomType field to store whether the order was auto-captured
+          required: false
+          default: briqpay-autocaptured
         - key: ALLOWED_ORIGINS
           description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com).
+          required: false
+        - key: BRIQPAY_EXTERNAL_WEBHOOK_URL
+          description: Optional external webhook URL to receive order_status, capture_status, and refund_status events from Briqpay. When set, additional hooks are registered alongside the internal connector hooks. Must use HTTPS.
           required: false
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
@@ -640,7 +654,9 @@ const enabler = await Enabler.create({
 });
 
 // Create the drop-in builder
-const builder = await enabler.createDropinBuilder("embedded");
+// Use "briqpay" to match the Payment Integration type set by the connector.
+// "embedded" is also accepted as a backward-compatible alias.
+const builder = await enabler.createDropinBuilder("briqpay");
 
 // Build and mount the payment component
 const dropin = builder.build({
@@ -684,9 +700,9 @@ curl --location 'http://localhost:8080/payments' \
   --header 'X-Session-Id: your-checkout-session-id' \
   --data '{
     "paymentMethod": {
-      "type": "invoice"
+      "type": "briqpay"
     },
-    "paymentOutcome": "PENDING"
+    "paymentOutcome": "pending"
   }'
 
 # Health check
@@ -701,13 +717,13 @@ curl --location 'http://localhost:8080/operations/status' \
 ```json
 {
   "@sinclair/typebox": "0.34.41", // Runtime type validation
-  "serve": "14.2.5" // Static file serving
+  "serve": "14.2.6" // Static file serving
 }
 ```
 
 **Dev Dependencies**:
 
-- Vite 7.2.4 - Build tool and dev server
+- Vite ^7.3.2 - Build tool and dev server
 - TypeScript 5.9.3 - Type safety
 - Jest 30.2.0 - Testing framework
 - ESLint 9.39.1 - Code linting
@@ -717,11 +733,11 @@ curl --location 'http://localhost:8080/operations/status' \
 
 ```json
 {
-  "@commercetools/connect-payments-sdk": "0.24.0", // commercetools Connect SDK
-  "@commercetools/platform-sdk": "^8.14.0", // commercetools Platform SDK
-  "@commercetools/ts-client": "^3.4.1", // commercetools TypeScript client
-  "@commercetools-backend/loggers": "24.11.0", // Logging utilities
-  "fastify": "5.6.2", // Web framework
+  "@commercetools/connect-payments-sdk": "0.27.2", // commercetools Connect SDK
+  "@commercetools/platform-sdk": "^8.23.0", // commercetools Platform SDK
+  "@commercetools/ts-client": "^4.8.0", // commercetools TypeScript client
+  "@commercetools-backend/loggers": "25.2.0", // Logging utilities
+  "fastify": "^5.8.5", // Web framework
   "@sinclair/typebox": "0.34.41", // Runtime type validation
   "dotenv": "17.2.3" // Environment variable management
 }
@@ -731,7 +747,7 @@ curl --location 'http://localhost:8080/operations/status' \
 
 - TypeScript 5.9.3 - Type safety
 - Jest 30.2.0 - Testing framework with MSW for mocking
-- Nodemon 3.1.11 - Development auto-restart
+- Nodemon 3.1.13 - Development auto-restart
 - Prettier 3.6.2 - Code formatting
 
 ## 🔧 Configuration
@@ -834,7 +850,7 @@ services:
 
 **Key Features**:
 
-- Node.js 24 Alpine containers (node:24.11.1-alpine)
+- Node.js 24 Alpine containers (node:24.13-alpine)
 - Volume mounting for development
 - Proper service dependencies
 - Environment variable injection
@@ -1028,8 +1044,8 @@ const enabler = await Enabler.create({
   onError: (error) => console.error(error),
 });
 
-// Create and mount drop-in
-const builder = await enabler.createDropinBuilder("embedded");
+// Create and mount drop-in (use "briqpay"; "embedded" is a backward-compatible alias)
+const builder = await enabler.createDropinBuilder("briqpay");
 const dropin = builder.build({ onDropinReady: async () => {} });
 dropin.mount("#payment-container");
 ```
@@ -1220,6 +1236,7 @@ export async function createBriqpayCustomType(key: string) {
   // - briqpay-transaction-data-psp-id: PSP ID
   // - briqpay-transaction-data-psp-display-name: PSP display name
   // - briqpay-transaction-data-psp-integration-name: PSP integration name
+  // - briqpay-autocaptured: Boolean flag indicating whether the order was auto-captured
 }
 ```
 
