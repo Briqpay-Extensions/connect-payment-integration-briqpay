@@ -688,9 +688,8 @@ class BriqpayService {
     appLogger.info(
       {
         references: briqpayCreateSession.references,
-        requestBody: JSON.stringify(briqpayCreateSession, null, 2),
       },
-      'Final Briqpay session request body',
+      'Final Briqpay session request prepared',
     )
 
     const response = await fetch(`${this.baseUrl}/session`, {
@@ -716,7 +715,7 @@ class BriqpayService {
     }
 
     const responseData = await response.json()
-    appLogger.info({ responseData: JSON.stringify(responseData, null, 2) }, 'Briqpay create session response:')
+    appLogger.info({ sessionId: responseData?.sessionId }, 'Briqpay create session response received')
 
     // Ensure the response has the expected structure
     if (!responseData || !responseData.sessionId) {

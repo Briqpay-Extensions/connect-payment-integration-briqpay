@@ -78,7 +78,6 @@ export class BriqpaySessionDataService {
         transactionCount: sessionData.data?.transactions?.length ?? 0,
         hasData: !!sessionData.data,
         dataKeys: sessionData.data ? Object.keys(sessionData.data) : [],
-        rawSessionData: JSON.stringify(sessionData),
       },
       'Successfully fetched full Briqpay session data',
     )
