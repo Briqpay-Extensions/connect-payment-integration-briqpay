@@ -23,6 +23,7 @@ The processor fetches cart and payment details from commercetools Composable Com
 - **Payment Operations**: Capture, refund, cancel, and reverse payments
 - **Webhook Handling**: Process Briqpay notifications for order status, capture status, and refund status
 - **Custom Types**: Dynamic extension of commercetools custom types for storing Briqpay session data on orders (extends existing types or creates new ones)
+- **Future Order Number Persistence**: Persists the intended `futureOrderNumber` on the cart at first session creation (write-once) so merchant backends can reuse it across CT Session rotations — keeps Briqpay's `reference1` aligned with the eventual `Order.orderNumber` even when the customer returns days later
 - **Health Checks**: Status endpoint with health checks for both commercetools and Briqpay APIs
 
 ## Tech Stack
@@ -181,6 +182,7 @@ Copy `.env.template` to `.env` and configure the following variables:
 | `BRIQPAY_TRANSACTION_DATA_PSP_DISPLAY_NAME_KEY`         | Key for transaction PSP display name field                                                                                                                                                                            | `briqpay-transaction-data-psp-display-name`         |
 | `BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY`     | Key for transaction PSP integration name field                                                                                                                                                                        | `briqpay-transaction-data-psp-integration-name`     |
 | `BRIQPAY_AUTOCAPTURED_KEY`                              | Key for Boolean field indicating whether the order was auto-captured                                                                                                                                                  | `briqpay-autocaptured`                              |
+| `BRIQPAY_FUTURE_ORDER_NUMBER_KEY`                       | Cart custom field name where the connector persists the merchant's intended order number on first Briqpay session creation. Read back by the merchant backend on subsequent checkout entries to keep Briqpay `reference1` aligned with the eventual `Order.orderNumber`. | `briqpay-future-order-number`                      |
 | `BRIQPAY_WEBHOOK_SECRET`                                | Briqpay webhook signing secret (Mandatory)                                                                                                                                                                            | -                                                   |
 | `ALLOWED_ORIGINS`                                       | Comma-separated list of allowed CORS origins. Supports wildcard patterns (e.g. `https://*.preview.example.com`).                                                                                                      | -                                                   |
 | `BRIQPAY_EXTERNAL_WEBHOOK_URL`                          | Optional external webhook URL to receive `order_status`, `capture_status`, and `refund_status` events from Briqpay. When set, additional hooks are registered alongside the internal connector hooks. Must use HTTPS. | `https://your-service.com/briqpay-events`           |
@@ -344,6 +346,7 @@ The default Briqpay fields (configurable via environment variables) are:
 - `briqpay-transaction-data-psp-display-name` - PSP display name
 - `briqpay-transaction-data-psp-integration-name` - PSP integration name
 - `briqpay-autocaptured` - Boolean flag indicating whether the order was auto-captured
+- `briqpay-future-order-number` - Order number the merchant intends for this cart; persisted by the connector write-once on first session creation. The merchant backend should read this back on subsequent checkout entries instead of regenerating, so Briqpay `reference1` matches the eventual `Order.orderNumber` even after the customer returns from a multi-day absence. See the top-level README's "Future Order Number Persistence" section for the merchant-side read-back pattern.
 
 ### Pre-Undeploy Script
 

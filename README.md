@@ -22,6 +22,7 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
 - Real-time payment session synchronization between Briqpay and commercetools
 - Webhook support for asynchronous payment status updates (capture, refund, cancel)
 - Dynamic custom type extension for storing Briqpay session data on orders (extends existing order types or creates new ones)
+- Persistence of the merchant's intended `futureOrderNumber` on the cart so it stays stable across CT Session rotations (see [Future Order Number Persistence](#future-order-number-persistence))
 - Supports payment operations: authorize, capture, refund, cancel, and reverse
 - Includes local development utilities with Docker Compose setup
 - Jest testing framework with MSW for API mocking
@@ -102,6 +103,7 @@ client_credentials&scope=manage_orders:{projectKey} view_states:{projectKey} vie
    - `BRIQPAY_TRANSACTION_DATA_PSP_DISPLAY_NAME_KEY` - Default: `briqpay-transaction-data-psp-display-name`
    - `BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY` - Default: `briqpay-transaction-data-psp-integration-name`
    - `BRIQPAY_AUTOCAPTURED_KEY` - Default: `briqpay-autocaptured` (Boolean field on the order indicating whether the order was auto-captured)
+   - `BRIQPAY_FUTURE_ORDER_NUMBER_KEY` - Default: `briqpay-future-order-number` (cart custom field where the connector persists the intended order number on first Briqpay session creation, so the merchant backend can read it back on subsequent checkout entries — see [Future Order Number Persistence](#future-order-number-persistence))
 
    > **Note**: The connector dynamically extends existing custom types for the `order` resource type instead of always creating separate types. If field name conflicts exist, Briqpay fields are prefixed with `briqpay-` to avoid data loss.
 
@@ -372,6 +374,8 @@ flowchart TD
 
 - The connector stores the Briqpay session ID as a custom field on the commercetools **cart** during checkout, which is then transferred to the order. The custom type is specified by `BRIQPAY_SESSION_CUSTOM_TYPE_KEY`.
 
+- The connector also persists the intended order number on the cart as a `briqpay-future-order-number` custom field at first Briqpay session creation. The merchant backend is expected to read this value back on subsequent checkout entries (e.g. when a customer returns days later) and reuse it when stamping `metadata.futureOrderNumber` on the new CT Session — without this read-back, Briqpay's `reference1` and the eventual `Order.orderNumber` will diverge. See [Future Order Number Persistence](#future-order-number-persistence) for details and integration code.
+
 - Webhook notifications from Briqpay are processed asynchronously. Ensure your webhook endpoint is publicly accessible and properly configured in the Briqpay dashboard.
 
 - The connector supports the following payment operations through the `/operations/payment-intents/:id` endpoint:
@@ -381,6 +385,58 @@ flowchart TD
   - `reversePayment` - Reverse a payment
 
 - For local development, use the provided Docker Compose setup which includes a mock JWT server for authentication.
+
+## Future Order Number Persistence
+
+### The problem
+
+`metadata.futureOrderNumber` lives on the ephemeral commercetools **CT Session**, not on the cart. CT Sessions expire (typically within hours). When a customer leaves checkout and returns days later, the merchant backend usually mints a **new** `futureOrderNumber` when creating CT Session #2 — because there is nowhere persistent on the cart to look it up.
+
+That is what produces the silent divergence:
+
+- Briqpay session was created against CT Session #1 with `reference1 = X`
+- The customer's eventual `Order.orderNumber` is set from CT Session #2's metadata = `Y`
+- `Briqpay reference1 (X)  ≠  Order.orderNumber (Y)` → merchant lookups by orderNumber fail to find the order
+
+### How the connector helps
+
+On the very first `/config` call (when the Briqpay session is created), the connector writes the value it received in `metadata.futureOrderNumber` to a **cart custom field** called `briqpay-future-order-number` (configurable via `BRIQPAY_FUTURE_ORDER_NUMBER_KEY`). The write is **once-only** — the connector never overwrites an existing value, so the original number captured on day 1 stays canonical for the cart's entire lifetime.
+
+### What the merchant backend must do
+
+Before generating a new `futureOrderNumber` for the CT Session, fetch the cart and check `cart.custom.fields["briqpay-future-order-number"]`. If it's set, reuse that value instead of minting a fresh one. Without this read-back the connector's persistence is dormant — it writes the field, but nothing reuses it.
+
+Reference implementation (matches the demo's `commerce-tools-frontend-demo/src/api/controllers/v1/checkout.ts`):
+
+```ts
+// Fetch the cart from commercetools before creating the CT Session
+const { data: cart } = await axios.get(
+  `${CTP_API_URL}/${CTP_PROJECT_KEY}/carts/${cartId}`,
+  { headers: { Authorization: `Bearer ${accessToken}` } },
+);
+
+// Reuse the persisted value if present; otherwise mint a fresh one
+const persisted = cart.custom?.fields?.["briqpay-future-order-number"];
+const futureOrderNumber = persisted ?? generateOrderNumber();
+
+// Stamp it into the CT Session metadata
+await createCTSession({
+  cart: { cartRef: { id: cartId } },
+  metadata: { applicationKey, futureOrderNumber },
+});
+```
+
+### End-to-end invariant when wired correctly
+
+For any cart that completes a purchase, the following three values are guaranteed identical:
+
+| Source                                            | Field                                              |
+| ------------------------------------------------- | -------------------------------------------------- |
+| commercetools Cart                                | `custom.fields["briqpay-future-order-number"]`     |
+| commercetools auto-created Order                  | `orderNumber`                                      |
+| Briqpay session                                   | `references.reference1`                            |
+
+This holds regardless of how many CT Sessions are minted against the same cart or how long the customer takes to return.
 
 ## 🚀 Quick Start
 
@@ -596,6 +652,10 @@ deployAs:
           description: Key of CustomType field to store whether the order was auto-captured
           required: false
           default: briqpay-autocaptured
+        - key: BRIQPAY_FUTURE_ORDER_NUMBER_KEY
+          description: Key of CustomType field on the cart that persists the intended order number across checkout entries. Read back by the merchant backend on subsequent checkouts so Briqpay reference1 stays aligned with the eventual Order.orderNumber.
+          required: false
+          default: briqpay-future-order-number
         - key: ALLOWED_ORIGINS
           description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com).
           required: false
@@ -631,6 +691,7 @@ deployAs:
 | `BRIQPAY_BASE_URL`                | Briqpay API URL                     | Yes      | `https://playground-api.briqpay.com/v3`                                   |
 | `BRIQPAY_TERMS_URL`               | URL to terms page                   | Yes      | -                                                                         |
 | `BRIQPAY_SESSION_CUSTOM_TYPE_KEY` | Custom type key for session storage | No       | `briqpay-session-id`                                                      |
+| `BRIQPAY_FUTURE_ORDER_NUMBER_KEY` | Cart custom field name for the persisted future order number (see [Future Order Number Persistence](#future-order-number-persistence)) | No       | `briqpay-future-order-number`                                            |
 
 ### Enabler Usage
 
@@ -1140,10 +1201,13 @@ class BriqpaySessionService {
     hostname: string,
   ): Promise<MediumBriqpayResponse>;
 
-  // Updates cart with Briqpay session ID custom field
-  async updateCartWithBriqpaySessionId(
+  // Persists Briqpay session metadata on the cart custom fields:
+  //  - briqpay-session-id: always kept in sync with the active Briqpay session
+  //  - briqpay-future-order-number: write-once on first session creation; never overwritten
+  async updateCartWithBriqpaySession(
     ctCart: Cart,
     briqpaySessionId: string,
+    futureOrderNumber?: string,
   ): Promise<void>;
 }
 ```
@@ -1154,6 +1218,7 @@ class BriqpaySessionService {
 - Custom Type key: configurable via `BRIQPAY_SESSION_CUSTOM_TYPE_KEY`
 - Compares cart with existing session to determine if update is needed
 - Enables session recovery across frontend/backend boundaries
+- Persists the intended order number (`briqpay-future-order-number`) write-once on first creation so the merchant backend can reuse it across CT Session rotations (see [Future Order Number Persistence](#future-order-number-persistence))
 
 #### BriqpayOperationService
 
@@ -1237,6 +1302,10 @@ export async function createBriqpayCustomType(key: string) {
   // - briqpay-transaction-data-psp-display-name: PSP display name
   // - briqpay-transaction-data-psp-integration-name: PSP integration name
   // - briqpay-autocaptured: Boolean flag indicating whether the order was auto-captured
+  // - briqpay-future-order-number: Order number the merchant intends for this cart;
+  //   written write-once on first Briqpay session creation so the merchant backend
+  //   can read it back on subsequent checkout entries (see "Future Order Number
+  //   Persistence" section).
 }
 ```
 

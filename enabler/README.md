@@ -145,6 +145,14 @@ Copy `.env.template` to `.env` and configure the following variables:
 
 > **Note**: These environment variables are only used for the development test page (`index.html`). In production, the enabler receives configuration from the commercetools Checkout or the integrating application.
 
+## CT Session Creation (Merchant Backend Responsibility)
+
+The enabler itself does not create commercetools Checkout sessions — the merchant backend does, and then hands the resulting `sessionId` to the enabler. When stamping `metadata.futureOrderNumber` on that CT Session, the merchant backend **must** check the cart's `briqpay-future-order-number` custom field first and reuse the value if it's already set. The processor writes that field on first Briqpay session creation specifically so it can be read back across CT Session rotations.
+
+Skipping this read-back is the canonical source of the `Briqpay reference1` ≠ `Order.orderNumber` divergence (e.g. a customer enters checkout on Day 1, leaves, and completes the purchase on Day 3 — the merchant backend mints a fresh order number on Day 3 while the Briqpay session still carries the Day 1 number).
+
+Reference implementation in `commerce-tools-frontend-demo/src/api/controllers/v1/checkout.ts`. See the top-level README's [Future Order Number Persistence](../README.md#future-order-number-persistence) section for the full rationale and code snippet.
+
 ## Usage
 
 ### Basic Integration
