@@ -96,8 +96,16 @@ export class BriqpayPaymentService extends AbstractPaymentService {
         throw new SessionError('Invalid Briqpay session response: missing sessionId')
       }
 
-      // Update the cart custom field if necessary
-      await this.sessionService.updateCartWithBriqpaySessionId(ctCart, briqpaySession.sessionId)
+      // Persist Briqpay session id + (write-once) futureOrderNumber on the cart so
+      // the merchant backend can read futureOrderNumber back on subsequent checkout
+      // entries instead of regenerating it. This keeps Briqpay reference1 aligned
+      // with the eventual Order.orderNumber even when the customer returns after the
+      // original CT Session has expired.
+      await this.sessionService.updateCartWithBriqpaySession(
+        ctCart,
+        briqpaySession.sessionId,
+        futureOrderNumber,
+      )
 
       return {
         clientKey: config.mockClientKey,

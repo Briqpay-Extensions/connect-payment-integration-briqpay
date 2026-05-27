@@ -5,6 +5,13 @@ export const briqpayCustomTypeKey = process.env.BRIQPAY_SESSION_CUSTOM_TYPE_KEY 
 // which controls the custom type key (not the field name).
 export const briqpaySessionIdFieldName = 'briqpay-session-id'
 
+// Field name for the order number the merchant intends for this cart. The connector
+// persists this on the cart at Briqpay-session creation so the merchant backend can
+// read it back on subsequent checkout entries and reuse it when stamping CT Session
+// metadata.futureOrderNumber — preventing the Briqpay reference1 ≠ Order.orderNumber
+// divergence that occurs when the merchant regenerates the number on every entry.
+export const briqpayFutureOrderNumberFieldName = 'briqpay-future-order-number'
+
 export const briqpaySessionIdCustomType = {
   name: briqpaySessionIdFieldName,
 }
@@ -22,6 +29,16 @@ export const briqpayFieldDefinitions: BriqpayFieldDefinition[] = [
   {
     name: briqpaySessionIdFieldName,
     label: 'Briqpay Session ID',
+    type: 'String',
+    required: false,
+  },
+
+  // Future order number — persisted by the connector at first session creation.
+  // Merchant backend should read this back on subsequent checkout entries instead
+  // of regenerating, to keep Briqpay reference1 in sync with Order.orderNumber.
+  {
+    name: briqpayFutureOrderNumberFieldName,
+    label: 'Briqpay Future Order Number',
     type: 'String',
     required: false,
   },

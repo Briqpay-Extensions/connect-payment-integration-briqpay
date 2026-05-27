@@ -8,19 +8,35 @@ import Briqpay from '../../libs/briqpay/BriqpayService'
 import { apiRoot } from '../../libs/commercetools/api-root'
 import { SessionError } from '../../libs/errors/briqpay-errors'
 import { getBriqpayTypeKey } from '../../connectors/actions'
-import { briqpaySessionIdFieldName } from '../../custom-types/custom-types'
+import { briqpayFutureOrderNumberFieldName, briqpaySessionIdFieldName } from '../../custom-types/custom-types'
 
 export class BriqpaySessionService {
   constructor(private readonly ctCartService: CommercetoolsCartService) {}
 
   /**
-   * Updates the cart with Briqpay session id
+   * Persists Briqpay session metadata on the cart custom fields.
    *
-   * @param ctCart - The cart to attach the briqpay session id to
+   * Writes:
+   *  - `briqpay-session-id`: always kept in sync with the active Briqpay session.
+   *  - `briqpay-future-order-number`: write-once at first session creation. The
+   *    merchant backend is expected to read this back on subsequent checkout
+   *    entries and reuse it when stamping CT Session metadata, so Briqpay's
+   *    `reference1` stays in sync with the eventual `Order.orderNumber`.
+   *
+   * Never overwrites an existing `briqpay-future-order-number` — the value
+   * captured on first checkout entry is the canonical one.
+   *
+   * @param ctCart - The cart to attach Briqpay session metadata to
    * @param briqpaySessionId - Briqpay session id
+   * @param futureOrderNumber - Order number the merchant intends for this cart (optional)
    */
-  public async updateCartWithBriqpaySessionId(ctCart: Cart, briqpaySessionId: string): Promise<void> {
+  public async updateCartWithBriqpaySession(
+    ctCart: Cart,
+    briqpaySessionId: string,
+    futureOrderNumber?: string,
+  ): Promise<void> {
     const existingBriqpaySessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName]
+    const existingFutureOrderNumber = ctCart.custom?.fields?.[briqpayFutureOrderNumberFieldName]
 
     let updatedCart = ctCart
     if (!ctCart.custom) {
@@ -49,26 +65,48 @@ export class BriqpaySessionService {
       updatedCart = cartResponse.body as unknown as Cart
     }
 
-    // Only update it if we have a new session
+    const actions: Array<{ action: 'setCustomField'; name: string; value: string }> = []
+
     if (existingBriqpaySessionId !== briqpaySessionId) {
-      appLogger.info({ briqpaySessionId }, 'Updating custom type field for cart')
-      await apiRoot
-        .carts()
-        .withId({ ID: ctCart.id })
-        .post({
-          body: {
-            version: updatedCart.version,
-            actions: [
-              {
-                action: 'setCustomField',
-                name: briqpaySessionIdFieldName,
-                value: briqpaySessionId,
-              },
-            ],
-          },
-        })
-        .execute()
+      actions.push({
+        action: 'setCustomField',
+        name: briqpaySessionIdFieldName,
+        value: briqpaySessionId,
+      })
     }
+
+    if (futureOrderNumber && !existingFutureOrderNumber) {
+      actions.push({
+        action: 'setCustomField',
+        name: briqpayFutureOrderNumberFieldName,
+        value: futureOrderNumber,
+      })
+    }
+
+    if (actions.length === 0) {
+      return
+    }
+
+    appLogger.info(
+      {
+        briqpaySessionId,
+        persistedFutureOrderNumber:
+          futureOrderNumber && !existingFutureOrderNumber ? futureOrderNumber : undefined,
+        actionNames: actions.map((a) => a.name),
+      },
+      'Updating cart custom fields with Briqpay session metadata',
+    )
+
+    await apiRoot
+      .carts()
+      .withId({ ID: ctCart.id })
+      .post({
+        body: {
+          version: updatedCart.version,
+          actions,
+        },
+      })
+      .execute()
   }
 
   public async createOrUpdateBriqpaySession(
