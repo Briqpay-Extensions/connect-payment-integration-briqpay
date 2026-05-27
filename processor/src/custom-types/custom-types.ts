@@ -10,7 +10,10 @@ export const briqpaySessionIdFieldName = 'briqpay-session-id'
 // read it back on subsequent checkout entries and reuse it when stamping CT Session
 // metadata.futureOrderNumber — preventing the Briqpay reference1 ≠ Order.orderNumber
 // divergence that occurs when the merchant regenerates the number on every entry.
-export const briqpayFutureOrderNumberFieldName = 'briqpay-future-order-number'
+// Overridable via BRIQPAY_FUTURE_ORDER_NUMBER_KEY for merchants who already use a
+// differently-named custom field for the same concept on their carts.
+export const briqpayFutureOrderNumberFieldName =
+  process.env.BRIQPAY_FUTURE_ORDER_NUMBER_KEY || 'briqpay-future-order-number'
 
 export const briqpaySessionIdCustomType = {
   name: briqpaySessionIdFieldName,
