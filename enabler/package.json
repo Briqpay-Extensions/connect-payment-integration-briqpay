@@ -33,11 +33,11 @@
     "ts-node": "^10.9.2",
     "typescript": "5.9.3",
     "typescript-eslint": "^8.47.0",
-    "vite": "^7.3.2",
+    "vite": "^7.3.5",
     "vite-plugin-css-injected-by-js": "3.5.2"
   },
   "overrides": {
-    "minimatch": "5.1.6",
+    "minimatch": "5.1.8",
     "glob": "11.1.0"
   }
 }

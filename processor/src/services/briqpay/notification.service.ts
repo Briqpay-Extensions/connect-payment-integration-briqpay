@@ -3,9 +3,6 @@ import {
   BRIQPAY_WEBHOOK_EVENT,
   BRIQPAY_WEBHOOK_STATUS,
   NotificationRequestSchemaDTO,
-  PaymentMethodType,
-  PaymentOutcome,
-  PaymentRequestSchemaDTO,
 } from '../../dtos/briqpay-payment.dto'
 import { MediumBriqpayResponse, ORDER_STATUS, TRANSACTION_STATUS } from '../types/briqpay-payment.type'
 import { appLogger } from '../../payment-sdk'
@@ -20,7 +17,6 @@ import {
   orderStatusToWebhookStatus,
   transactionStatusToWebhookStatus,
 } from './utils'
-import { BriqpayOperationService } from './operation.service'
 import { BriqpaySessionDataService } from './session-data.service'
 import { apiRoot } from '../../libs/commercetools/api-root'
 import { Order } from '@commercetools/platform-sdk'
@@ -33,10 +29,7 @@ import {
 export class BriqpayNotificationService {
   private readonly sessionDataService: BriqpaySessionDataService
 
-  constructor(
-    private readonly ctPaymentService: CommercetoolsPaymentService,
-    private readonly operationService: BriqpayOperationService,
-  ) {
+  constructor(private readonly ctPaymentService: CommercetoolsPaymentService) {
     this.sessionDataService = new BriqpaySessionDataService()
   }
 
@@ -661,16 +654,14 @@ export class BriqpayNotificationService {
       return
     }
 
-    // If no payment exists but a hook is sent, create a payment
+    // No CT Payment yet. Same rule as handleAuthorizationApproved: a webhook-created Payment
+    // lacks checkoutTransactionItemId and blocks automatic Order creation.
     if (!payment.length) {
-      await this.operationService.createPayment({
-        cartId,
-        data: {
-          paymentMethod: PaymentMethodType.BRIQPAY as unknown as PaymentRequestSchemaDTO['paymentMethod'],
-          briqpaySessionId,
-          paymentOutcome: PaymentOutcome.PENDING,
-        },
-      })
+      appLogger.warn(
+        { briqpaySessionId, cartId },
+        'ORDER_STATUS pending but no CT Payment exists yet - skipping (Payments are created by /payments, not webhooks)',
+      )
+
       return
     }
 
@@ -707,16 +698,15 @@ export class BriqpayNotificationService {
       (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Success',
     )
 
-    // If no payment exists but a hook is sent, create a payment
+    // No CT Payment yet. Never create one from a webhook: it has no Checkout session, so the
+    // Payment would lack checkoutTransactionItemId and block automatic Order creation. The
+    // session-authenticated /payments call owns Payment creation; a later hook re-applies status.
     if (!payment.length) {
-      await this.operationService.createPayment({
-        cartId,
-        data: {
-          paymentMethod: PaymentMethodType.BRIQPAY as unknown as PaymentRequestSchemaDTO['paymentMethod'],
-          briqpaySessionId,
-          paymentOutcome: PaymentOutcome.APPROVED,
-        },
-      })
+      appLogger.warn(
+        { briqpaySessionId, cartId },
+        'ORDER_STATUS approved but no CT Payment exists yet - skipping (Payments are created by /payments, not webhooks)',
+      )
+
       return
     }
 

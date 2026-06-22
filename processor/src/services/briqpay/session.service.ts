@@ -90,8 +90,7 @@ export class BriqpaySessionService {
     appLogger.info(
       {
         briqpaySessionId,
-        persistedFutureOrderNumber:
-          futureOrderNumber && !existingFutureOrderNumber ? futureOrderNumber : undefined,
+        persistedFutureOrderNumber: futureOrderNumber && !existingFutureOrderNumber ? futureOrderNumber : undefined,
         actionNames: actions.map((a) => a.name),
       },
       'Updating cart custom fields with Briqpay session metadata',

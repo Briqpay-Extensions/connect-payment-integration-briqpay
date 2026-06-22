@@ -2993,8 +2993,10 @@ describe('briqpay-payment.service', () => {
     const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
     await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
-    expect(createSpy).toHaveBeenCalledTimes(1)
-    expect(getCartSpy).toHaveBeenCalledWith({ id: 'webhook-cart-id' })
+    // Webhooks never create a CT Payment (it would lack checkoutTransactionItemId and block
+    // automatic Order creation). The session-authenticated /payments call owns creation.
+    expect(createSpy).not.toHaveBeenCalled()
+    expect(getCartSpy).not.toHaveBeenCalled()
   })
 
   test('calls handleOrderRejected on ORDER_REJECTED event', async () => {
@@ -3315,8 +3317,10 @@ describe('briqpay-payment.service', () => {
     const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
     await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
-    expect(createSpy).toHaveBeenCalledTimes(1)
-    expect(getCartSpy).toHaveBeenCalledWith({ id: 'webhook-cart-id-2' })
+    // Webhooks never create a CT Payment (it would lack checkoutTransactionItemId and block
+    // automatic Order creation). The session-authenticated /payments call owns creation.
+    expect(createSpy).not.toHaveBeenCalled()
+    expect(getCartSpy).not.toHaveBeenCalled()
   })
 
   test('calls handleCapturePending on capture PENDING event', async () => {

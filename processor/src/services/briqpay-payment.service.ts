@@ -40,7 +40,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     super(opts.ctCartService, opts.ctPaymentService)
     this.sessionService = new BriqpaySessionService(opts.ctCartService)
     this.operationService = new BriqpayOperationService(opts.ctCartService, opts.ctPaymentService)
-    this.notificationService = new BriqpayNotificationService(opts.ctPaymentService, this.operationService)
+    this.notificationService = new BriqpayNotificationService(opts.ctPaymentService)
   }
 
   public async config(hostname: string): Promise<ConfigResponse> {
@@ -101,11 +101,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       // entries instead of regenerating it. This keeps Briqpay reference1 aligned
       // with the eventual Order.orderNumber even when the customer returns after the
       // original CT Session has expired.
-      await this.sessionService.updateCartWithBriqpaySession(
-        ctCart,
-        briqpaySession.sessionId,
-        futureOrderNumber,
-      )
+      await this.sessionService.updateCartWithBriqpaySession(ctCart, briqpaySession.sessionId, futureOrderNumber)
 
       return {
         clientKey: config.mockClientKey,
