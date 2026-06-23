@@ -77,6 +77,15 @@ export interface ExtractedBriqpayCustomFields {
 }
 
 /**
+ * Target resource for a Briqpay custom-field write.
+ *
+ * CT's `order` custom type is valid on both Orders and Carts (a Cart's CustomFields are
+ * copied to the Order when the Cart is ordered), so the same extracted fields can be staged
+ * on the cart before the order exists and written to the order once it does.
+ */
+export type CtCustomFieldTarget = { resource: 'order'; id: string } | { resource: 'cart'; id: string }
+
+/**
  * Field mapping configuration for Briqpay session data to CT custom fields
  */
 export const BRIQPAY_CUSTOM_FIELD_MAPPING = {

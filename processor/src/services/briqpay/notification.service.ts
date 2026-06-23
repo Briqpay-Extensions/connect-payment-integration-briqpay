@@ -717,6 +717,11 @@ export class BriqpayNotificationService {
     })
 
     appLogger.info({ updatedPayment, transactionId: transaction?.transactionId }, 'Created Authorization Pending')
+
+    // Pending is the first (and often only pre-order) webhook for a payment-less cart that will
+    // auto-create an order. Ingest now so the data is staged on the cart and copied onto the
+    // order at creation; if the order already exists it is written directly.
+    await this.ingestSessionDataToOrder(briqpaySessionId, payments[0].id, cartId)
   }
 
   /**
@@ -770,7 +775,7 @@ export class BriqpayNotificationService {
     }
 
     // Always attempt to ingest Briqpay session data to order custom fields
-    await this.ingestSessionDataToOrder(briqpaySessionId, payments[0].id)
+    await this.ingestSessionDataToOrder(briqpaySessionId, payments[0].id, cartId)
   }
 
   /**
@@ -1092,8 +1097,12 @@ export class BriqpayNotificationService {
    * @param briqpaySessionId - The Briqpay session ID
    * @param paymentId - The CommerceTools payment ID
    */
-  private ingestSessionDataToOrder = async (briqpaySessionId: string, paymentId: string): Promise<void> => {
-    appLogger.info({ briqpaySessionId, paymentId }, 'Starting ingestSessionDataToOrder lookup')
+  private ingestSessionDataToOrder = async (
+    briqpaySessionId: string,
+    paymentId: string,
+    cartId?: string,
+  ): Promise<void> => {
+    appLogger.info({ briqpaySessionId, paymentId, cartId }, 'Starting ingestSessionDataToOrder lookup')
 
     try {
       // Find the order that contains this payment
@@ -1111,10 +1120,24 @@ export class BriqpayNotificationService {
       appLogger.info({ paymentId, briqpaySessionId, orderCount: orders.length }, 'Order lookup completed')
 
       if (orders.length === 0) {
+        // Pre-order webhook race: the order has not been auto-created yet. Stage the data on the
+        // cart so CT copies it onto the order at creation. When no cartId is in scope (e.g. the
+        // capture path) keep the prior behavior of skipping.
+        if (!cartId) {
+          appLogger.info(
+            { paymentId, briqpaySessionId },
+            'No order and no cartId, skipping session data ingestion (order may not be created yet)',
+          )
+
+          return
+        }
+
         appLogger.info(
-          { paymentId, briqpaySessionId },
-          'No order found for payment, skipping session data ingestion (order may not be created yet)',
+          { paymentId, briqpaySessionId, cartId },
+          'No order yet - staging Briqpay session data on cart for copy-on-creation',
         )
+        await this.sessionDataService.ingestSessionDataToCart(briqpaySessionId, cartId)
+
         return
       }
 
@@ -1133,10 +1156,11 @@ export class BriqpayNotificationService {
         {
           briqpaySessionId,
           paymentId,
+          cartId,
           error: error instanceof Error ? error.message : error,
           stack: error instanceof Error ? error.stack : undefined,
         },
-        'Failed to ingest Briqpay session data to order (non-fatal)',
+        'Failed to ingest Briqpay session data (non-fatal)',
       )
     }
   }

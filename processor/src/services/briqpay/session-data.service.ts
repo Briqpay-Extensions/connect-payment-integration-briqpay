@@ -3,10 +3,28 @@ import { apiRoot } from '../../libs/commercetools/api-root'
 import {
   BriqpayFullSessionResponse,
   BriqpayPspMetadata,
+  CtCustomFieldTarget,
   ExtractedBriqpayCustomFields,
 } from '../types/briqpay-session-data.type'
 import { MediumBriqpayResponse } from '../types/briqpay-payment.type'
 import { getBriqpayTypeKey } from '../../connectors/actions'
+import CtConflictRetry from '../../libs/commercetools/ct-conflict-retry'
+
+// Briqpay only ever issues these two custom-field actions. Typed locally (rather than pulling
+// the full OrderUpdateAction/CartUpdateAction unions) so the same actions array is assignable
+// to both the orders() and carts() update builders.
+type SetCustomTypeAction = {
+  action: 'setCustomType'
+  type: { key: string; typeId: 'type' }
+}
+
+type SetCustomFieldAction = {
+  action: 'setCustomField'
+  name: string
+  value: string | boolean | undefined
+}
+
+type CtCustomFieldUpdateAction = SetCustomTypeAction | SetCustomFieldAction
 
 /**
  * Service responsible for fetching full Briqpay session data and ingesting it
@@ -194,7 +212,8 @@ export class BriqpaySessionDataService {
   }
 
   /**
-   * Updates an order's custom fields with extracted Briqpay session data
+   * Updates an order's custom fields with extracted Briqpay session data.
+   * Thin delegate kept for the existing order ingestion path and its tests.
    *
    * @param orderId - The CommerceTools order ID
    * @param customFields - The extracted custom field values
@@ -204,104 +223,160 @@ export class BriqpaySessionDataService {
     customFields: ExtractedBriqpayCustomFields,
     customTypeKey?: string,
   ): Promise<void> {
+    return this.updateResourceCustomFields({ resource: 'order', id: orderId }, customFields, customTypeKey)
+  }
+
+  /**
+   * Updates a CommerceTools order OR cart with extracted Briqpay session data.
+   *
+   * The GET-then-POST dance is wrapped in conflict-retry because the cart is far more
+   * contended than a finalized order (concurrent /payments, addPayment, detach, session
+   * writes). Each attempt re-fetches a fresh version AND re-evaluates the "needs custom
+   * type" branch, so a concurrent writer that sets the type between attempts is observed.
+   *
+   * @param target - The order or cart to write to
+   * @param customFields - The extracted custom field values
+   * @param customTypeKey - Optional override for the custom type key
+   */
+  public async updateResourceCustomFields(
+    target: CtCustomFieldTarget,
+    customFields: ExtractedBriqpayCustomFields,
+    customTypeKey?: string,
+  ): Promise<void> {
     const fieldEntries = Object.entries(customFields)
 
     if (fieldEntries.length === 0) {
-      appLogger.info({ orderId }, 'No custom fields to update for order')
+      appLogger.info({ resource: target.resource, resourceId: target.id }, 'No custom fields to update')
       return
     }
 
     appLogger.info(
       {
-        orderId,
+        resource: target.resource,
+        resourceId: target.id,
         fieldCount: fieldEntries.length,
         fields: Object.keys(customFields),
         customTypeKey,
       },
-      'Updating order custom fields with Briqpay session data',
+      'Updating custom fields with Briqpay session data',
     )
 
-    // First, get the current order to obtain its version
-    // IMPORTANT: Expand custom.type to get the key, otherwise we only get id/typeId
-    const orderResponse = await apiRoot
-      .orders()
-      .withId({ ID: orderId })
-      .get({ queryArgs: { expand: ['custom.type'] } })
-      .execute()
-    const order = orderResponse.body
-
-    // Determine which custom type to use
-    // 1. Use provided customTypeKey if any
-    // 2. Use order's current custom type if it exists (from expanded reference)
-    // 3. Fallback to dynamically resolved Briqpay custom type
-    const currentTypeKey = (order.custom?.type as any)?.obj?.key
     const fallbackTypeKey = await getBriqpayTypeKey()
-    const targetTypeKey = customTypeKey || currentTypeKey || fallbackTypeKey
+    const actions: SetCustomFieldAction[] = fieldEntries.map(
+      ([fieldName, value]): SetCustomFieldAction => ({
+        action: 'setCustomField',
+        name: fieldName,
+        value,
+      }),
+    )
 
-    // Build the update actions for each custom field
-    const actions = fieldEntries.map(([fieldName, value]) => ({
-      action: 'setCustomField' as const,
-      name: fieldName,
-      value: value,
-    }))
+    let resolvedTypeKey: string = fallbackTypeKey
 
-    // Only set custom type if the order doesn't have one yet
-    // If it already has a custom type, just update the fields to preserve existing values
-    if (!order.custom) {
-      appLogger.info({ orderId, targetType: targetTypeKey }, 'Setting custom type on order (no existing custom type)')
+    const runUpdate = async (): Promise<void> => {
+      // Re-fetch on every attempt for a fresh version AND a fresh custom-type decision.
+      // IMPORTANT: expand custom.type to read the key, otherwise we only get id/typeId.
+      const state = await this.fetchResourceCustomState(target)
 
-      const setTypeResponse = await apiRoot
-        .orders()
-        .withId({ ID: orderId })
-        .post({
-          body: {
-            version: order.version,
-            actions: [
-              {
-                action: 'setCustomType',
-                type: {
-                  key: targetTypeKey,
-                  typeId: 'type',
-                },
-              },
-            ],
+      // Determine which custom type to use:
+      // 1. Use provided customTypeKey if any
+      // 2. Use the resource's current custom type if it exists (from expanded reference)
+      // 3. Fallback to dynamically resolved Briqpay custom type
+      resolvedTypeKey = customTypeKey || state.currentTypeKey || fallbackTypeKey
+
+      // Only set the custom type if the resource doesn't have one yet. If it already has a
+      // custom type, just update the fields to preserve existing values.
+      if (!state.hasCustom) {
+        appLogger.info(
+          { resource: target.resource, resourceId: target.id, targetType: resolvedTypeKey },
+          'Setting custom type (no existing custom type)',
+        )
+
+        const versionAfterType = await this.postResourceActions(target, state.version, [
+          {
+            action: 'setCustomType',
+            type: {
+              key: resolvedTypeKey,
+              typeId: 'type',
+            },
           },
-        })
-        .execute()
+        ])
 
-      // Now update with the new version
-      await apiRoot
-        .orders()
-        .withId({ ID: orderId })
-        .post({
-          body: {
-            version: setTypeResponse.body.version,
-            actions,
-          },
-        })
-        .execute()
-    } else {
-      // Order already has the correct custom type, just update the fields
-      await apiRoot
-        .orders()
-        .withId({ ID: orderId })
-        .post({
-          body: {
-            version: order.version,
-            actions,
-          },
-        })
-        .execute()
+        await this.postResourceActions(target, versionAfterType, actions)
+      } else {
+        await this.postResourceActions(target, state.version, actions)
+      }
+    }
+
+    try {
+      await CtConflictRetry.withConflictRetry(runUpdate)
+    } catch (error) {
+      // A pre-order webhook can race CT order auto-creation: by the time the cart write runs,
+      // the cart may already be Ordered/deleted. That is a benign no-op for cart staging - the
+      // order will be enriched directly by a later webhook - not an ingestion failure.
+      if (target.resource === 'cart' && CtConflictRetry.isNotFound(error)) {
+        appLogger.info({ cartId: target.id }, 'Cart already ordered/deleted, skipping Briqpay cart staging')
+        return
+      }
+
+      throw error
     }
 
     appLogger.info(
       {
-        orderId,
+        resource: target.resource,
+        resourceId: target.id,
         updatedFields: Object.keys(customFields),
-        targetTypeKey,
+        targetTypeKey: resolvedTypeKey,
       },
-      'Successfully updated order custom fields with Briqpay session data',
+      'Successfully updated custom fields with Briqpay session data',
     )
+  }
+
+  /**
+   * Fetches the version and custom-type state of an order or cart.
+   * Expands custom.type so the current type key is available.
+   */
+  private async fetchResourceCustomState(
+    target: CtCustomFieldTarget,
+  ): Promise<{ version: number; hasCustom: boolean; currentTypeKey: string | undefined }> {
+    if (target.resource === 'order') {
+      const response = await apiRoot
+        .orders()
+        .withId({ ID: target.id })
+        .get({ queryArgs: { expand: ['custom.type'] } })
+        .execute()
+      const order = response.body
+
+      return { version: order.version, hasCustom: !!order.custom, currentTypeKey: order.custom?.type.obj?.key }
+    }
+
+    const response = await apiRoot
+      .carts()
+      .withId({ ID: target.id })
+      .get({ queryArgs: { expand: ['custom.type'] } })
+      .execute()
+    const cart = response.body
+
+    return { version: cart.version, hasCustom: !!cart.custom, currentTypeKey: cart.custom?.type.obj?.key }
+  }
+
+  /**
+   * Posts custom-field update actions to an order or cart and returns the new version.
+   */
+  private async postResourceActions(
+    target: CtCustomFieldTarget,
+    version: number,
+    actions: CtCustomFieldUpdateAction[],
+  ): Promise<number> {
+    if (target.resource === 'order') {
+      const response = await apiRoot.orders().withId({ ID: target.id }).post({ body: { version, actions } }).execute()
+
+      return response.body.version
+    }
+
+    const response = await apiRoot.carts().withId({ ID: target.id }).post({ body: { version, actions } }).execute()
+
+    return response.body.version
   }
 
   /**
@@ -315,30 +390,59 @@ export class BriqpaySessionDataService {
 
     try {
       const sessionData = await this.fetchFullSession(sessionId)
-      const fieldMappings = await this.buildFieldMappingsForOrder(orderId)
+      const fieldMappings = await this.buildFieldMappingsForResource({ resource: 'order', id: orderId })
       const customFields = this.extractCustomFields(sessionData, fieldMappings)
 
-      await this.updateOrderCustomFields(orderId, customFields)
+      await this.updateResourceCustomFields({ resource: 'order', id: orderId }, customFields)
 
       appLogger.info({ sessionId, orderId }, 'Successfully completed Briqpay session data ingestion')
     } catch (error) {
-      this.handleIngestionError(error, sessionId, orderId)
+      this.handleIngestionError(error, sessionId, { resource: 'order', id: orderId })
     }
   }
 
   /**
-   * Builds field mappings for an order based on its custom type definition
-   * Handles prefixed field names from conflict resolution
+   * Stages Briqpay session data on the CART custom fields when the order does not exist yet.
+   *
+   * The cart always exists at webhook time, and CT copies the cart's custom fields onto the
+   * order when it auto-creates the order from the tagged payment - so staging here makes the
+   * order born with the data instead of losing it to the pre-order webhook race. Later
+   * webhooks enrich the order directly once it exists.
+   *
+   * @param sessionId - The Briqpay session ID
+   * @param cartId - The CommerceTools cart ID
    */
-  private async buildFieldMappingsForOrder(orderId: string): Promise<Record<string, string> | undefined> {
-    const orderResponse = await apiRoot.orders().withId({ ID: orderId }).get().execute()
-    const order = orderResponse.body
+  public async ingestSessionDataToCart(sessionId: string, cartId: string): Promise<void> {
+    appLogger.info({ sessionId, cartId }, 'Starting Briqpay session data ingestion to cart')
 
-    if (!order.custom) {
+    try {
+      const sessionData = await this.fetchFullSession(sessionId)
+      const fieldMappings = await this.buildFieldMappingsForResource({ resource: 'cart', id: cartId })
+      const customFields = this.extractCustomFields(sessionData, fieldMappings)
+
+      await this.updateResourceCustomFields({ resource: 'cart', id: cartId }, customFields)
+
+      appLogger.info({ sessionId, cartId }, 'Successfully completed Briqpay session data ingestion to cart')
+    } catch (error) {
+      this.handleIngestionError(error, sessionId, { resource: 'cart', id: cartId })
+    }
+  }
+
+  /**
+   * Builds field mappings for an order or cart based on its custom type definition.
+   * Handles prefixed field names from conflict resolution. Cart and order share the same
+   * custom type, so the mapping resolves identically against whichever resource is targeted.
+   */
+  private async buildFieldMappingsForResource(
+    target: CtCustomFieldTarget,
+  ): Promise<Record<string, string> | undefined> {
+    const customTypeId = await this.fetchResourceCustomTypeId(target)
+
+    if (!customTypeId) {
       return undefined
     }
 
-    const typeResponse = await apiRoot.types().withId({ ID: order.custom.type.id }).get().execute()
+    const typeResponse = await apiRoot.types().withId({ ID: customTypeId }).get().execute()
     const typeDefinition = typeResponse.body
 
     const fieldMappings: Record<string, string> = {}
@@ -351,6 +455,21 @@ export class BriqpaySessionDataService {
     }
 
     return fieldMappings
+  }
+
+  /**
+   * Returns the id of the custom type assigned to an order or cart, or undefined when none.
+   */
+  private async fetchResourceCustomTypeId(target: CtCustomFieldTarget): Promise<string | undefined> {
+    if (target.resource === 'order') {
+      const orderResponse = await apiRoot.orders().withId({ ID: target.id }).get().execute()
+
+      return orderResponse.body.custom?.type.id
+    }
+
+    const cartResponse = await apiRoot.carts().withId({ ID: target.id }).get().execute()
+
+    return cartResponse.body.custom?.type.id
   }
 
   /**
@@ -377,17 +496,22 @@ export class BriqpaySessionDataService {
   }
 
   /**
-   * Handles ingestion errors with consistent logging
+   * Handles ingestion errors with consistent logging.
+   * Preserves the `orderId` log key for the order path (observability stability) and emits
+   * `resource`/`resourceId` for the cart path.
    */
-  private handleIngestionError(error: unknown, sessionId: string, orderId: string): never {
+  private handleIngestionError(error: unknown, sessionId: string, target: CtCustomFieldTarget): never {
+    const targetContext =
+      target.resource === 'order' ? { orderId: target.id } : { resource: target.resource, resourceId: target.id }
+
     appLogger.error(
       {
         sessionId,
-        orderId,
+        ...targetContext,
         error: error instanceof Error ? error.message : error,
         stack: error instanceof Error ? error.stack : undefined,
       },
-      'Failed to ingest Briqpay session data to order',
+      `Failed to ingest Briqpay session data to ${target.resource}`,
     )
     // Re-throw to let caller handle the error appropriately
     throw error

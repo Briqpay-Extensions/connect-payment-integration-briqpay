@@ -26,6 +26,20 @@ const mockOrderPost = jest
   .fn<(args: { body: { version: number; actions: unknown[] } }) => { execute: typeof mockOrderPostExecute }>()
   .mockReturnValue({ execute: mockOrderPostExecute })
 
+const mockCartGet = jest.fn<
+  () => Promise<{
+    body: {
+      id: string
+      version: number
+      custom?: { type: { id: string; key?: string }; fields: Record<string, unknown> }
+    }
+  }>
+>()
+const mockCartPostExecute = jest.fn<() => Promise<{ body: { id: string; version: number } }>>()
+const mockCartPost = jest
+  .fn<(args: { body: { version: number; actions: unknown[] } }) => { execute: typeof mockCartPostExecute }>()
+  .mockReturnValue({ execute: mockCartPostExecute })
+
 const mockTypeGetExecute = jest.fn<() => Promise<{ body: { fieldDefinitions: { name: string }[] } }>>()
 mockTypeGetExecute.mockResolvedValue({
   body: {
@@ -49,6 +63,12 @@ jest.mock('../../../src/libs/commercetools/api-root', () => ({
       withId: () => ({
         get: () => ({ execute: mockOrderGet }),
         post: mockOrderPost,
+      }),
+    }),
+    carts: () => ({
+      withId: () => ({
+        get: () => ({ execute: mockCartGet }),
+        post: mockCartPost,
       }),
     }),
     types: () => mockTypes(),
@@ -80,6 +100,14 @@ describe('BriqpaySessionDataService', () => {
     mockOrderGet.mockResolvedValue({
       body: {
         id: 'order-123',
+        version: 1,
+        custom: { type: { id: 'type-id', key: 'briqpay-session-id' }, fields: {} },
+      },
+    })
+
+    mockCartGet.mockResolvedValue({
+      body: {
+        id: 'cart-123',
         version: 1,
         custom: { type: { id: 'type-id', key: 'briqpay-session-id' }, fields: {} },
       },
@@ -511,6 +539,158 @@ describe('BriqpaySessionDataService', () => {
       } as Response)
 
       await expect(service.ingestSessionDataToOrder('session-123', 'order-123')).rejects.toThrow(
+        'Failed to fetch Briqpay session session-123: 500 Internal Server Error',
+      )
+    })
+  })
+
+  describe('updateResourceCustomFields (cart target)', () => {
+    const customFields: ExtractedBriqpayCustomFields = {
+      'briqpay-psp-meta-data-description': 'Test description',
+      'briqpay-transaction-data-reservation-id': 'res-123',
+    }
+
+    test('updates the cart fields when the cart already has the briqpay custom type', async () => {
+      mockCartGet.mockResolvedValueOnce({
+        body: { id: 'cart-1', version: 4, custom: { type: { id: 'type-id', key: 'briqpay-session-id' }, fields: {} } },
+      })
+      mockCartPostExecute.mockResolvedValueOnce({ body: { id: 'cart-1', version: 5 } })
+
+      await service.updateResourceCustomFields({ resource: 'cart', id: 'cart-1' }, customFields)
+
+      expect(mockCartPost).toHaveBeenCalledTimes(1)
+      expect(mockCartPost).toHaveBeenCalledWith({
+        body: {
+          version: 4,
+          actions: [
+            { action: 'setCustomField', name: 'briqpay-psp-meta-data-description', value: 'Test description' },
+            { action: 'setCustomField', name: 'briqpay-transaction-data-reservation-id', value: 'res-123' },
+          ],
+        },
+      })
+      // Cart target must never touch the order builder
+      expect(mockOrderPost).not.toHaveBeenCalled()
+    })
+
+    test('sets the custom type first when the cart has none', async () => {
+      mockCartGet.mockResolvedValueOnce({ body: { id: 'cart-1', version: 1, custom: undefined } })
+      mockCartPostExecute
+        .mockResolvedValueOnce({ body: { id: 'cart-1', version: 2 } })
+        .mockResolvedValueOnce({ body: { id: 'cart-1', version: 3 } })
+
+      await service.updateResourceCustomFields({ resource: 'cart', id: 'cart-1' }, customFields)
+
+      expect(mockCartPost).toHaveBeenCalledTimes(2)
+      expect(mockCartPost).toHaveBeenNthCalledWith(1, {
+        body: {
+          version: 1,
+          actions: [{ action: 'setCustomType', type: { key: 'briqpay-session-id', typeId: 'type' } }],
+        },
+      })
+      expect(mockCartPost).toHaveBeenNthCalledWith(2, {
+        body: {
+          version: 2,
+          actions: [
+            { action: 'setCustomField', name: 'briqpay-psp-meta-data-description', value: 'Test description' },
+            { action: 'setCustomField', name: 'briqpay-transaction-data-reservation-id', value: 'res-123' },
+          ],
+        },
+      })
+    })
+
+    test('writes the boolean briqpay-autocaptured value to the cart', async () => {
+      mockCartGet.mockResolvedValueOnce({
+        body: { id: 'cart-1', version: 1, custom: { type: { id: 'type-id', key: 'briqpay-session-id' }, fields: {} } },
+      })
+      mockCartPostExecute.mockResolvedValueOnce({ body: { id: 'cart-1', version: 2 } })
+
+      await service.updateResourceCustomFields({ resource: 'cart', id: 'cart-1' }, { 'briqpay-autocaptured': true })
+
+      expect(mockCartPost).toHaveBeenCalledWith({
+        body: { version: 1, actions: [{ action: 'setCustomField', name: 'briqpay-autocaptured', value: true }] },
+      })
+    })
+
+    test('treats a 404 (cart already ordered/deleted) as a benign no-op', async () => {
+      const notFound = Object.assign(new Error('Not Found'), { statusCode: 404 })
+      mockCartGet.mockRejectedValueOnce(notFound)
+
+      await expect(
+        service.updateResourceCustomFields({ resource: 'cart', id: 'cart-1' }, customFields),
+      ).resolves.toBeUndefined()
+
+      expect(mockCartPost).not.toHaveBeenCalled()
+    })
+
+    test('retries on 409 and re-derives version and the custom-type branch each attempt', async () => {
+      const conflict = Object.assign(new Error('Conflict'), { statusCode: 409 })
+
+      // Attempt 1: cart has no custom type -> setCustomType post conflicts.
+      // Attempt 2: a concurrent writer has set the type and bumped the version -> a single
+      // setCustomField against the fresh version succeeds (no second setCustomType).
+      mockCartGet
+        .mockResolvedValueOnce({ body: { id: 'cart-1', version: 1, custom: undefined } })
+        .mockResolvedValueOnce({
+          body: {
+            id: 'cart-1',
+            version: 9,
+            custom: { type: { id: 'type-id', key: 'briqpay-session-id' }, fields: {} },
+          },
+        })
+      mockCartPostExecute.mockRejectedValueOnce(conflict).mockResolvedValueOnce({ body: { id: 'cart-1', version: 10 } })
+
+      await service.updateResourceCustomFields({ resource: 'cart', id: 'cart-1' }, customFields)
+
+      expect(mockCartPost).toHaveBeenCalledTimes(2)
+      expect(mockCartPost).toHaveBeenNthCalledWith(2, {
+        body: {
+          version: 9,
+          actions: [
+            { action: 'setCustomField', name: 'briqpay-psp-meta-data-description', value: 'Test description' },
+            { action: 'setCustomField', name: 'briqpay-transaction-data-reservation-id', value: 'res-123' },
+          ],
+        },
+      })
+    })
+  })
+
+  describe('ingestSessionDataToCart', () => {
+    test('fetches the session and stages the fields on the cart', async () => {
+      const mockSessionData: BriqpayFullSessionResponse = {
+        sessionId: 'session-123',
+        data: {
+          pspMetadata: { description: 'Test description' },
+          transactions: [{ reservationId: 'res-123' }],
+        },
+      }
+
+      mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(mockSessionData) } as Response)
+      mockCartPostExecute.mockResolvedValueOnce({ body: { id: 'cart-123', version: 2 } })
+
+      await service.ingestSessionDataToCart('session-123', 'cart-123')
+
+      expect(mockFetch).toHaveBeenCalledWith('https://dev-api.briqpay.com/v3/session/session-123', expect.any(Object))
+      expect(mockCartPost).toHaveBeenCalledWith({
+        body: {
+          version: 1,
+          actions: expect.arrayContaining([
+            { action: 'setCustomField', name: 'briqpay-psp-meta-data-description', value: 'Test description' },
+            { action: 'setCustomField', name: 'briqpay-transaction-data-reservation-id', value: 'res-123' },
+          ]),
+        },
+      })
+      expect(mockOrderPost).not.toHaveBeenCalled()
+    })
+
+    test('propagates errors from fetchFullSession', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        text: () => Promise.resolve('Server error'),
+      } as Response)
+
+      await expect(service.ingestSessionDataToCart('session-123', 'cart-123')).rejects.toThrow(
         'Failed to fetch Briqpay session session-123: 500 Internal Server Error',
       )
     })
