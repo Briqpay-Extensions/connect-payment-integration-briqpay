@@ -15,6 +15,15 @@ export const briqpaySessionIdFieldName = 'briqpay-session-id'
 export const briqpayFutureOrderNumberFieldName =
   process.env.BRIQPAY_FUTURE_ORDER_NUMBER_KEY || 'briqpay-future-order-number'
 
+// Field name for the Checkout transaction-item id that links a CT Payment to the cart so
+// commercetools Checkout auto-creates the Order. Persisted on the cart at config() time - the
+// only point the connector holds the CT Checkout session - so the HMAC webhook, which has no
+// session, can read it back and create a correctly-tagged Payment when the buyer never returns to
+// trigger /payments (e.g. closed the tab on an HPP redirect). Overridable for merchants who
+// already use a differently-named field.
+export const briqpayCheckoutTransactionItemIdFieldName =
+  process.env.BRIQPAY_CHECKOUT_TRANSACTION_ITEM_ID_KEY || 'briqpay-checkout-transaction-item-id'
+
 export const briqpaySessionIdCustomType = {
   name: briqpaySessionIdFieldName,
 }
@@ -42,6 +51,15 @@ export const briqpayFieldDefinitions: BriqpayFieldDefinition[] = [
   {
     name: briqpayFutureOrderNumberFieldName,
     label: 'Briqpay Future Order Number',
+    type: 'String',
+    required: false,
+  },
+
+  // Checkout transaction-item id — persisted at config() so the session-less webhook can create
+  // a correctly-tagged Payment for the buyer-never-returns (HPP tab-close) case.
+  {
+    name: briqpayCheckoutTransactionItemIdFieldName,
+    label: 'Briqpay Checkout Transaction Item ID',
     type: 'String',
     required: false,
   },

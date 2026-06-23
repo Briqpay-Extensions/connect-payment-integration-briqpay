@@ -35,7 +35,7 @@ import {
   orderStatusToWebhookStatus,
 } from './utils'
 import { SessionError, ValidationError } from '../../libs/errors/briqpay-errors'
-import { briqpaySessionIdFieldName } from '../../custom-types/custom-types'
+import { briqpayCheckoutTransactionItemIdFieldName, briqpaySessionIdFieldName } from '../../custom-types/custom-types'
 import { apiRoot } from '../../libs/commercetools/api-root'
 
 const PAYMENT_KEY_PREFIX = 'briqpay-'
@@ -602,6 +602,84 @@ export class BriqpayOperationService {
       if (!isDuplicateKeyError(err)) {
         throw err
       }
+      return this.recoverPaymentAfterKeyConflict(ctCart, paymentKey, briqpaySessionId, err)
+    }
+  }
+
+  /**
+   * Webhook entry point for ensuring the Briqpay session's CT Payment exists. Used by the
+   * order-status webhook handlers when the cart has no Payment yet (e.g. the buyer closed the tab
+   * on an HPP redirect, so the session-authenticated /payments never ran). Reuses the same dedupe
+   * path as createPayment: reuse an existing Payment if found (attaching it if detached), else
+   * create it from the checkoutTransactionItemId persisted on the cart at config() time (the webhook
+   * has no Checkout session). Returns undefined when no tag is persisted - the caller must then NOT
+   * create a Payment (a tagless Payment permanently blocks Order creation).
+   *
+   * The caller adds the Authorization transaction (Pending/Success/Failure) to match the webhook.
+   */
+  public async ensurePaymentForWebhook(cartId: string, briqpaySessionId: string): Promise<Payment | undefined> {
+    const ctCart = await this.ctCartService.getCart({ id: cartId })
+
+    const existing = await this.findOrAttachExistingPaymentForSession(ctCart, briqpaySessionId)
+    if (existing) {
+      return existing
+    }
+
+    const checkoutTransactionItemId = ctCart.custom?.fields?.[briqpayCheckoutTransactionItemIdFieldName] as
+      | string
+      | undefined
+
+    if (!checkoutTransactionItemId) {
+      appLogger.warn(
+        { briqpaySessionId, cartId },
+        'Order-status webhook for a payment-less cart but no persisted checkoutTransactionItemId - not creating a Payment',
+      )
+
+      return undefined
+    }
+
+    const newPayment = await this.createTaggedPaymentForWebhook(ctCart, briqpaySessionId, checkoutTransactionItemId)
+    await this.detachStaleBriqpayPayments(ctCart.id, newPayment.id, 'Briqpay')
+
+    return newPayment
+  }
+
+  /**
+   * Creates the tagged CT Payment for a Briqpay session from an explicitly-provided
+   * checkoutTransactionItemId (the webhook has no request context), attaches it, and recovers the
+   * winner on a concurrent key conflict. Mirrors createOrRecoverPaymentForCheckout but takes the tag
+   * explicitly and reads no request context. No Authorization transaction is added here - the caller
+   * adds it to match the webhook status.
+   */
+  private async createTaggedPaymentForWebhook(
+    ctCart: Cart,
+    briqpaySessionId: string,
+    checkoutTransactionItemId: string,
+  ): Promise<Payment> {
+    const paymentKey = buildPaymentKey(briqpaySessionId)
+    try {
+      const newPayment = await this.ctPaymentService.createPayment({
+        key: paymentKey,
+        amountPlanned: await this.ctCartService.getPaymentAmount({ cart: ctCart }),
+        paymentMethodInfo: { paymentInterface: 'Briqpay' },
+        checkoutTransactionItemId,
+        interfaceId: briqpaySessionId,
+        ...(ctCart.customerId && { customer: { typeId: 'customer', id: ctCart.customerId } }),
+        ...(!ctCart.customerId && ctCart.anonymousId && { anonymousId: ctCart.anonymousId }),
+      })
+
+      const freshCart = await this.ctCartService.getCart({ id: ctCart.id })
+      await this.ctCartService.addPayment({
+        resource: { id: freshCart.id, version: freshCart.version },
+        paymentId: newPayment.id,
+      })
+
+      return newPayment
+    } catch (err) {
+      if (!isDuplicateKeyError(err)) {
+        throw err
+      }
+
       return this.recoverPaymentAfterKeyConflict(ctCart, paymentKey, briqpaySessionId, err)
     }
   }

@@ -22,7 +22,11 @@ import {
   NotificationRequestSchemaDTO,
   PaymentResponseSchemaDTO,
 } from '../dtos/briqpay-payment.dto'
-import { getCartIdFromContext, getFutureOrderNumberFromContext } from '../libs/fastify/context/context'
+import {
+  getCartIdFromContext,
+  getCheckoutTransactionItemIdFromContext,
+  getFutureOrderNumberFromContext,
+} from '../libs/fastify/context/context'
 import { TransactionDraftDTO, TransactionResponseDTO } from '../dtos/operations/transaction.dto'
 import BriqpayService from '../libs/briqpay/BriqpayService'
 import { BriqpaySessionService } from './briqpay/session.service'
@@ -40,7 +44,7 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     super(opts.ctCartService, opts.ctPaymentService)
     this.sessionService = new BriqpaySessionService(opts.ctCartService)
     this.operationService = new BriqpayOperationService(opts.ctCartService, opts.ctPaymentService)
-    this.notificationService = new BriqpayNotificationService(opts.ctPaymentService)
+    this.notificationService = new BriqpayNotificationService(opts.ctPaymentService, this.operationService)
   }
 
   public async config(hostname: string): Promise<ConfigResponse> {
@@ -48,11 +52,13 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       const config = getConfig()
       const cartId = getCartIdFromContext()
       const futureOrderNumber = getFutureOrderNumberFromContext()
+      const checkoutTransactionItemId = getCheckoutTransactionItemIdFromContext()
 
       appLogger.info(
         {
           cartId,
           futureOrderNumber,
+          checkoutTransactionItemId,
           hostname,
         },
         'config called - checking for futureOrderNumber',
@@ -101,7 +107,12 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       // entries instead of regenerating it. This keeps Briqpay reference1 aligned
       // with the eventual Order.orderNumber even when the customer returns after the
       // original CT Session has expired.
-      await this.sessionService.updateCartWithBriqpaySession(ctCart, briqpaySession.sessionId, futureOrderNumber)
+      await this.sessionService.updateCartWithBriqpaySession(
+        ctCart,
+        briqpaySession.sessionId,
+        futureOrderNumber,
+        checkoutTransactionItemId,
+      )
 
       return {
         clientKey: config.mockClientKey,

@@ -3,6 +3,7 @@ import { BriqpaySessionService } from '../../../src/services/briqpay/session.ser
 import { mockGetCartResult } from '../../utils/mock-cart-data'
 import Briqpay from '../../../src/libs/briqpay/BriqpayService'
 import type { CommercetoolsCartService, Cart } from '@commercetools/connect-payments-sdk'
+import { apiRoot } from '../../../src/libs/commercetools/api-root'
 
 // Mock apiRoot
 jest.mock('../../../src/libs/commercetools/api-root')
@@ -66,6 +67,56 @@ describe('BriqpaySessionService', () => {
 
   afterEach(() => {
     jest.restoreAllMocks()
+  })
+
+  describe('updateCartWithBriqpaySession - checkoutTransactionItemId persistence', () => {
+    const buildCapturingApiRoot = () => {
+      const execute = jest
+        .fn<() => Promise<{ body: { version: number } }>>()
+        .mockResolvedValue({ body: { version: 2 } })
+      const post = jest.fn().mockReturnValue({ execute })
+      const withId = jest.fn().mockReturnValue({ post })
+      ;(apiRoot.carts as unknown as jest.Mock).mockReturnValue({ withId })
+
+      return { post }
+    }
+
+    const cartWithFields = (fields: Record<string, string>): Cart => ({
+      ...getCart(),
+      version: 1,
+      custom: { type: { typeId: 'type', id: 'briqpay-type' }, fields },
+    })
+
+    test('writes the checkoutTransactionItemId setCustomField when present and changed', async () => {
+      const { post } = buildCapturingApiRoot()
+
+      await sessionService.updateCartWithBriqpaySession(
+        cartWithFields({ 'briqpay-session-id': 'sess-1' }),
+        'sess-1',
+        undefined,
+        'cti-abc',
+      )
+
+      expect(post).toHaveBeenCalledWith({
+        body: {
+          version: 1,
+          actions: [{ action: 'setCustomField', name: 'briqpay-checkout-transaction-item-id', value: 'cti-abc' }],
+        },
+      })
+    })
+
+    test('does NOT write the field when the persisted value already matches', async () => {
+      const { post } = buildCapturingApiRoot()
+
+      await sessionService.updateCartWithBriqpaySession(
+        cartWithFields({ 'briqpay-session-id': 'sess-1', 'briqpay-checkout-transaction-item-id': 'cti-abc' }),
+        'sess-1',
+        undefined,
+        'cti-abc',
+      )
+
+      expect(post).not.toHaveBeenCalled()
+    })
   })
 
   describe('createOrUpdateBriqpaySession', () => {

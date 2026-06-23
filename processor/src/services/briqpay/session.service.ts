@@ -8,7 +8,11 @@ import Briqpay from '../../libs/briqpay/BriqpayService'
 import { apiRoot } from '../../libs/commercetools/api-root'
 import { SessionError } from '../../libs/errors/briqpay-errors'
 import { getBriqpayTypeKey } from '../../connectors/actions'
-import { briqpayFutureOrderNumberFieldName, briqpaySessionIdFieldName } from '../../custom-types/custom-types'
+import {
+  briqpayCheckoutTransactionItemIdFieldName,
+  briqpayFutureOrderNumberFieldName,
+  briqpaySessionIdFieldName,
+} from '../../custom-types/custom-types'
 
 export class BriqpaySessionService {
   constructor(private readonly ctCartService: CommercetoolsCartService) {}
@@ -34,9 +38,11 @@ export class BriqpaySessionService {
     ctCart: Cart,
     briqpaySessionId: string,
     futureOrderNumber?: string,
+    checkoutTransactionItemId?: string,
   ): Promise<void> {
     const existingBriqpaySessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName]
     const existingFutureOrderNumber = ctCart.custom?.fields?.[briqpayFutureOrderNumberFieldName]
+    const existingCheckoutTransactionItemId = ctCart.custom?.fields?.[briqpayCheckoutTransactionItemIdFieldName]
 
     let updatedCart = ctCart
     if (!ctCart.custom) {
@@ -80,6 +86,17 @@ export class BriqpaySessionService {
         action: 'setCustomField',
         name: briqpayFutureOrderNumberFieldName,
         value: futureOrderNumber,
+      })
+    }
+
+    // Overwrite-on-change (NOT write-once): the tag must track the ACTIVE Checkout session so the
+    // webhook fallback creates a Payment linked to the current checkout. A stale tag from an
+    // abandoned earlier entry would not link, blocking Order creation.
+    if (checkoutTransactionItemId && existingCheckoutTransactionItemId !== checkoutTransactionItemId) {
+      actions.push({
+        action: 'setCustomField',
+        name: briqpayCheckoutTransactionItemIdFieldName,
+        value: checkoutTransactionItemId,
       })
     }
 

@@ -25,11 +25,15 @@ import {
   isHmacVerificationEnabled,
   verifyBriqpayWebhook,
 } from '../../libs/briqpay/webhook-verification'
+import type { BriqpayOperationService } from './operation.service'
 
 export class BriqpayNotificationService {
   private readonly sessionDataService: BriqpaySessionDataService
 
-  constructor(private readonly ctPaymentService: CommercetoolsPaymentService) {
+  constructor(
+    private readonly ctPaymentService: CommercetoolsPaymentService,
+    private readonly operationService: BriqpayOperationService,
+  ) {
     this.sessionDataService = new BriqpaySessionDataService()
   }
 
@@ -477,7 +481,7 @@ export class BriqpayNotificationService {
       const authHandlers: Partial<Record<BRIQPAY_WEBHOOK_STATUS, () => Promise<void>>> = {
         [BRIQPAY_WEBHOOK_STATUS.PENDING]: () => this.handleAuthorizationPending(payment, briqpaySession, cartId),
         [BRIQPAY_WEBHOOK_STATUS.APPROVED]: () => this.handleAuthorizationApproved(payment, briqpaySession, cartId),
-        [BRIQPAY_WEBHOOK_STATUS.REJECTED]: () => this.handleAuthorizationRejected(payment, briqpaySession),
+        [BRIQPAY_WEBHOOK_STATUS.REJECTED]: () => this.handleAuthorizationRejected(payment, briqpaySession, cartId),
       }
 
       const handler = authHandlers[authWebhookStatus]
@@ -634,6 +638,37 @@ export class BriqpayNotificationService {
   }
 
   /**
+   * Returns the CT Payment(s) to act on for an order-status webhook. When the cart already has a
+   * Payment (the common case) it is returned as-is. When it has none - the buyer-never-returns case
+   * where /payments never ran - the tagged Payment is created from the checkoutTransactionItemId
+   * persisted at config() time (via the shared dedupe path), so the handler can drive Order
+   * creation. Returns an empty array when there is no cartId or no persisted tag, so the handler
+   * keeps its existing skip (never a tagless Payment).
+   */
+  private resolvePaymentForWebhook = async (
+    payment: Payment[],
+    briqpaySessionId: string,
+    cartId?: string,
+  ): Promise<Payment[]> => {
+    if (payment.length) {
+      return payment
+    }
+
+    if (!cartId) {
+      appLogger.warn(
+        { briqpaySessionId },
+        'Order-status webhook for a payment-less cart but no cartId on the webhook - cannot create Payment',
+      )
+
+      return payment
+    }
+
+    const ensured = await this.operationService.ensurePaymentForWebhook(cartId, briqpaySessionId)
+
+    return ensured ? [ensured] : []
+  }
+
+  /**
    * Handles Authorization Pending status.
    * Maps to CT Transaction Type: Authorization with state: Pending
    */
@@ -645,7 +680,9 @@ export class BriqpayNotificationService {
     const briqpaySessionId = briqpaySession.sessionId
     const transaction = getTransaction(briqpaySession)
 
-    const alreadyExists = payment?.[0]?.transactions.some(
+    const payments = await this.resolvePaymentForWebhook(payment, briqpaySessionId, cartId)
+
+    const alreadyExists = payments?.[0]?.transactions.some(
       (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId,
     )
 
@@ -654,12 +691,12 @@ export class BriqpayNotificationService {
       return
     }
 
-    // No CT Payment yet. Same rule as handleAuthorizationApproved: a webhook-created Payment
-    // lacks checkoutTransactionItemId and blocks automatic Order creation.
-    if (!payment.length) {
+    // No CT Payment and no persisted checkoutTransactionItemId - keep skipping (never create a
+    // tagless Payment, which would block automatic Order creation).
+    if (!payments.length) {
       appLogger.warn(
         { briqpaySessionId, cartId },
-        'ORDER_STATUS pending but no CT Payment exists yet - skipping (Payments are created by /payments, not webhooks)',
+        'ORDER_STATUS pending but no CT Payment and no persisted checkoutTransactionItemId - skipping',
       )
 
       return
@@ -670,7 +707,7 @@ export class BriqpayNotificationService {
     const currency = transaction?.currency ?? briqpaySession.data?.order?.currency ?? 'EUR'
 
     const updatedPayment = await this.ctPaymentService.updatePayment({
-      id: payment[0].id,
+      id: payments[0].id,
       transaction: {
         type: 'Authorization',
         interactionId: briqpaySessionId,
@@ -694,17 +731,18 @@ export class BriqpayNotificationService {
     const briqpaySessionId = briqpaySession.sessionId
     const transaction = getTransaction(briqpaySession)
 
-    const alreadySuccessful = payment?.[0]?.transactions.some(
+    const payments = await this.resolvePaymentForWebhook(payment, briqpaySessionId, cartId)
+
+    const alreadySuccessful = payments?.[0]?.transactions.some(
       (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Success',
     )
 
-    // No CT Payment yet. Never create one from a webhook: it has no Checkout session, so the
-    // Payment would lack checkoutTransactionItemId and block automatic Order creation. The
-    // session-authenticated /payments call owns Payment creation; a later hook re-applies status.
-    if (!payment.length) {
+    // No CT Payment and no persisted checkoutTransactionItemId - keep skipping (never create a
+    // tagless Payment, which would block automatic Order creation).
+    if (!payments.length) {
       appLogger.warn(
         { briqpaySessionId, cartId },
-        'ORDER_STATUS approved but no CT Payment exists yet - skipping (Payments are created by /payments, not webhooks)',
+        'ORDER_STATUS approved but no CT Payment and no persisted checkoutTransactionItemId - skipping',
       )
 
       return
@@ -717,7 +755,7 @@ export class BriqpayNotificationService {
     // Update authorization to Success if not already done
     if (!alreadySuccessful) {
       const updatedPayment = await this.ctPaymentService.updatePayment({
-        id: payment[0].id,
+        id: payments[0].id,
         transaction: {
           type: 'Authorization',
           interactionId: briqpaySessionId,
@@ -732,18 +770,24 @@ export class BriqpayNotificationService {
     }
 
     // Always attempt to ingest Briqpay session data to order custom fields
-    await this.ingestSessionDataToOrder(briqpaySessionId, payment[0].id)
+    await this.ingestSessionDataToOrder(briqpaySessionId, payments[0].id)
   }
 
   /**
    * Handles Authorization Rejected status.
    * Maps to CT Transaction Type: Authorization with state: Failure
    */
-  private handleAuthorizationRejected = async (payment: Payment[], briqpaySession: MediumBriqpayResponse) => {
+  private handleAuthorizationRejected = async (
+    payment: Payment[],
+    briqpaySession: MediumBriqpayResponse,
+    cartId?: string,
+  ) => {
     const briqpaySessionId = briqpaySession.sessionId
     const transaction = getTransaction(briqpaySession)
 
-    if (!payment.length) {
+    const payments = await this.resolvePaymentForWebhook(payment, briqpaySessionId, cartId)
+
+    if (!payments.length) {
       appLogger.info({ briqpaySessionId }, 'No payment found for rejected authorization, skipping.')
       return
     }
@@ -753,7 +797,7 @@ export class BriqpayNotificationService {
     const currency = transaction?.currency ?? briqpaySession.data?.order?.currency ?? 'EUR'
 
     const updatedPayment = await this.ctPaymentService.updatePayment({
-      id: payment[0].id,
+      id: payments[0].id,
       transaction: {
         type: 'Authorization',
         interactionId: briqpaySessionId,
@@ -767,7 +811,7 @@ export class BriqpayNotificationService {
     // Always attempt to ingest Briqpay session data to order custom fields
     // This is done regardless of whether the authorization was updated, as the order
     // may have been created after the initial authorization
-    await this.ingestSessionDataToOrder(briqpaySessionId, payment[0].id)
+    await this.ingestSessionDataToOrder(briqpaySessionId, payments[0].id)
   }
 
   /**

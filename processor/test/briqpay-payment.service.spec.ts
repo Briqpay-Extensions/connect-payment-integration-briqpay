@@ -2965,11 +2965,11 @@ describe('briqpay-payment.service', () => {
     expect(updateSpy).toHaveBeenCalledTimes(0)
   })
 
-  test('calls handleOrderPending on ORDER_PENDING event with no payment existing', async () => {
+  test('ORDER_PENDING with no payment and no persisted tag reads the cart but creates nothing', async () => {
     const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValueOnce({} as any)
+    // mockGetCartResult() has no `custom` -> no persisted tag -> fallback reads the cart, creates nothing.
     const getCartSpy = jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(mockGetCartResult())
 
-    // Mock Briqpay.getSession to return ORDER_PENDING status (source of truth)
     jest
       .spyOn(Briqpay, 'getSession')
       .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_PENDING }))
@@ -2993,10 +2993,8 @@ describe('briqpay-payment.service', () => {
     const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
     await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
-    // Webhooks never create a CT Payment (it would lack checkoutTransactionItemId and block
-    // automatic Order creation). The session-authenticated /payments call owns creation.
+    expect(getCartSpy).toHaveBeenCalledWith({ id: 'webhook-cart-id' })
     expect(createSpy).not.toHaveBeenCalled()
-    expect(getCartSpy).not.toHaveBeenCalled()
   })
 
   test('calls handleOrderRejected on ORDER_REJECTED event', async () => {
@@ -3289,11 +3287,10 @@ describe('briqpay-payment.service', () => {
     expect(updateSpy).toHaveBeenCalledTimes(0)
   })
 
-  test('calls handleOrderApproved on ORDER_APPROVED_NOT_CAPTURED event with no payment existing', async () => {
+  test('ORDER_APPROVED_NOT_CAPTURED with no payment and no persisted tag reads the cart but creates nothing', async () => {
     const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValueOnce({} as any)
     const getCartSpy = jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(mockGetCartResult())
 
-    // Mock Briqpay.getSession to return ORDER_APPROVED_NOT_CAPTURED status (source of truth)
     jest
       .spyOn(Briqpay, 'getSession')
       .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED }))
@@ -3317,10 +3314,200 @@ describe('briqpay-payment.service', () => {
     const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
     await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
 
-    // Webhooks never create a CT Payment (it would lack checkoutTransactionItemId and block
-    // automatic Order creation). The session-authenticated /payments call owns creation.
+    expect(getCartSpy).toHaveBeenCalledWith({ id: 'webhook-cart-id-2' })
     expect(createSpy).not.toHaveBeenCalled()
+  })
+
+  test('ORDER_PENDING with a persisted tag creates one tagged Payment + Authorization Pending', async () => {
+    const cartWithTag = {
+      ...mockGetCartResult(),
+      id: 'webhook-cart-id-3',
+      custom: {
+        type: { typeId: 'type', id: 'briqpay-type' },
+        fields: { 'briqpay-checkout-transaction-item-id': 'cti-xyz' },
+      },
+    }
+    const getCartSpy = jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cartWithTag)
+    const createSpy = jest
+      .spyOn(paymentSDK.ctPaymentService, 'createPayment')
+      .mockResolvedValue({ ...mockGetPaymentResult, id: 'fallback-payment-id', transactions: [] })
+    jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cartWithTag)
+    const updateSpy = jest
+      .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+      .mockResolvedValue({ ...mockGetPaymentResult, id: 'fallback-payment-id', transactions: [] })
+
+    jest
+      .spyOn(Briqpay, 'getSession')
+      .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_PENDING }))
+
+    jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async () => {
+      return []
+    })
+
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      cartId: 'webhook-cart-id-3',
+      event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING,
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.PENDING,
+        amountIncVat: 119000,
+        currency: 'EUR',
+      },
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
+
+    expect(getCartSpy).toHaveBeenCalledWith({ id: 'webhook-cart-id-3' })
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ checkoutTransactionItemId: 'cti-xyz', interfaceId: 'abc123', key: 'briqpay-abc123' }),
+    )
+    expect(updateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'fallback-payment-id',
+        transaction: expect.objectContaining({ type: 'Authorization', state: 'Pending' }),
+      }),
+    )
+  })
+
+  test('ORDER_APPROVED_NOT_CAPTURED with a persisted tag creates one tagged Payment + Authorization Success', async () => {
+    const cartWithTag = {
+      ...mockGetCartResult(),
+      id: 'webhook-cart-id-4',
+      custom: {
+        type: { typeId: 'type', id: 'briqpay-type' },
+        fields: { 'briqpay-checkout-transaction-item-id': 'cti-xyz' },
+      },
+    }
+    jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cartWithTag)
+    const createSpy = jest
+      .spyOn(paymentSDK.ctPaymentService, 'createPayment')
+      .mockResolvedValue({ ...mockGetPaymentResult, id: 'fallback-payment-id', transactions: [] })
+    jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cartWithTag)
+    const updateSpy = jest
+      .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+      .mockResolvedValue({ ...mockGetPaymentResult, id: 'fallback-payment-id', transactions: [] })
+
+    jest
+      .spyOn(Briqpay, 'getSession')
+      .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED }))
+
+    jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async () => {
+      return []
+    })
+
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      cartId: 'webhook-cart-id-4',
+      event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.APPROVED,
+        amountIncVat: 119000,
+        currency: 'EUR',
+      },
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
+
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ checkoutTransactionItemId: 'cti-xyz', interfaceId: 'abc123', key: 'briqpay-abc123' }),
+    )
+    expect(updateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'fallback-payment-id',
+        transaction: expect.objectContaining({ type: 'Authorization', state: 'Success' }),
+      }),
+    )
+  })
+
+  test('transaction-level REJECTED with a persisted tag creates the tagged Payment + Authorization Failure', async () => {
+    const cartWithTag = {
+      ...mockGetCartResult(),
+      id: 'webhook-cart-id-5',
+      custom: {
+        type: { typeId: 'type', id: 'briqpay-type' },
+        fields: { 'briqpay-checkout-transaction-item-id': 'cti-xyz' },
+      },
+    }
+    jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cartWithTag)
+    const createSpy = jest
+      .spyOn(paymentSDK.ctPaymentService, 'createPayment')
+      .mockResolvedValue({ ...mockGetPaymentResult, id: 'fallback-payment-id', transactions: [] })
+    jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cartWithTag)
+    const updateSpy = jest
+      .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+      .mockResolvedValue({ ...mockGetPaymentResult, id: 'fallback-payment-id', transactions: [] })
+
+    jest
+      .spyOn(Briqpay, 'getSession')
+      .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_REJECTED }))
+
+    jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async () => {
+      return []
+    })
+
+    // Transaction-level REJECTED routes to handleAuthorizationRejected (the order-level
+    // ORDER_REJECTED is a deliberate no-op). The fallback records the attempt as Failure.
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      cartId: 'webhook-cart-id-5',
+      event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.REJECTED,
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.REJECTED,
+        amountIncVat: 119000,
+        currency: 'EUR',
+      },
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
+
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ checkoutTransactionItemId: 'cti-xyz', interfaceId: 'abc123', key: 'briqpay-abc123' }),
+    )
+    expect(updateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'fallback-payment-id',
+        transaction: expect.objectContaining({ type: 'Authorization', state: 'Failure' }),
+      }),
+    )
+  })
+
+  test('ORDER_PENDING with no cartId on the webhook creates nothing', async () => {
+    const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValueOnce({} as any)
+    const getCartSpy = jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(mockGetCartResult())
+
+    jest
+      .spyOn(Briqpay, 'getSession')
+      .mockResolvedValueOnce(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_PENDING }))
+    jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async () => {
+      return []
+    })
+
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING,
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.PENDING,
+        amountIncVat: 119000,
+        currency: 'EUR',
+      },
+    }
+    const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
+
+    // No cartId on the webhook -> cannot resolve the cart -> never create (never a tagless Payment).
     expect(getCartSpy).not.toHaveBeenCalled()
+    expect(createSpy).not.toHaveBeenCalled()
   })
 
   test('calls handleCapturePending on capture PENDING event', async () => {
