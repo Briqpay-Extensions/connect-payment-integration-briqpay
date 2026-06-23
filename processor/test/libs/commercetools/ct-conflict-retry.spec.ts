@@ -29,6 +29,21 @@ describe('CtConflictRetry', () => {
     })
   })
 
+  describe('isInvalidOperation', () => {
+    test('is true for a 400 with InvalidOperation code (top-level or in fields)', () => {
+      expect(CtConflictRetry.isInvalidOperation({ statusCode: 400, code: 'InvalidOperation' })).toBe(true)
+      expect(CtConflictRetry.isInvalidOperation({ httpErrorStatus: 400, code: 'InvalidOperation' })).toBe(true)
+      expect(CtConflictRetry.isInvalidOperation({ statusCode: 400, fields: [{ code: 'InvalidOperation' }] })).toBe(true)
+    })
+
+    test('is false for a 400 without the InvalidOperation code, or other statuses', () => {
+      expect(CtConflictRetry.isInvalidOperation({ statusCode: 400, code: 'InvalidInput' })).toBe(false)
+      expect(CtConflictRetry.isInvalidOperation({ statusCode: 409, code: 'InvalidOperation' })).toBe(false)
+      expect(CtConflictRetry.isInvalidOperation({ statusCode: 404 })).toBe(false)
+      expect(CtConflictRetry.isInvalidOperation(null)).toBe(false)
+    })
+  })
+
   describe('withConflictRetry', () => {
     test('returns the result on first success without retrying', async () => {
       const run = jest.fn<() => Promise<string>>().mockResolvedValue('ok')

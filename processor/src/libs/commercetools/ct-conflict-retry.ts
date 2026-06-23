@@ -36,6 +36,21 @@ const isNotFound = (err: unknown): boolean => {
   return e.statusCode === 404 || e.httpErrorStatus === 404
 }
 
+// An Ordered cart is immutable (not deleted): CT rejects updates to it with 400 InvalidOperation,
+// not 404. Used to treat "cart already converted to an order" as a benign no-op for cart staging.
+const isInvalidOperation = (err: unknown): boolean => {
+  if (!err || typeof err !== 'object') {
+    return false
+  }
+
+  const e: CtErrorShape = err
+  const is400 = e.statusCode === 400 || e.httpErrorStatus === 400
+  const hasInvalidOpCode =
+    e.code === 'InvalidOperation' || (Array.isArray(e.fields) && e.fields.some((f) => f?.code === 'InvalidOperation'))
+
+  return is400 && hasInvalidOpCode
+}
+
 const DEFAULT_MAX_ATTEMPTS = 5
 
 /**
@@ -68,6 +83,7 @@ const withConflictRetry = async <T>(run: () => Promise<T>, maxAttempts: number =
 const CtConflictRetry = {
   isConflict,
   isNotFound,
+  isInvalidOperation,
   withConflictRetry,
 }
 

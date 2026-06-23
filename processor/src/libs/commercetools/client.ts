@@ -63,10 +63,10 @@ const userAgentOptions: HttpUserAgentOptions = {
   libraryVersion: packageJSON.version,
 }
 
+// Do not add .withLoggerMiddleware(): it console.logs full requests/responses
 export const ctpClient = new ClientBuilder()
   .withProjectKey(config.projectKey)
   .withClientCredentialsFlow(authMiddlewareOptions)
   .withHttpMiddleware(httpMiddlewareOptions)
   .withUserAgentMiddleware(userAgentOptions)
-  .withLoggerMiddleware()
   .build()

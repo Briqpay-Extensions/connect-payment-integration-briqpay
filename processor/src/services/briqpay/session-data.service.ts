@@ -311,10 +311,14 @@ export class BriqpaySessionDataService {
       await CtConflictRetry.withConflictRetry(runUpdate)
     } catch (error) {
       // A pre-order webhook can race CT order auto-creation: by the time the cart write runs,
-      // the cart may already be Ordered/deleted. That is a benign no-op for cart staging - the
-      // order will be enriched directly by a later webhook - not an ingestion failure.
-      if (target.resource === 'cart' && CtConflictRetry.isNotFound(error)) {
-        appLogger.info({ cartId: target.id }, 'Cart already ordered/deleted, skipping Briqpay cart staging')
+      // the cart may already be converted to an order. An Ordered cart is immutable (400
+      // InvalidOperation); a deleted cart is 404. Either way it is a benign no-op for cart
+      // staging - the order is enriched directly by a later webhook - not an ingestion failure.
+      if (
+        target.resource === 'cart' &&
+        (CtConflictRetry.isNotFound(error) || CtConflictRetry.isInvalidOperation(error))
+      ) {
+        appLogger.info({ cartId: target.id }, 'Cart no longer writable (ordered or deleted), skipping cart staging')
         return
       }
 

@@ -622,6 +622,27 @@ describe('BriqpaySessionDataService', () => {
       expect(mockCartPost).not.toHaveBeenCalled()
     })
 
+    test('treats a 400 InvalidOperation (cart already converted to an order) as a benign no-op', async () => {
+      const invalidOp = Object.assign(new Error('InvalidOperation'), { statusCode: 400, code: 'InvalidOperation' })
+      mockCartGet.mockResolvedValueOnce({
+        body: { id: 'cart-1', version: 1, custom: { type: { id: 'type-id', key: 'briqpay-session-id' }, fields: {} } },
+      })
+      mockCartPostExecute.mockRejectedValueOnce(invalidOp)
+
+      await expect(
+        service.updateResourceCustomFields({ resource: 'cart', id: 'cart-1' }, customFields),
+      ).resolves.toBeUndefined()
+    })
+
+    test('propagates a non-benign cart error (e.g. 500) instead of swallowing it', async () => {
+      const serverError = Object.assign(new Error('Internal Server Error'), { statusCode: 500 })
+      mockCartGet.mockRejectedValueOnce(serverError)
+
+      await expect(service.updateResourceCustomFields({ resource: 'cart', id: 'cart-1' }, customFields)).rejects.toBe(
+        serverError,
+      )
+    })
+
     test('retries on 409 and re-derives version and the custom-type branch each attempt', async () => {
       const conflict = Object.assign(new Error('Conflict'), { statusCode: 409 })
 
