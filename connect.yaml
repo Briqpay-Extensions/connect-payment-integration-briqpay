@@ -97,6 +97,14 @@ deployAs:
           description: Key of CustomType field to store whether the order was auto-captured
           required: false
           default: briqpay-autocaptured
+        - key: BRIQPAY_FUTURE_ORDER_NUMBER_KEY
+          description: Key of CustomType field on the cart that persists the intended order number across checkout entries. Read back by the merchant backend on subsequent checkouts so Briqpay reference1 stays aligned with the eventual Order.orderNumber.
+          required: false
+          default: briqpay-future-order-number
+        - key: BRIQPAY_CHECKOUT_TRANSACTION_ITEM_ID_KEY
+          description: Key of CustomType field on the cart that stores the Checkout transaction-item id. Persisted at config() time so the session-less Briqpay webhook can create a correctly-tagged Payment and let Checkout auto-create the Order when the buyer never returns to the checkout.
+          required: false
+          default: briqpay-checkout-transaction-item-id
         - key: ALLOWED_ORIGINS
           description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com).
           required: false

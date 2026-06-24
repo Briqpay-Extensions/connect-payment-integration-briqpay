@@ -23,6 +23,7 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
 - Webhook support for asynchronous payment status updates (capture, refund, cancel)
 - Dynamic custom type extension for storing Briqpay session data on orders (extends existing order types or creates new ones)
 - Persistence of the merchant's intended `futureOrderNumber` on the cart so it stays stable across CT Session rotations (see [Future Order Number Persistence](#future-order-number-persistence))
+- Webhook-driven recovery of payment/order creation when the buyer never returns to the storefront (e.g. off-site payment redirect), with pre-order session data staged on the cart and copied onto the order at creation (see [Webhook-Driven Payment & Order Recovery](#webhook-driven-payment--order-recovery))
 - Supports payment operations: authorize, capture, refund, cancel, and reverse
 - Includes local development utilities with Docker Compose setup
 - Jest testing framework with MSW for API mocking
@@ -104,6 +105,7 @@ client_credentials&scope=manage_orders:{projectKey} view_states:{projectKey} vie
    - `BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY` - Default: `briqpay-transaction-data-psp-integration-name`
    - `BRIQPAY_AUTOCAPTURED_KEY` - Default: `briqpay-autocaptured` (Boolean field on the order indicating whether the order was auto-captured)
    - `BRIQPAY_FUTURE_ORDER_NUMBER_KEY` - Default: `briqpay-future-order-number` (cart custom field where the connector persists the intended order number on first Briqpay session creation, so the merchant backend can read it back on subsequent checkout entries — see [Future Order Number Persistence](#future-order-number-persistence))
+   - `BRIQPAY_CHECKOUT_TRANSACTION_ITEM_ID_KEY` - Default: `briqpay-checkout-transaction-item-id` (cart custom field where the connector persists the Checkout transaction-item id at first session creation, so the session-less webhook can create a correctly-tagged payment and let Checkout auto-create the order when the buyer never returns — see [Webhook-Driven Payment & Order Recovery](#webhook-driven-payment--order-recovery))
 
    > **Note**: The connector dynamically extends existing custom types for the `order` resource type instead of always creating separate types. If field name conflicts exist, Briqpay fields are prefixed with `briqpay-` to avoid data loss.
 
@@ -376,6 +378,8 @@ flowchart TD
 
 - The connector also persists the intended order number on the cart as a `briqpay-future-order-number` custom field at first Briqpay session creation. The merchant backend is expected to read this value back on subsequent checkout entries (e.g. when a customer returns days later) and reuse it when stamping `metadata.futureOrderNumber` on the new CT Session — without this read-back, Briqpay's `reference1` and the eventual `Order.orderNumber` will diverge. See [Future Order Number Persistence](#future-order-number-persistence) for details and integration code.
 
+- If the buyer completes payment off-site and never returns to the storefront (e.g. closes the tab after a hosted-payment-page redirect), the connector still completes the order: the session-less Briqpay webhook creates a correctly-tagged Payment from the `briqpay-checkout-transaction-item-id` persisted on the cart, and any pre-order webhook data is staged on the cart so commercetools copies it onto the order at creation. This is automatic and needs no merchant integration changes. See [Webhook-Driven Payment & Order Recovery](#webhook-driven-payment--order-recovery).
+
 - Webhook notifications from Briqpay are processed asynchronously. Ensure your webhook endpoint is publicly accessible and properly configured in the Briqpay dashboard.
 
 - The connector supports the following payment operations through the `/operations/payment-intents/:id` endpoint:
@@ -437,6 +441,28 @@ For any cart that completes a purchase, the following three values are guarantee
 | Briqpay session                                   | `references.reference1`                            |
 
 This holds regardless of how many CT Sessions are minted against the same cart or how long the customer takes to return.
+
+## Webhook-Driven Payment & Order Recovery
+
+### The problem
+
+Normally the buyer returns to the storefront after paying, the enabler calls the processor's `/payments` endpoint, a commercetools Payment is created and linked to the cart, and commercetools Checkout auto-creates the Order. On off-site payment flows (e.g. a hosted payment page redirect) the buyer may complete payment and never return — closing the tab — so `/payments` never runs. Without a linked Payment the cart never converts to an Order, even though the payment succeeded.
+
+### How the connector helps
+
+On the first `/config` call (when the Briqpay session is created), the connector persists the Checkout transaction-item id it received from the commercetools Checkout session onto a cart custom field, `briqpay-checkout-transaction-item-id` (configurable via `BRIQPAY_CHECKOUT_TRANSACTION_ITEM_ID_KEY`). That tag is the link commercetools needs to auto-create the Order from a Payment.
+
+When Briqpay later sends the session-less `ORDER_STATUS` webhook for a cart that still has no Payment, the connector reads the persisted tag and creates a correctly-tagged commercetools Payment on the cart, letting Checkout auto-create the Order. If no tag is present (e.g. a flow that does not route through commercetools Checkout), the webhook safely skips Payment creation rather than creating a tagless Payment — a tagless Payment would permanently block Order auto-creation.
+
+Unlike `briqpay-future-order-number` (write-once), the transaction-item id is overwritten whenever a new active Checkout session is started, so the tag always links to the current checkout.
+
+### Copy-on-creation of session data
+
+A pre-order webhook can arrive before the Order exists. When that happens, the connector stages the Briqpay session data (PSP metadata, reservation IDs, etc.) on the cart's custom fields; commercetools copies the cart's custom fields onto the Order when it auto-creates it, so the Order is born with the data instead of losing it to the webhook race. Later webhooks enrich the Order directly once it exists. If the cart has already been converted to an Order (immutable) or deleted by the time the staging write runs, the connector treats it as a benign no-op.
+
+### Requirements
+
+This recovery path is automatic and requires no merchant integration changes — the Checkout transaction-item id is supplied by commercetools' standard Checkout session, not by the storefront. It is active whenever the merchant uses commercetools Checkout. Merchants whose checkout does not flow through commercetools Checkout simply keep the prior behavior (the webhook skips Payment creation); nothing breaks.
 
 ## 🚀 Quick Start
 
@@ -656,6 +682,10 @@ deployAs:
           description: Key of CustomType field on the cart that persists the intended order number across checkout entries. Read back by the merchant backend on subsequent checkouts so Briqpay reference1 stays aligned with the eventual Order.orderNumber.
           required: false
           default: briqpay-future-order-number
+        - key: BRIQPAY_CHECKOUT_TRANSACTION_ITEM_ID_KEY
+          description: Key of CustomType field on the cart that stores the Checkout transaction-item id. Persisted at config() time so the session-less Briqpay webhook can create a correctly-tagged Payment and let Checkout auto-create the Order when the buyer never returns to the checkout.
+          required: false
+          default: briqpay-checkout-transaction-item-id
         - key: ALLOWED_ORIGINS
           description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com).
           required: false
@@ -692,6 +722,7 @@ deployAs:
 | `BRIQPAY_TERMS_URL`               | URL to terms page                   | Yes      | -                                                                         |
 | `BRIQPAY_SESSION_CUSTOM_TYPE_KEY` | Custom type key for session storage | No       | `briqpay-session-id`                                                      |
 | `BRIQPAY_FUTURE_ORDER_NUMBER_KEY` | Cart custom field name for the persisted future order number (see [Future Order Number Persistence](#future-order-number-persistence)) | No       | `briqpay-future-order-number`                                            |
+| `BRIQPAY_CHECKOUT_TRANSACTION_ITEM_ID_KEY` | Cart custom field name for the persisted Checkout transaction-item id, used by the webhook to recover payment/order creation when the buyer never returns (see [Webhook-Driven Payment & Order Recovery](#webhook-driven-payment--order-recovery)) | No       | `briqpay-checkout-transaction-item-id`                                   |
 
 ### Enabler Usage
 
@@ -1204,10 +1235,13 @@ class BriqpaySessionService {
   // Persists Briqpay session metadata on the cart custom fields:
   //  - briqpay-session-id: always kept in sync with the active Briqpay session
   //  - briqpay-future-order-number: write-once on first session creation; never overwritten
+  //  - briqpay-checkout-transaction-item-id: overwritten on each new active Checkout session
+  //    so the webhook fallback always links to the current checkout
   async updateCartWithBriqpaySession(
     ctCart: Cart,
     briqpaySessionId: string,
     futureOrderNumber?: string,
+    checkoutTransactionItemId?: string,
   ): Promise<void>;
 }
 ```
@@ -1219,6 +1253,7 @@ class BriqpaySessionService {
 - Compares cart with existing session to determine if update is needed
 - Enables session recovery across frontend/backend boundaries
 - Persists the intended order number (`briqpay-future-order-number`) write-once on first creation so the merchant backend can reuse it across CT Session rotations (see [Future Order Number Persistence](#future-order-number-persistence))
+- Persists the Checkout transaction-item id (`briqpay-checkout-transaction-item-id`), overwritten on each new active Checkout session, so the session-less webhook can recover payment/order creation when the buyer never returns (see [Webhook-Driven Payment & Order Recovery](#webhook-driven-payment--order-recovery))
 
 #### BriqpayOperationService
 
@@ -1306,6 +1341,10 @@ export async function createBriqpayCustomType(key: string) {
   //   written write-once on first Briqpay session creation so the merchant backend
   //   can read it back on subsequent checkout entries (see "Future Order Number
   //   Persistence" section).
+  // - briqpay-checkout-transaction-item-id: Checkout transaction-item id persisted on the
+  //   cart at first session creation so the session-less webhook can create a correctly-tagged
+  //   Payment and let Checkout auto-create the Order when the buyer never returns (see
+  //   "Webhook-Driven Payment & Order Recovery" section).
 }
 ```
 
