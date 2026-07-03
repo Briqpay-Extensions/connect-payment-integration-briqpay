@@ -80,6 +80,7 @@ jest.mock('../../../src/payment-sdk', () => ({
   appLogger: {
     info: jest.fn(),
     error: jest.fn(),
+    warn: jest.fn(),
   },
 }))
 
@@ -540,6 +541,51 @@ describe('BriqpaySessionDataService', () => {
 
       await expect(service.ingestSessionDataToOrder('session-123', 'order-123')).rejects.toThrow(
         'Failed to fetch Briqpay session session-123: 500 Internal Server Error',
+      )
+    })
+
+    test('drops fields not defined on the order custom type so the rest still write', async () => {
+      // Session carries a field (psp-integration-name) the merchant type does NOT define -
+      // the type mock only has session-id, psp-meta-data-description, reservation-id.
+      const mockSessionData: BriqpayFullSessionResponse = {
+        sessionId: 'session-123',
+        data: {
+          transactions: [
+            {
+              reservationId: 'res-123',
+              pspIntegrationName: 'Nuvei - Google Pay',
+            },
+          ],
+        },
+      }
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockSessionData),
+      } as Response)
+
+      mockOrderGet.mockResolvedValueOnce({
+        body: {
+          id: 'order-123',
+          version: 1,
+          custom: { type: { id: 'type-id', key: 'briqpay-session-id' }, fields: {} },
+        },
+      })
+
+      mockOrderPostExecute.mockResolvedValueOnce({ body: { id: 'order-123', version: 2 } })
+
+      await service.ingestSessionDataToOrder('session-123', 'order-123')
+
+      // The defined field is written; the undefined one is filtered out (not sent to CT),
+      // so the whole POST is not rejected.
+      const postedActions = mockOrderPost.mock.calls[0][0].body.actions
+      expect(postedActions).toContainEqual({
+        action: 'setCustomField',
+        name: 'briqpay-transaction-data-reservation-id',
+        value: 'res-123',
+      })
+      expect(postedActions).not.toContainEqual(
+        expect.objectContaining({ name: 'briqpay-transaction-data-psp-integration-name' }),
       )
     })
   })

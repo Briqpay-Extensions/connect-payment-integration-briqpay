@@ -65,6 +65,9 @@ export class BriqpaySessionDataService {
 
     appLogger.info({ sessionId, url }, 'Fetching full Briqpay session data')
 
+    // No explicit timeout: webhook ingestion runs in the background (fire-and-forget), so a
+    // slow Briqpay response delays nothing and still lands the data; undici's own transport
+    // timeouts bound a truly hung connection.
     const response = await fetch(url, {
       method: 'GET',
       headers: {
@@ -303,7 +306,20 @@ export class BriqpaySessionDataService {
 
         await this.postResourceActions(target, versionAfterType, actions)
       } else {
-        await this.postResourceActions(target, state.version, actions)
+        // Ingestion re-runs on every webhook; writing identical values would bump the
+        // resource version and spam order-changed messages, so only post actual changes.
+        const changedActions = actions.filter((action) => state.fields?.[action.name] !== action.value)
+
+        if (changedActions.length === 0) {
+          appLogger.info(
+            { resource: target.resource, resourceId: target.id, fields: Object.keys(customFields) },
+            'Custom fields already up to date, skipping write',
+          )
+
+          return
+        }
+
+        await this.postResourceActions(target, state.version, changedActions)
       }
     }
 
@@ -337,12 +353,15 @@ export class BriqpaySessionDataService {
   }
 
   /**
-   * Fetches the version and custom-type state of an order or cart.
-   * Expands custom.type so the current type key is available.
+   * Fetches the version, custom-type state, and current custom field values of an order or
+   * cart. Expands custom.type so the current type key is available.
    */
-  private async fetchResourceCustomState(
-    target: CtCustomFieldTarget,
-  ): Promise<{ version: number; hasCustom: boolean; currentTypeKey: string | undefined }> {
+  private async fetchResourceCustomState(target: CtCustomFieldTarget): Promise<{
+    version: number
+    hasCustom: boolean
+    currentTypeKey: string | undefined
+    fields: Record<string, unknown> | undefined
+  }> {
     if (target.resource === 'order') {
       const response = await apiRoot
         .orders()
@@ -351,7 +370,12 @@ export class BriqpaySessionDataService {
         .execute()
       const order = response.body
 
-      return { version: order.version, hasCustom: !!order.custom, currentTypeKey: order.custom?.type.obj?.key }
+      return {
+        version: order.version,
+        hasCustom: !!order.custom,
+        currentTypeKey: order.custom?.type.obj?.key,
+        fields: order.custom?.fields,
+      }
     }
 
     const response = await apiRoot
@@ -361,7 +385,12 @@ export class BriqpaySessionDataService {
       .execute()
     const cart = response.body
 
-    return { version: cart.version, hasCustom: !!cart.custom, currentTypeKey: cart.custom?.type.obj?.key }
+    return {
+      version: cart.version,
+      hasCustom: !!cart.custom,
+      currentTypeKey: cart.custom?.type.obj?.key,
+      fields: cart.custom?.fields,
+    }
   }
 
   /**
@@ -393,11 +422,13 @@ export class BriqpaySessionDataService {
     appLogger.info({ sessionId, orderId }, 'Starting Briqpay session data ingestion to order')
 
     try {
+      const target: CtCustomFieldTarget = { resource: 'order', id: orderId }
       const sessionData = await this.fetchFullSession(sessionId)
-      const fieldMappings = await this.buildFieldMappingsForResource({ resource: 'order', id: orderId })
-      const customFields = this.extractCustomFields(sessionData, fieldMappings)
+      const fieldContext = await this.buildFieldContextForResource(target)
+      const customFields = this.extractCustomFields(sessionData, fieldContext?.mappings)
+      const safeFields = this.dropFieldsNotInType(customFields, fieldContext?.validFieldNames, target)
 
-      await this.updateResourceCustomFields({ resource: 'order', id: orderId }, customFields)
+      await this.updateResourceCustomFields(target, safeFields)
 
       appLogger.info({ sessionId, orderId }, 'Successfully completed Briqpay session data ingestion')
     } catch (error) {
@@ -420,11 +451,13 @@ export class BriqpaySessionDataService {
     appLogger.info({ sessionId, cartId }, 'Starting Briqpay session data ingestion to cart')
 
     try {
+      const target: CtCustomFieldTarget = { resource: 'cart', id: cartId }
       const sessionData = await this.fetchFullSession(sessionId)
-      const fieldMappings = await this.buildFieldMappingsForResource({ resource: 'cart', id: cartId })
-      const customFields = this.extractCustomFields(sessionData, fieldMappings)
+      const fieldContext = await this.buildFieldContextForResource(target)
+      const customFields = this.extractCustomFields(sessionData, fieldContext?.mappings)
+      const safeFields = this.dropFieldsNotInType(customFields, fieldContext?.validFieldNames, target)
 
-      await this.updateResourceCustomFields({ resource: 'cart', id: cartId }, customFields)
+      await this.updateResourceCustomFields(target, safeFields)
 
       appLogger.info({ sessionId, cartId }, 'Successfully completed Briqpay session data ingestion to cart')
     } catch (error) {
@@ -433,13 +466,16 @@ export class BriqpaySessionDataService {
   }
 
   /**
-   * Builds field mappings for an order or cart based on its custom type definition.
-   * Handles prefixed field names from conflict resolution. Cart and order share the same
-   * custom type, so the mapping resolves identically against whichever resource is targeted.
+   * Resolves the field context for an order or cart from its custom type definition: the
+   * name remapping for prefixed fields (conflict resolution) and the set of field names the
+   * type actually defines. Cart and order share the same custom type, so this resolves
+   * identically against whichever resource is targeted. Returns undefined when the resource
+   * has no custom type yet - the caller then writes all fields under a freshly set Briqpay
+   * type, which defines every field by construction.
    */
-  private async buildFieldMappingsForResource(
+  private async buildFieldContextForResource(
     target: CtCustomFieldTarget,
-  ): Promise<Record<string, string> | undefined> {
+  ): Promise<{ mappings: Record<string, string>; validFieldNames: Set<string> } | undefined> {
     const customTypeId = await this.fetchResourceCustomTypeId(target)
 
     if (!customTypeId) {
@@ -449,16 +485,54 @@ export class BriqpaySessionDataService {
     const typeResponse = await apiRoot.types().withId({ ID: customTypeId }).get().execute()
     const typeDefinition = typeResponse.body
 
-    const fieldMappings: Record<string, string> = {}
-    const existingFieldNames = new Set(typeDefinition.fieldDefinitions.map((f) => f.name))
+    const mappings: Record<string, string> = {}
+    const validFieldNames = new Set(typeDefinition.fieldDefinitions.map((f) => f.name))
 
     for (const fieldName of this.getPossibleBriqpayFieldNames()) {
-      if (!existingFieldNames.has(fieldName) && existingFieldNames.has(`briqpay-${fieldName}`)) {
-        fieldMappings[fieldName] = `briqpay-${fieldName}`
+      if (!validFieldNames.has(fieldName) && validFieldNames.has(`briqpay-${fieldName}`)) {
+        mappings[fieldName] = `briqpay-${fieldName}`
       }
     }
 
-    return fieldMappings
+    return { mappings, validFieldNames }
+  }
+
+  /**
+   * Drops extracted fields the resource's custom type does not define. All fields are written
+   * in one atomic setCustomField POST, so a single field the type is missing (e.g. a merchant
+   * type predating a newly added field) makes commercetools reject the whole update with a
+   * 400 - silently dropping every field. Filtering to defined fields lets the rest still land.
+   * When validFieldNames is undefined (no existing custom type) nothing is dropped: the caller
+   * sets the full Briqpay type, which defines every field.
+   */
+  private dropFieldsNotInType(
+    fields: ExtractedBriqpayCustomFields,
+    validFieldNames: Set<string> | undefined,
+    target: CtCustomFieldTarget,
+  ): ExtractedBriqpayCustomFields {
+    if (!validFieldNames) {
+      return fields
+    }
+
+    const kept: ExtractedBriqpayCustomFields = {}
+    const dropped: string[] = []
+
+    for (const [name, value] of Object.entries(fields)) {
+      if (validFieldNames.has(name)) {
+        kept[name] = value
+      } else {
+        dropped.push(name)
+      }
+    }
+
+    if (dropped.length > 0) {
+      appLogger.warn(
+        { resource: target.resource, resourceId: target.id, dropped },
+        'Dropping Briqpay fields not defined on the resource custom type - redeploy the connector to add them',
+      )
+    }
+
+    return kept
   }
 
   /**
