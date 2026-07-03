@@ -1,10 +1,10 @@
 import { Cart, CommercetoolsCartService } from '@commercetools/connect-payments-sdk'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
 import type { Cart as PlatformCart } from '@commercetools/platform-sdk'
-import { LineItem } from '@commercetools/platform-sdk'
+import { CustomLineItem, LineItem } from '@commercetools/platform-sdk'
 import { appLogger } from '../../payment-sdk'
-import { CartItem, MediumBriqpayResponse } from '../types/briqpay-payment.type'
-import Briqpay from '../../libs/briqpay/BriqpayService'
+import { CartItem, ITEM_PRODUCT_TYPE, MediumBriqpayResponse } from '../types/briqpay-payment.type'
+import Briqpay, { mapCustomLineItem } from '../../libs/briqpay/BriqpayService'
 import { apiRoot } from '../../libs/commercetools/api-root'
 import { SessionError } from '../../libs/errors/briqpay-errors'
 import { getBriqpayTypeKey } from '../../connectors/actions'
@@ -301,12 +301,21 @@ export class BriqpaySessionService {
     )
     const cartItems = ctCart.lineItems
 
-    if (sessionItems.length !== cartItems.length) {
+    // Custom line items are sent to Briqpay as product items too. Negative ones are
+    // mapped to 'discount' which the NON_PRODUCT_TYPES filter above already excludes
+    // from sessionItems, so exclude them here as well. Reusing the real mapper keeps
+    // this comparison exactly in sync with what createSession/updateSession send.
+    const customCartItems = ctCart.customLineItems
+      .map((item) => mapCustomLineItem(item as CustomLineItem, ctCart.locale))
+      .filter((item) => item.productType !== ITEM_PRODUCT_TYPE.DISCOUNT)
+
+    if (sessionItems.length !== cartItems.length + customCartItems.length) {
       appLogger.info(
         {
           briqpayCartLength: sessionItems.length,
           allSessionCartLength: allSessionItems.length,
           ctCartLength: cartItems.length,
+          ctCustomLineItemLength: customCartItems.length,
         },
         'Number of product items does not match',
       )
@@ -322,6 +331,25 @@ export class BriqpaySessionService {
     for (const cartItem of cartItems) {
       if (!this.isCartItemInSession(cartItem as LineItem, sessionItems, locale)) {
         appLogger.info({}, 'No matching session item found for cart item')
+        return false
+      }
+    }
+
+    // Compare each custom line item with session items (mapped vs mapped, so all
+    // fields are directly comparable to what was originally sent to Briqpay)
+    for (const customItem of customCartItems) {
+      const hasMatch = sessionItems.some(
+        (sessionItem) =>
+          'unitPrice' in sessionItem &&
+          sessionItem.name === customItem.name &&
+          sessionItem.reference === customItem.reference &&
+          sessionItem.quantity === customItem.quantity &&
+          sessionItem.unitPrice === customItem.unitPrice &&
+          sessionItem.taxRate === customItem.taxRate,
+      )
+
+      if (!hasMatch) {
+        appLogger.info({}, 'No matching session item found for custom line item')
         return false
       }
     }

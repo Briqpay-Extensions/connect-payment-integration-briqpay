@@ -1,4 +1,4 @@
-import { Address, Cart, LineItem } from '@commercetools/platform-sdk'
+import { Address, Cart, CustomLineItem, LineItem } from '@commercetools/platform-sdk'
 import { apiRoot } from '../commercetools/api-root'
 import { BriqpayDecisionRequest, PaymentOutcome } from '../../dtos/briqpay-payment.dto'
 import {
@@ -35,11 +35,14 @@ const mapBriqpayProductType = (item: LineItem) => {
   return ITEM_PRODUCT_TYPE.PHYSICAL
 }
 
-const getLocalizedName = (item: LineItem, locale: string): string => {
+const getLocalizedName = (item: LineItem | CustomLineItem, locale: string): string => {
   const nameRecord = item.name as Record<string, string> | undefined
   if (nameRecord) {
     const localizedName = nameRecord[locale] || nameRecord['en'] || Object.values(nameRecord)[0]
     if (localizedName) return localizedName
+  }
+  if ('slug' in item) {
+    return item.slug || 'Item'
   }
   return item.productKey ?? item.productId ?? 'Item'
 }
@@ -266,7 +269,53 @@ const mapSingleLineItem = (
   return result
 }
 
-const mapBriqpayCartItem = async (lineItems: LineItem[], locale: string | undefined): Promise<CartItem[]> => {
+/**
+ * Maps a CT custom line item (ad-hoc priced item not backed by a catalog product,
+ * e.g. fees, gift wrapping, store credit) to a Briqpay cart item.
+ *
+ * Uses the ACTUAL taxed amounts (not original-price + discount-line like regular
+ * items) since custom line items carry their own price and CT already bakes any
+ * discounts into taxedPrice/totalPrice.
+ *
+ * Exported so the session comparison can reuse the exact same mapping.
+ */
+export const mapCustomLineItem = (item: CustomLineItem, locale: string | undefined): RegularCartItem => {
+  const fallbackLocale = locale || 'en-GB'
+  const localeName = getLocalizedName(item, fallbackLocale)
+  const quantity = item.quantity
+  const taxRateAmount = item.taxRate?.amount ?? 0
+
+  const grossTotal = item.taxedPrice?.totalGross?.centAmount ?? item.totalPrice.centAmount
+  const netTotal = item.taxedPrice?.totalNet?.centAmount ?? Math.round(grossTotal / (1 + taxRateAmount))
+  const vatTotal = item.taxedPrice?.totalTax?.centAmount ?? grossTotal - netTotal
+
+  // Merchants use negative custom line items for manual discounts/store credit;
+  // those must be sent as discount lines, not negative-priced products.
+  const productType = grossTotal < 0 ? ITEM_PRODUCT_TYPE.DISCOUNT : ITEM_PRODUCT_TYPE.PHYSICAL
+
+  return {
+    productType,
+    reference: item.key || item.slug || item.id,
+    name: localeName,
+    quantity,
+    quantityUnit: 'pc',
+    unitPrice: Math.round(netTotal / quantity),
+    // Derived from gross actuals, NOT item.money: money is the pre-discount list
+    // price and is NET when taxRate.includedInPrice is false (US/B2B carts)
+    unitPriceIncVat: Math.round(grossTotal / quantity),
+    taxRate: Math.round(taxRateAmount * 10000),
+    discountPercentage: 0,
+    totalAmount: grossTotal,
+    totalVatAmount: vatTotal,
+    imageUrl: undefined,
+  }
+}
+
+const mapBriqpayCartItem = async (
+  lineItems: LineItem[],
+  customLineItems: CustomLineItem[],
+  locale: string | undefined,
+): Promise<CartItem[]> => {
   const fallbackLocale = locale || 'en-GB'
 
   const allDiscountIds = collectDiscountIds(lineItems)
@@ -278,9 +327,11 @@ const mapBriqpayCartItem = async (lineItems: LineItem[], locale: string | undefi
   )
 
   const mappedItems = lineItems.flatMap((item) => mapSingleLineItem(item, fallbackLocale, discountNameMap))
+  const mappedCustomItems = customLineItems.map((item) => mapCustomLineItem(item, locale))
+  const allItems = [...mappedItems, ...mappedCustomItems]
 
-  appLogger.info(mappedItems, 'Final mapped items:')
-  return mappedItems
+  appLogger.info(allItems, 'Final mapped items:')
+  return allItems
 }
 
 const mapBriqpayAddress = (address: Address): IAddressSchema => ({
@@ -384,6 +435,14 @@ class BriqpayService {
       return ctCart.shippingInfo.taxRate.amount
     }
 
+    // Last resort: custom line items carry their own tax rate (a cart can consist of
+    // ONLY custom line items, which previously made this method throw)
+    const customLineItemTaxRate = ctCart.customLineItems.find((item) => item.taxRate?.amount !== undefined)?.taxRate
+      ?.amount
+    if (customLineItemTaxRate !== undefined) {
+      return customLineItemTaxRate
+    }
+
     const errorMessage = `Could not determine effective tax rate for cart ${ctCart.id}. Country: ${country}`
     appLogger.error({ cartId: ctCart.id, country }, errorMessage)
     throw new Error(errorMessage)
@@ -397,7 +456,7 @@ class BriqpayService {
   ): Promise<CreateSessionRequestBody> {
     const effectiveTaxRate = await this.getEffectiveTaxRate(ctCart)
     const taxMultiplier = 1 + effectiveTaxRate
-    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.locale)
+    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.customLineItems, ctCart.locale)
 
     return {
       product: {
@@ -731,7 +790,7 @@ class BriqpayService {
     amountPlanned: Omit<PaymentAmount, 'fractionDigits'>,
     sessionId: string,
   ): Promise<{ captureId: string; status: PaymentOutcome } & Record<string, unknown>> {
-    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.locale)
+    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.customLineItems, ctCart.locale)
     const briqpayCaptureRequest: Pick<CreateSessionRequestBody, 'data'> = {
       data: {
         order: {
@@ -741,9 +800,14 @@ class BriqpayService {
             ctCart.taxedPrice?.totalNet?.centAmount ??
             (ctCart.lineItems.reduce(
               (acc, item) =>
-                acc + Number(item.taxedPrice?.totalNet?.centAmount || item.price.value.centAmount) * item.quantity,
+                // totalNet is already the LINE total; only the unit price needs * quantity
+                acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.price.value.centAmount * item.quantity),
               0,
-            ) ||
+            ) +
+              ctCart.customLineItems.reduce(
+                (acc, item) => acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.totalPrice.centAmount),
+                0,
+              ) ||
               amountPlanned.centAmount),
           cart: cartItems,
         },
@@ -779,7 +843,7 @@ class BriqpayService {
     sessionId: string,
     captureId?: string,
   ): Promise<{ refundId: string; status: PaymentOutcome } & Record<string, unknown>> {
-    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.locale)
+    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.customLineItems, ctCart.locale)
     const briqpayRefundRequest: Pick<CreateSessionRequestBody, 'data'> & { captureId?: string } = {
       ...(captureId && { captureId }),
       data: {
@@ -790,9 +854,14 @@ class BriqpayService {
             ctCart.taxedPrice?.totalNet?.centAmount ??
             (ctCart.lineItems.reduce(
               (acc, item) =>
-                acc + Number(item.taxedPrice?.totalNet?.centAmount || item.price.value.centAmount) * item.quantity,
+                // totalNet is already the LINE total; only the unit price needs * quantity
+                acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.price.value.centAmount * item.quantity),
               0,
-            ) ||
+            ) +
+              ctCart.customLineItems.reduce(
+                (acc, item) => acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.totalPrice.centAmount),
+                0,
+              ) ||
               amountPlanned.centAmount),
           cart: cartItems,
         },
@@ -1032,7 +1101,7 @@ class BriqpayService {
 
   public async updateSession(sessionId: string, cart: Cart, amount: Money): Promise<MediumBriqpayResponse> {
     try {
-      const cartItems = await mapBriqpayCartItem(cart.lineItems, cart.locale)
+      const cartItems = await mapBriqpayCartItem(cart.lineItems, cart.customLineItems, cart.locale)
       await this.addDiscountItemToCart(cartItems, cart)
       await this.addShippingItemToCart(cartItems, cart)
 

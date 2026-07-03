@@ -1329,4 +1329,209 @@ describe('BriqpayService', () => {
       expect(internalHooks).toHaveLength(3)
     })
   })
+
+  describe('custom line items', () => {
+    const captureRequestBody = () => {
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123', captureId: 'cap123', status: 'approved' }),
+        } as Response)
+      }) as typeof fetch
+
+      return () => requestBody
+    }
+
+    it('should map a positive custom line item as a physical cart item', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 238000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      const customItem = getRequestBody().data.order.cart.find((item: any) => item.reference === 'customLineItem-id-1')
+      expect(customItem).toBeDefined()
+      expect(customItem.productType).toBe('physical')
+      expect(customItem.name).toBe('customLineItem-name-1')
+      expect(customItem.quantity).toBe(1)
+      expect(customItem.unitPrice).toBe(119000)
+      expect(customItem.unitPriceIncVat).toBe(119000)
+      expect(customItem.taxRate).toBe(0)
+      expect(customItem.totalAmount).toBe(119000)
+      expect(customItem.totalVatAmount).toBe(0)
+    })
+
+    it('should map a negative custom line item as a discount cart item', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      mockCart.customLineItems[0].money.centAmount = -2503
+      mockCart.customLineItems[0].totalPrice.centAmount = -2503
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 116497, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      const customItem = getRequestBody().data.order.cart.find((item: any) => item.reference === 'customLineItem-id-1')
+      expect(customItem).toBeDefined()
+      expect(customItem.productType).toBe('discount')
+      expect(customItem.unitPrice).toBe(-2503)
+      expect(customItem.unitPriceIncVat).toBe(-2503)
+      expect(customItem.totalAmount).toBe(-2503)
+      expect(customItem.totalVatAmount).toBe(0)
+    })
+
+    it('should use taxed amounts when custom line item has taxedPrice', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      mockCart.customLineItems[0].quantity = 2
+      mockCart.customLineItems[0].money.centAmount = 1250
+      mockCart.customLineItems[0].taxRate = { amount: 0.25, includedInPrice: true }
+      mockCart.customLineItems[0].taxedPrice = {
+        totalNet: { centAmount: 2000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        totalGross: { centAmount: 2500, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        totalTax: { centAmount: 500, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        taxPortions: [],
+      }
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 121500, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      const customItem = getRequestBody().data.order.cart.find((item: any) => item.reference === 'customLineItem-id-1')
+      expect(customItem).toBeDefined()
+      expect(customItem.productType).toBe('physical')
+      expect(customItem.quantity).toBe(2)
+      expect(customItem.unitPrice).toBe(1000)
+      expect(customItem.unitPriceIncVat).toBe(1250)
+      expect(customItem.taxRate).toBe(2500)
+      expect(customItem.totalAmount).toBe(2500)
+      expect(customItem.totalVatAmount).toBe(500)
+    })
+
+    it('should include custom line items in capture requests', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.capture(
+        mockCart,
+        { centAmount: mockCart.totalPrice.centAmount, currencyCode: mockCart.totalPrice.currencyCode },
+        'abc123',
+      )
+
+      const customItem = getRequestBody().data.order.cart.find((item: any) => item.reference === 'customLineItem-id-1')
+      expect(customItem).toBeDefined()
+      expect(customItem.productType).toBe('physical')
+      // No cart.taxedPrice on the fixture, so amountExVat comes from the line item
+      // reduce (119000) plus the custom line item reduce (119000)
+      expect(getRequestBody().data.order.amountExVat).toBe(238000)
+    })
+
+    it('should include custom line items in refund requests', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.refund(
+        mockCart,
+        { centAmount: mockCart.totalPrice.centAmount, currencyCode: mockCart.totalPrice.currencyCode },
+        'abc123',
+      )
+
+      const customItem = getRequestBody().data.order.cart.find((item: any) => item.reference === 'customLineItem-id-1')
+      expect(customItem).toBeDefined()
+      expect(customItem.productType).toBe('physical')
+      expect(getRequestBody().data.order.amountExVat).toBe(238000)
+    })
+
+    it('should include custom line items in updateSession requests', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response)
+      }) as typeof fetch
+
+      await BriqpayService.updateSession('abc123', mockCart, { centAmount: 238000, currencyCode: 'EUR' })
+
+      const customItem = requestBody.data.order.cart.find((item: any) => item.reference === 'customLineItem-id-1')
+      expect(customItem).toBeDefined()
+      expect(customItem.productType).toBe('physical')
+      expect(customItem.totalAmount).toBe(119000)
+    })
+
+    it('should not double-count quantity in capture amountExVat fallback when line item has taxedPrice', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      // No cart.taxedPrice on the fixture, so the fallback reduce runs.
+      // totalNet is the LINE total (quantity already applied) - must not be multiplied again.
+      mockCart.lineItems[0].quantity = 2
+      mockCart.lineItems[0].totalPrice.centAmount = 238000
+      mockCart.lineItems[0].taxedPrice = {
+        totalNet: { centAmount: 200000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        totalGross: { centAmount: 238000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        totalTax: { centAmount: 38000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        taxPortions: [],
+      }
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.capture(mockCart, { centAmount: 357000, currencyCode: 'EUR' }, 'abc123')
+
+      // 200000 (line item totalNet, NOT x2) + 119000 (custom line item totalPrice)
+      expect(getRequestBody().data.order.amountExVat).toBe(319000)
+    })
+
+    it('should not double-count quantity in refund amountExVat fallback when line item has taxedPrice', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      mockCart.lineItems[0].quantity = 2
+      mockCart.lineItems[0].totalPrice.centAmount = 238000
+      mockCart.lineItems[0].taxedPrice = {
+        totalNet: { centAmount: 200000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        totalGross: { centAmount: 238000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        totalTax: { centAmount: 38000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        taxPortions: [],
+      }
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.refund(mockCart, { centAmount: 357000, currencyCode: 'EUR' }, 'abc123')
+
+      expect(getRequestBody().data.order.amountExVat).toBe(319000)
+    })
+
+    it('should derive unitPriceIncVat from taxed actuals, not the net/pre-discount money value', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      // Tax-exclusive (US/B2B) pricing: money is NET and excludes any discounts
+      mockCart.customLineItems[0].money.centAmount = 10000
+      mockCart.customLineItems[0].taxRate = { amount: 0.25, includedInPrice: false }
+      mockCart.customLineItems[0].taxedPrice = {
+        totalNet: { centAmount: 10000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        totalGross: { centAmount: 12500, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        totalTax: { centAmount: 2500, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        taxPortions: [],
+      }
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 131500, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      const customItem = getRequestBody().data.order.cart.find((item: any) => item.reference === 'customLineItem-id-1')
+      expect(customItem).toBeDefined()
+      expect(customItem.unitPrice).toBe(10000)
+      expect(customItem.unitPriceIncVat).toBe(12500) // gross actual, NOT money (10000)
+      expect(customItem.totalAmount).toBe(12500)
+      expect(customItem.totalVatAmount).toBe(2500)
+    })
+  })
 })

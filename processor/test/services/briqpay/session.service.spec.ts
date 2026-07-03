@@ -22,8 +22,25 @@ jest.mock('../../../src/connectors/actions', () => ({
   clearBriqpayTypeKeyCache: jest.fn(),
 }))
 
-// Mock Briqpay service
-jest.mock('../../../src/libs/briqpay/BriqpayService')
+// Mock Briqpay service methods but keep the real mapCustomLineItem — the session
+// comparison relies on it to mirror what createSession/updateSession actually send.
+jest.mock('../../../src/libs/briqpay/BriqpayService', () => {
+  const actual = jest.requireActual('../../../src/libs/briqpay/BriqpayService') as Record<string, unknown>
+  return {
+    __esModule: true,
+    ...actual,
+    default: {
+      createSession: jest.fn(),
+      getSession: jest.fn(),
+      updateSession: jest.fn(),
+      capture: jest.fn(),
+      refund: jest.fn(),
+      makeDecision: jest.fn(),
+      cancel: jest.fn(),
+      healthCheck: jest.fn(),
+    },
+  }
+})
 
 // Get mocked functions
 const mockedBriqpay = jest.mocked(Briqpay)
@@ -309,6 +326,191 @@ describe('BriqpaySessionService', () => {
       // the key assertion is that it doesn't throw a ValidationError.
       const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
       expect(result.sessionId).toBeDefined()
+    })
+
+    test('should NOT update session when cart including custom line item matches', async () => {
+      const baseCart = getCart()
+      const mockCart = {
+        ...baseCart,
+        locale: 'en',
+        custom: {
+          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
+          fields: { 'briqpay-session-id': 'existing-session-id' },
+        },
+      } as unknown as Cart
+
+      mockedBriqpay.getSession.mockResolvedValue({
+        sessionId: 'existing-session-id',
+        htmlSnippet: '<div>Briqpay</div>',
+        data: {
+          order: {
+            amountIncVat: 119000,
+            currency: 'EUR',
+            cart: [
+              {
+                productType: 'physical',
+                reference: baseCart.lineItems[0].id,
+                name: 'lineitem-name-1',
+                quantity: 1,
+                unitPrice: 119000,
+              },
+              {
+                productType: 'physical',
+                reference: 'customLineItem-id-1',
+                name: 'customLineItem-name-1',
+                quantity: 1,
+                unitPrice: 119000,
+                taxRate: 0,
+              },
+            ],
+          },
+        },
+      } as never)
+
+      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
+
+      const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
+
+      expect(mockedBriqpay.updateSession).not.toHaveBeenCalled()
+      expect(mockedBriqpay.createSession).not.toHaveBeenCalled()
+      expect(result.sessionId).toBe('existing-session-id')
+    })
+
+    test('should trigger update when custom line item is missing from session', async () => {
+      const baseCart = getCart()
+      const mockCart = {
+        ...baseCart,
+        locale: 'en',
+        custom: {
+          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
+          fields: { 'briqpay-session-id': 'existing-session-id' },
+        },
+      } as unknown as Cart
+
+      mockedBriqpay.getSession.mockResolvedValue({
+        sessionId: 'existing-session-id',
+        data: {
+          order: {
+            amountIncVat: 119000,
+            currency: 'EUR',
+            cart: [
+              {
+                productType: 'physical',
+                reference: baseCart.lineItems[0].id,
+                name: 'lineitem-name-1',
+                quantity: 1,
+                unitPrice: 119000,
+              },
+            ],
+          },
+        },
+      } as never)
+
+      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
+
+      await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
+
+      expect(mockedBriqpay.updateSession).toHaveBeenCalled()
+    })
+
+    test('should trigger update when custom line item price differs from session', async () => {
+      const baseCart = getCart()
+      const mockCart = {
+        ...baseCart,
+        locale: 'en',
+        custom: {
+          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
+          fields: { 'briqpay-session-id': 'existing-session-id' },
+        },
+      } as unknown as Cart
+
+      mockedBriqpay.getSession.mockResolvedValue({
+        sessionId: 'existing-session-id',
+        data: {
+          order: {
+            amountIncVat: 119000,
+            currency: 'EUR',
+            cart: [
+              {
+                productType: 'physical',
+                reference: baseCart.lineItems[0].id,
+                name: 'lineitem-name-1',
+                quantity: 1,
+                unitPrice: 119000,
+              },
+              {
+                productType: 'physical',
+                reference: 'customLineItem-id-1',
+                name: 'customLineItem-name-1',
+                quantity: 1,
+                unitPrice: 100000, // stale price in session; cart says 119000
+                taxRate: 0,
+              },
+            ],
+          },
+        },
+      } as never)
+
+      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
+
+      await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
+
+      expect(mockedBriqpay.updateSession).toHaveBeenCalled()
+    })
+
+    test('should exclude negative custom line items from session comparison', async () => {
+      const baseCart = getCart()
+      const negativeCustomLineItem = {
+        ...baseCart.customLineItems[0],
+        money: { ...baseCart.customLineItems[0].money, centAmount: -2503 },
+        totalPrice: { ...baseCart.customLineItems[0].totalPrice, centAmount: -2503 },
+      }
+      const mockCart = {
+        ...baseCart,
+        locale: 'en',
+        customLineItems: [negativeCustomLineItem],
+        custom: {
+          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
+          fields: { 'briqpay-session-id': 'existing-session-id' },
+        },
+      } as unknown as Cart
+
+      // Session cart holds the mapped discount line for the negative custom line item;
+      // both sides must filter it out so the comparison still matches.
+      mockedBriqpay.getSession.mockResolvedValue({
+        sessionId: 'existing-session-id',
+        htmlSnippet: '<div>Briqpay</div>',
+        data: {
+          order: {
+            amountIncVat: 119000,
+            currency: 'EUR',
+            cart: [
+              {
+                productType: 'physical',
+                reference: baseCart.lineItems[0].id,
+                name: 'lineitem-name-1',
+                quantity: 1,
+                unitPrice: 119000,
+              },
+              {
+                productType: 'discount',
+                reference: 'customLineItem-id-1',
+                name: 'customLineItem-name-1',
+                quantity: 1,
+                unitPrice: -2503,
+                taxRate: 0,
+              },
+            ],
+          },
+        },
+      } as never)
+
+      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
+
+      const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
+
+      expect(mockedBriqpay.updateSession).not.toHaveBeenCalled()
+      expect(result.sessionId).toBe('existing-session-id')
     })
 
     test('should trigger update when cart item name is missing in locale', async () => {
