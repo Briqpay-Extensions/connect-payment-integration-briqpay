@@ -473,6 +473,75 @@ describe('BriqpaySessionDataService', () => {
       expect(mockOrderGet).not.toHaveBeenCalled()
       expect(mockOrderPost).not.toHaveBeenCalled()
     })
+
+    test('skips the write when every value already matches the resource fields', async () => {
+      const customFields: ExtractedBriqpayCustomFields = {
+        'briqpay-psp-meta-data-description': 'Test description',
+        'briqpay-transaction-data-reservation-id': 'res-123',
+      }
+
+      // Resource already holds identical values - re-ingesting on every webhook must not POST,
+      // otherwise each one bumps the version and spams order-changed messages.
+      mockOrderGet.mockResolvedValueOnce({
+        body: {
+          id: 'order-123',
+          version: 4,
+          custom: {
+            type: { id: 'type-id', key: 'briqpay-session-id' },
+            fields: {
+              'briqpay-psp-meta-data-description': 'Test description',
+              'briqpay-transaction-data-reservation-id': 'res-123',
+            },
+          },
+        },
+      })
+
+      await service.updateOrderCustomFields('order-123', customFields)
+
+      expect(mockOrderPost).not.toHaveBeenCalled()
+    })
+
+    test('posts only the fields whose value changed', async () => {
+      const customFields: ExtractedBriqpayCustomFields = {
+        'briqpay-psp-meta-data-description': 'New description',
+        'briqpay-transaction-data-reservation-id': 'res-123',
+      }
+
+      // reservation-id is unchanged, description differs - only the differing field is posted.
+      mockOrderGet.mockResolvedValueOnce({
+        body: {
+          id: 'order-123',
+          version: 4,
+          custom: {
+            type: { id: 'type-id', key: 'briqpay-session-id' },
+            fields: {
+              'briqpay-psp-meta-data-description': 'Old description',
+              'briqpay-transaction-data-reservation-id': 'res-123',
+            },
+          },
+        },
+      })
+
+      mockOrderPostExecute.mockResolvedValueOnce({
+        body: { id: 'order-123', version: 5 },
+      })
+
+      await service.updateOrderCustomFields('order-123', customFields)
+
+      expect(mockOrderPost).toHaveBeenCalledTimes(1)
+      expect(mockOrderPost).toHaveBeenCalledWith({
+        body: {
+          version: 4,
+          actions: [
+            {
+              action: 'setCustomField',
+              name: 'briqpay-psp-meta-data-description',
+              value: 'New description',
+            },
+          ],
+        },
+      })
+    })
   })
 
   describe('ingestSessionDataToOrder', () => {
