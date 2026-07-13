@@ -7,12 +7,15 @@ import { CartItem, ITEM_PRODUCT_TYPE, MediumBriqpayResponse } from '../types/bri
 import Briqpay, { mapCustomLineItem } from '../../libs/briqpay/BriqpayService'
 import { apiRoot } from '../../libs/commercetools/api-root'
 import { SessionError } from '../../libs/errors/briqpay-errors'
+import CtConflictRetry from '../../libs/commercetools/ct-conflict-retry'
 import { getBriqpayTypeKey } from '../../connectors/actions'
 import {
   briqpayCheckoutTransactionItemIdFieldName,
   briqpayFutureOrderNumberFieldName,
   briqpaySessionIdFieldName,
 } from '../../custom-types/custom-types'
+
+type SetCustomFieldAction = { action: 'setCustomField'; name: string; value: string }
 
 export class BriqpaySessionService {
   constructor(private readonly ctCartService: CommercetoolsCartService) {}
@@ -30,6 +33,14 @@ export class BriqpaySessionService {
    * Never overwrites an existing `briqpay-future-order-number` — the value
    * captured on first checkout entry is the canonical one.
    *
+   * The cart is heavily contended while Checkout loads: CT Checkout and the storefront
+   * update it concurrently with /config, and the caller's snapshot predates the slow
+   * Briqpay session calls, so its version is routinely stale by write time (observed as
+   * 409 ConcurrentModification -> 500 -> the payment widget never renders). The whole
+   * read-derive-write sequence is therefore wrapped in conflict-retry: each attempt
+   * re-fetches the cart for a fresh version AND re-derives the actions, so a concurrent
+   * writer that already persisted the same metadata turns the retry into a clean no-op.
+   *
    * @param ctCart - The cart to attach Briqpay session metadata to
    * @param briqpaySessionId - Briqpay session id
    * @param futureOrderNumber - Order number the merchant intends for this cart (optional)
@@ -40,38 +51,143 @@ export class BriqpaySessionService {
     futureOrderNumber?: string,
     checkoutTransactionItemId?: string,
   ): Promise<void> {
-    const existingBriqpaySessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName]
-    const existingFutureOrderNumber = ctCart.custom?.fields?.[briqpayFutureOrderNumberFieldName]
-    const existingCheckoutTransactionItemId = ctCart.custom?.fields?.[briqpayCheckoutTransactionItemIdFieldName]
+    // The session id on the caller's snapshot: absent on first entry, the buyer's active
+    // session on re-entry, or the id being knowingly replaced on session re-creation.
+    const snapshotSessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName]
 
-    let updatedCart = ctCart
-    if (!ctCart.custom) {
-      // Get the actual type key (may be different from field name if we extended another type)
-      const typeKey = await getBriqpayTypeKey()
-      appLogger.info({ briqpaySessionId, typeKey }, 'Setting custom type for cart')
-      const cartResponse = await apiRoot
+    // These fields are only ever written by this flow with session-derived values, so a
+    // snapshot that already matches proves the write is a no-op (the common case on widget
+    // reload) - skip the fetch-and-write round trips entirely.
+    const alreadyInSync =
+      ctCart.custom !== undefined &&
+      this.buildSessionMetadataActions(ctCart, briqpaySessionId, futureOrderNumber, checkoutTransactionItemId)
+        .length === 0
+
+    if (alreadyInSync) {
+      return
+    }
+
+    const runUpdate = async (): Promise<void> => {
+      const cart = await this.ctCartService.getCart({ id: ctCart.id })
+
+      const versionForUpdate = cart.custom
+        ? cart.version
+        : await this.setBriqpayCustomTypeOnCart(cart, briqpaySessionId)
+
+      const actions = this.buildSessionMetadataActions(
+        cart,
+        briqpaySessionId,
+        futureOrderNumber,
+        checkoutTransactionItemId,
+      )
+
+      if (actions.length === 0) {
+        return
+      }
+
+      appLogger.info(
+        {
+          briqpaySessionId,
+          persistedFutureOrderNumber: actions.some((a) => a.name === briqpayFutureOrderNumberFieldName)
+            ? futureOrderNumber
+            : undefined,
+          actionNames: actions.map((a) => a.name),
+        },
+        'Updating cart custom fields with Briqpay session metadata',
+      )
+
+      await apiRoot
         .carts()
-        .withId({ ID: ctCart.id })
+        .withId({ ID: cart.id })
         .post({
           body: {
-            version: ctCart.version,
-            actions: [
-              {
-                action: 'setCustomType',
-                type: {
-                  key: typeKey,
-                  typeId: 'type',
-                },
-              },
-            ],
+            version: versionForUpdate,
+            actions,
           },
         })
         .execute()
-      // In order to get the correct version for the next call
-      updatedCart = cartResponse.body as unknown as Cart
     }
 
-    const actions: Array<{ action: 'setCustomField'; name: string; value: string }> = []
+    try {
+      await CtConflictRetry.withConflictRetry(runUpdate)
+    } catch (error) {
+      // The buyer can complete payment while /config is in flight: CT then converts the
+      // cart to an Order (immutable -> 400 InvalidOperation). The metadata write is
+      // pointless then and must not block rendering the widget for the already-paid
+      // session - the Order is enriched via webhook ingestion.
+      // CT also answers 400 InvalidOperation for permanent misconfigurations (type key
+      // missing from the project, field not defined on the cart's type), so the error code
+      // alone is NOT proof the cart is unwritable - only swallow when the probe proves the
+      // cart was Ordered. Everything else stays loud: misconfigurations, Frozen/Merged
+      // carts (a silently dropped write there would block Order linking after unfreeze),
+      // and 404s (a deleted cart has no payment yet and can never link to an order, so
+      // rendering a payable widget for it would orphan the payment).
+      // The swallow also requires the write to be for the buyer's OWN session (first entry
+      // or the id already on the cart). A different id on an ordered cart is a replacement
+      // session created after checkout completed - rendering its payable widget could
+      // double-charge the buyer, so that stays loud too.
+      const wroteBuyersOwnSession = !snapshotSessionId || snapshotSessionId === briqpaySessionId
+      const cartOrderedDuringUpdate =
+        wroteBuyersOwnSession && CtConflictRetry.isInvalidOperation(error) && (await this.hasCartBeenOrdered(ctCart.id))
+
+      if (!cartOrderedDuringUpdate) {
+        throw error
+      }
+
+      appLogger.info(
+        { cartId: ctCart.id, briqpaySessionId, error: error instanceof Error ? error.message : error },
+        'Cart no longer writable (ordered), skipping Briqpay session metadata write',
+      )
+    }
+  }
+
+  /**
+   * Assigns the Briqpay custom type to a cart that has none and returns the cart version
+   * produced by that update, which the follow-up field write must use.
+   */
+  private async setBriqpayCustomTypeOnCart(cart: Cart, briqpaySessionId: string): Promise<number> {
+    // Get the actual type key (may be different from field name if we extended another type)
+    const typeKey = await getBriqpayTypeKey()
+    appLogger.info({ briqpaySessionId, typeKey }, 'Setting custom type for cart')
+    const cartResponse = await apiRoot
+      .carts()
+      .withId({ ID: cart.id })
+      .post({
+        body: {
+          version: cart.version,
+          actions: [
+            {
+              action: 'setCustomType',
+              type: {
+                key: typeKey,
+                typeId: 'type',
+              },
+            },
+          ],
+        },
+      })
+      .execute()
+
+    // In order to get the correct version for the next call
+    return cartResponse.body.version
+  }
+
+  /**
+   * Derives the setCustomField actions needed to sync Briqpay session metadata onto the
+   * cart. Only changed values produce actions, so a retry against a fresh cart snapshot
+   * becomes a no-op when a concurrent writer already persisted the same metadata.
+   */
+  private buildSessionMetadataActions(
+    cart: Cart,
+    briqpaySessionId: string,
+    futureOrderNumber?: string,
+    checkoutTransactionItemId?: string,
+  ): SetCustomFieldAction[] {
+    const existingBriqpaySessionId = cart.custom?.fields?.[briqpaySessionIdFieldName]
+    const existingFutureOrderNumber = cart.custom?.fields?.[briqpayFutureOrderNumberFieldName]
+    const existingCheckoutTransactionItemId = cart.custom?.fields?.[briqpayCheckoutTransactionItemIdFieldName]
+
+    const actions: SetCustomFieldAction[] = []
 
     if (existingBriqpaySessionId !== briqpaySessionId) {
       actions.push({
@@ -100,29 +216,23 @@ export class BriqpaySessionService {
       })
     }
 
-    if (actions.length === 0) {
-      return
+    return actions
+  }
+
+  /**
+   * Probes whether the cart has been converted to an Order (buyer completed payment).
+   * Only that state proves the metadata write is safely skippable. Any other state or a
+   * failed probe (including the cart being gone) returns false so the caller's original
+   * error propagates loudly instead of being swallowed on guesswork.
+   */
+  private async hasCartBeenOrdered(cartId: string): Promise<boolean> {
+    try {
+      const cart = await this.ctCartService.getCart({ id: cartId })
+
+      return cart.cartState === 'Ordered'
+    } catch {
+      return false
     }
-
-    appLogger.info(
-      {
-        briqpaySessionId,
-        persistedFutureOrderNumber: futureOrderNumber && !existingFutureOrderNumber ? futureOrderNumber : undefined,
-        actionNames: actions.map((a) => a.name),
-      },
-      'Updating cart custom fields with Briqpay session metadata',
-    )
-
-    await apiRoot
-      .carts()
-      .withId({ ID: ctCart.id })
-      .post({
-        body: {
-          version: updatedCart.version,
-          actions,
-        },
-      })
-      .execute()
   }
 
   public async createOrUpdateBriqpaySession(
