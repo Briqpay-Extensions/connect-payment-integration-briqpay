@@ -17,6 +17,8 @@ import {
 
 type SetCustomFieldAction = { action: 'setCustomField'; name: string; value: string }
 
+const CART_METADATA_WRITE_MAX_ATTEMPTS = 8
+
 export class BriqpaySessionService {
   constructor(private readonly ctCartService: CommercetoolsCartService) {}
 
@@ -109,7 +111,10 @@ export class BriqpaySessionService {
     }
 
     try {
-      await CtConflictRetry.withConflictRetry(runUpdate)
+      // The default 5 attempts (~1.5s of backoff) empirically exhaust under heavy checkout
+      // load (concurrent first-entry /config calls while CT Checkout churns the cart), which
+      // resurfaces the 409 -> 500 this retry exists to fix. 8 attempts buy ~7s of headroom.
+      await CtConflictRetry.withConflictRetry(runUpdate, CART_METADATA_WRITE_MAX_ATTEMPTS)
     } catch (error) {
       // The buyer can complete payment while /config is in flight: CT then converts the
       // cart to an Order (immutable -> 400 InvalidOperation). The metadata write is
