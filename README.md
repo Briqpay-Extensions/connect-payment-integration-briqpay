@@ -24,6 +24,7 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
 - Dynamic custom type extension for storing Briqpay session data on orders (extends existing order types or creates new ones)
 - Persistence of the merchant's intended `futureOrderNumber` on the cart so it stays stable across CT Session rotations (see [Future Order Number Persistence](#future-order-number-persistence))
 - Webhook-driven recovery of payment/order creation when the buyer never returns to the storefront (e.g. off-site payment redirect), with pre-order session data staged on the cart and copied onto the order at creation (see [Webhook-Driven Payment & Order Recovery](#webhook-driven-payment--order-recovery))
+- Per-cart Briqpay variant selection via a cart custom field the merchant sets before checkout renders, letting each cart resolve to a different Briqpay checkout variant (e.g. currency- or market-specific) (see [Per-Cart Variant Selection](#per-cart-variant-selection))
 - Supports payment operations: authorize, capture, refund, cancel, and reverse
 - Includes local development utilities with Docker Compose setup
 - Jest testing framework with MSW for API mocking
@@ -106,6 +107,7 @@ client_credentials&scope=manage_orders:{projectKey} view_states:{projectKey} vie
    - `BRIQPAY_AUTOCAPTURED_KEY` - Default: `briqpay-autocaptured` (Boolean field on the order indicating whether the order was auto-captured)
    - `BRIQPAY_FUTURE_ORDER_NUMBER_KEY` - Default: `briqpay-future-order-number` (cart custom field where the connector persists the intended order number on first Briqpay session creation, so the merchant backend can read it back on subsequent checkout entries — see [Future Order Number Persistence](#future-order-number-persistence))
    - `BRIQPAY_CHECKOUT_TRANSACTION_ITEM_ID_KEY` - Default: `briqpay-checkout-transaction-item-id` (cart custom field where the connector persists the Checkout transaction-item id at first session creation, so the session-less webhook can create a correctly-tagged payment and let Checkout auto-create the order when the buyer never returns — see [Webhook-Driven Payment & Order Recovery](#webhook-driven-payment--order-recovery))
+   - `BRIQPAY_VARIANT_ID_KEY` - Default: `briqpay-variant-id` (cart custom field the **merchant** sets before checkout renders to select the Briqpay checkout variant for that cart; read per session creation and forwarded as `product.variantId` — see [Per-Cart Variant Selection](#per-cart-variant-selection))
 
    > **Note**: The connector dynamically extends existing custom types for the `order` resource type instead of always creating separate types. If field name conflicts exist, Briqpay fields are prefixed with `briqpay-` to avoid data loss.
 
@@ -464,6 +466,41 @@ A pre-order webhook can arrive before the Order exists. When that happens, the c
 
 This recovery path is automatic and requires no merchant integration changes — the Checkout transaction-item id is supplied by commercetools' standard Checkout session, not by the storefront. It is active whenever the merchant uses commercetools Checkout. Merchants whose checkout does not flow through commercetools Checkout simply keep the prior behavior (the webhook skips Payment creation); nothing breaks.
 
+## Per-Cart Variant Selection
+
+### The problem
+
+A Briqpay merchant can configure multiple checkout **variants** (different module layouts, per-market rules, display options such as showing the currency code next to the amount). The connector otherwise always creates sessions against the merchant's **default** variant, so there is no way to pick a different variant for a specific shopper or market from commercetools.
+
+### How the connector helps
+
+The connector reads a cart custom field — `briqpay-variant-id` (configurable via `BRIQPAY_VARIANT_ID_KEY`) — on **every** Briqpay session creation and, when present, forwards it as `product.variantId` in the create-session request. Because it is read from the cart each time (never cached, never a deploy-wide constant), **each cart resolves to its own variant**: cart A can use variant X while cart B uses variant Y, in the same connector deployment. When the field is absent or empty, the connector omits `variantId` and Briqpay falls back to the account default variant — so this is fully opt-in and changes nothing for merchants who don't set it.
+
+### What the merchant must do
+
+Set the `briqpay-variant-id` custom field on the cart **before** the checkout renders (i.e. before the enabler triggers the processor's `/config` call that creates the Briqpay session). The value is the Briqpay variant id. The merchant decides per cart how to choose it — e.g. by currency, country, or store.
+
+```ts
+// Stamp the chosen Briqpay variant on the cart before initializing checkout.
+// The cart must carry a custom type that defines the briqpay-variant-id field
+// (the connector's Briqpay type includes it, or use your own type with the same field name).
+await axios.post(
+  `${CTP_API_URL}/${CTP_PROJECT_KEY}/carts/${cartId}`,
+  {
+    version: cartVersion,
+    actions: [
+      { action: 'setCustomType', type: { key: 'briqpay-session-id', typeId: 'type' } },
+      { action: 'setCustomField', name: 'briqpay-variant-id', value: chosenBriqpayVariantId },
+    ],
+  },
+  { headers: { Authorization: `Bearer ${accessToken}` } },
+);
+```
+
+### Timing note (create-time binding)
+
+`variantId` is honored only at session **creation**, not on update. The connector reuses an existing Briqpay session when the cart already carries a `briqpay-session-id` (it updates cart/amount data, which does not carry a variant). So the variant is bound on the first render for that cart — changing `briqpay-variant-id` after a session already exists on the cart will not repoint the live session. Set it before the first checkout render for the cart.
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -686,6 +723,10 @@ deployAs:
           description: Key of CustomType field on the cart that stores the Checkout transaction-item id. Persisted at config() time so the session-less Briqpay webhook can create a correctly-tagged Payment and let Checkout auto-create the Order when the buyer never returns to the checkout.
           required: false
           default: briqpay-checkout-transaction-item-id
+        - key: BRIQPAY_VARIANT_ID_KEY
+          description: Key of CustomType field on the cart where the merchant sets the Briqpay checkout variant id to use for that cart. Read per session creation and forwarded as product.variantId, so each cart can resolve to a different Briqpay variant. When unset, Briqpay uses the account default variant.
+          required: false
+          default: briqpay-variant-id
         - key: ALLOWED_ORIGINS
           description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com).
           required: false
@@ -723,6 +764,7 @@ deployAs:
 | `BRIQPAY_SESSION_CUSTOM_TYPE_KEY` | Custom type key for session storage | No       | `briqpay-session-id`                                                      |
 | `BRIQPAY_FUTURE_ORDER_NUMBER_KEY` | Cart custom field name for the persisted future order number (see [Future Order Number Persistence](#future-order-number-persistence)) | No       | `briqpay-future-order-number`                                            |
 | `BRIQPAY_CHECKOUT_TRANSACTION_ITEM_ID_KEY` | Cart custom field name for the persisted Checkout transaction-item id, used by the webhook to recover payment/order creation when the buyer never returns (see [Webhook-Driven Payment & Order Recovery](#webhook-driven-payment--order-recovery)) | No       | `briqpay-checkout-transaction-item-id`                                   |
+| `BRIQPAY_VARIANT_ID_KEY`          | Cart custom field name the merchant sets to select the Briqpay checkout variant per cart (see [Per-Cart Variant Selection](#per-cart-variant-selection)) | No       | `briqpay-variant-id`                                                     |
 
 ### Enabler Usage
 
@@ -1345,6 +1387,9 @@ export async function createBriqpayCustomType(key: string) {
   //   cart at first session creation so the session-less webhook can create a correctly-tagged
   //   Payment and let Checkout auto-create the Order when the buyer never returns (see
   //   "Webhook-Driven Payment & Order Recovery" section).
+  // - briqpay-variant-id: Briqpay checkout variant id the MERCHANT sets on the cart before
+  //   checkout renders; the connector reads it per session creation and forwards it as
+  //   product.variantId (see "Per-Cart Variant Selection" section). Not written by the connector.
 }
 ```
 

@@ -24,6 +24,13 @@ export const briqpayFutureOrderNumberFieldName =
 export const briqpayCheckoutTransactionItemIdFieldName =
   process.env.BRIQPAY_CHECKOUT_TRANSACTION_ITEM_ID_KEY || 'briqpay-checkout-transaction-item-id'
 
+// Field name for the Briqpay product variant this cart's checkout should use. Unlike the other
+// fields (connector-written), the MERCHANT sets this on the cart before the checkout renders, so
+// each cart can resolve to a different Briqpay variant (e.g. a currency- or market-specific one).
+// The connector reads it fresh on every session creation and forwards it as product.variantId; it
+// never writes or caches it. Overridable for merchants who already use a differently-named field.
+export const briqpayVariantIdFieldName = process.env.BRIQPAY_VARIANT_ID_KEY || 'briqpay-variant-id'
+
 export const briqpaySessionIdCustomType = {
   name: briqpaySessionIdFieldName,
 }
@@ -60,6 +67,16 @@ export const briqpayFieldDefinitions: BriqpayFieldDefinition[] = [
   {
     name: briqpayCheckoutTransactionItemIdFieldName,
     label: 'Briqpay Checkout Transaction Item ID',
+    type: 'String',
+    required: false,
+  },
+
+  // Variant ID — MERCHANT-set on the cart before checkout renders. The connector reads it per
+  // session creation and forwards it as product.variantId so each cart can select a different
+  // Briqpay checkout variant. Not written by the connector.
+  {
+    name: briqpayVariantIdFieldName,
+    label: 'Briqpay Variant ID',
     type: 'String',
     required: false,
   },

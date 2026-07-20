@@ -20,6 +20,7 @@ import {
 import { Money } from '@commercetools/connect-payments-sdk'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
 import { appLogger } from '../../payment-sdk'
+import { briqpayVariantIdFieldName } from '../../custom-types/custom-types'
 
 const mapBriqpayProductType = (item: LineItem) => {
   // Check if the product has a digital-related attribute
@@ -458,10 +459,17 @@ class BriqpayService {
     const taxMultiplier = 1 + effectiveTaxRate
     const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.customLineItems, ctCart.locale)
 
+    // Read per session creation (never cached) so each cart resolves to its own Briqpay variant.
+    // The merchant stamps this on the cart before the checkout renders; absent it, Briqpay uses
+    // the account default variant.
+    const configuredVariantId = ctCart.custom?.fields?.[briqpayVariantIdFieldName]
+    const variantId = typeof configuredVariantId === 'string' && configuredVariantId ? configuredVariantId : undefined
+
     return {
       product: {
         type: PAYMENT_TOOLS_PRODUCT.PAYMENT,
         intent: SESSION_INTENT.PAYMENT_ONE_TIME,
+        ...(variantId && { variantId }),
       },
       customerType: CUSTOMER_TYPE.CONSUMER,
       country: ctCart.country,

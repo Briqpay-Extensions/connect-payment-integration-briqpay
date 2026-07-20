@@ -153,6 +153,10 @@ Skipping this read-back is the canonical source of the `Briqpay reference1` ≠ 
 
 Reference implementation in `commerce-tools-frontend-demo/src/api/controllers/v1/checkout.ts`. See the top-level README's [Future Order Number Persistence](../README.md#future-order-number-persistence) section for the full rationale and code snippet.
 
+### Optional: per-cart Briqpay variant
+
+To render a specific Briqpay checkout variant for a cart (e.g. a currency- or market-specific one), set the `briqpay-variant-id` custom field on the cart **before** creating the CT Session / mounting the enabler. The processor reads it per session creation and forwards it as `product.variantId`; when unset, Briqpay uses the account default variant. This is chosen per cart by the merchant backend, not configured once for the whole connector. See the top-level README's [Per-Cart Variant Selection](../README.md#per-cart-variant-selection) section.
+
 ## Usage
 
 ### Basic Integration

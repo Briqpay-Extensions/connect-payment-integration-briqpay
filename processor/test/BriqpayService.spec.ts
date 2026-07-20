@@ -197,6 +197,49 @@ describe('BriqpayService', () => {
     expect(response).toHaveProperty('sessionId', 'abc123')
   })
 
+  it('forwards the cart briqpay-variant-id custom field as product.variantId', async () => {
+    const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+    ;(mockCart as any).custom = { fields: { 'briqpay-variant-id': 'variant-abc' } }
+
+    let requestBody: any = null
+    global.fetch = jest.fn().mockImplementation((url, init: any) => {
+      requestBody = init.body ? JSON.parse(init.body) : null
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ sessionId: 'abc123' }),
+      } as Response)
+    }) as typeof fetch
+
+    await BriqpayService.createSession(
+      mockCart,
+      { centAmount: 10000, currencyCode: 'SEK', fractionDigits: 2 },
+      'localhost',
+    )
+
+    expect(requestBody.product.variantId).toBe('variant-abc')
+  })
+
+  it('omits product.variantId when the cart has no briqpay-variant-id custom field', async () => {
+    const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+
+    let requestBody: any = null
+    global.fetch = jest.fn().mockImplementation((url, init: any) => {
+      requestBody = init.body ? JSON.parse(init.body) : null
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ sessionId: 'abc123' }),
+      } as Response)
+    }) as typeof fetch
+
+    await BriqpayService.createSession(
+      mockCart,
+      { centAmount: 10000, currencyCode: 'SEK', fractionDigits: 2 },
+      'localhost',
+    )
+
+    expect(requestBody.product).not.toHaveProperty('variantId')
+  })
+
   it('should get a session by ID', async () => {
     const result = await BriqpayService.getSession('abc123')
     expect(result).toEqual({ sessionId: 'abc123' })

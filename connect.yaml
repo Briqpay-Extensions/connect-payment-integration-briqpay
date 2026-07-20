@@ -105,6 +105,10 @@ deployAs:
           description: Key of CustomType field on the cart that stores the Checkout transaction-item id. Persisted at config() time so the session-less Briqpay webhook can create a correctly-tagged Payment and let Checkout auto-create the Order when the buyer never returns to the checkout.
           required: false
           default: briqpay-checkout-transaction-item-id
+        - key: BRIQPAY_VARIANT_ID_KEY
+          description: Key of CustomType field on the cart where the merchant sets the Briqpay checkout variant id to use for that cart. Read per session creation and forwarded as product.variantId, so each cart can resolve to a different Briqpay variant. When unset, Briqpay uses the account default variant.
+          required: false
+          default: briqpay-variant-id
         - key: ALLOWED_ORIGINS
           description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com).
           required: false
