@@ -7,19 +7,16 @@ import {
 import { BaseOptions } from "../../../../src/payment-enabler/payment-enabler-briqpay";
 import { BriqpaySdk } from "../../../../src/briqpay-sdk";
 import { PaymentOutcome } from "../../../../src/dtos/mock-payment.dto";
-import { PaymentComponent } from "../../../../src/payment-enabler/payment-enabler";
+import {
+  DecisionCallback,
+  PaymentComponent,
+} from "../../../../src/payment-enabler/payment-enabler";
 
 // Don't mock the Briqpay class - we want to test the actual implementation
 // jest.mock("../../../../src/components/payment-methods/briqpay/briqpay");
 
 describe("Briqpay", () => {
   let component: PaymentComponent;
-  let sessionCompleteCallback: (
-    data: Record<string, unknown>,
-  ) => Promise<void> | void;
-  let makeDecisionCallback: (
-    data: Record<string, unknown>,
-  ) => Promise<void> | void;
 
   const baseOptions: BaseOptions = {
     sdk: {} as BriqpaySdk,
@@ -47,50 +44,22 @@ describe("Briqpay", () => {
     document.body.innerHTML = "<div id='container'></div>";
     document.head.innerHTML = "";
 
-    // Mock document.dispatchEvent
-    document.dispatchEvent = jest
-      .fn()
-      .mockReturnValue(true) as jest.MockedFunction<
-      typeof document.dispatchEvent
-    >;
-
-    // Mock document.addEventListener
-    document.addEventListener = jest.fn((event, listener) => {
-      // Simulate calling the listener immediately with a mock event
-      if (event === "briqpayDecisionResponse") {
-        (listener as EventListener)({
-          detail: { decision: "allow" },
-        } as unknown as Event);
-      }
-    }) as unknown as typeof document.addEventListener;
-
-    // Prepare briqpay window object before component creation
-    // Track the callbacks for later use in tests
-    const subscribeCallbacks: Record<
-      string,
-      (data: Record<string, unknown>) => void
-    > = {};
-
     window._briqpay = {
       v3: {
         suspend: jest.fn(),
         resume: jest.fn(),
         resumeDecision: jest.fn(),
       },
-      subscribe: jest.fn(
-        (event: string, callback: (data: Record<string, unknown>) => void) => {
-          subscribeCallbacks[event] = callback;
-        },
-      ),
+      subscribe: jest.fn(),
     };
 
-    // Create the component instance
+    // Create the component instance. Deliberately bypasses the
+    // DecisionCallback type (which now requires onDecision) to simulate a
+    // plain-JS/untyped caller that omits it, matching several tests below
+    // that don't exercise decision handling and one that specifically
+    // relies on the runtime defensive fallback for a missing onDecision.
     const builder = new BriqpayBuilder(baseOptions);
-    component = builder.build();
-
-    // Store callbacks for easy access in tests
-    sessionCompleteCallback = subscribeCallbacks["session_complete"];
-    makeDecisionCallback = subscribeCallbacks["make_decision"];
+    component = builder.build({} as unknown as DecisionCallback);
   });
 
   test("mount() injects script and renders snippet", () => {
@@ -115,7 +84,10 @@ describe("Briqpay", () => {
     const sessionCompleteSpy = jest.fn();
     const makeDecisionSpy = jest.fn();
 
-    const mockComponent = new Briqpay(baseOptions);
+    const mockComponent = new Briqpay(
+      baseOptions,
+      {} as unknown as DecisionCallback,
+    );
 
     // Mock the subscribe method to capture the callbacks
     mockComponent.mount("#container");
@@ -149,61 +121,126 @@ describe("Briqpay", () => {
     scriptElement.dispatchEvent(new Event("load"));
     scriptElement.onload?.({} as Event);
 
-    setTimeout(async () => {
-      const result = sessionCompleteCallback({});
+    // subscribe() only runs on script load, so beforeEach captures nothing.
+    const sessionComplete = (
+      window._briqpay.subscribe as jest.Mock
+    ).mock.calls.find(
+      (call: unknown[]) => call[0] === "session_complete",
+    )?.[1] as (data: Record<string, unknown>) => void;
 
-      if (result instanceof Promise) {
-        await result;
-      }
+    sessionComplete({});
 
-      expect(submitSpy).toHaveBeenCalled();
-    });
+    expect(submitSpy).toHaveBeenCalled();
   });
 
-  test("make_decision callback flow works correctly", () => {
+  // Allowing would record an approval no merchant made.
+  test("make_decision callback sends nothing when no onDecision is configured", async () => {
     component.mount("#container");
 
-    // Get the onload handler from the script element and execute it
     const scriptElement = document.querySelector("head")
       ?.lastChild as HTMLScriptElement;
     scriptElement.onload?.({} as Event);
 
-    // Mock data for decision
+    const liveMakeDecisionCallback = (
+      window._briqpay.subscribe as jest.Mock
+    ).mock.calls.find(
+      (call: unknown[]) => call[0] === "make_decision",
+    )?.[1] as (data: Record<string, unknown>) => Promise<void> | void;
+
     const mockDecisionData = { orderData: { amount: 100 } };
 
-    // Trigger the make_decision callback
-    setTimeout(async () => {
-      await makeDecisionCallback(mockDecisionData);
-      // Verify suspend was called
-      expect(window._briqpay.v3.suspend).toHaveBeenCalled();
+    await liveMakeDecisionCallback(mockDecisionData);
 
-      // Verify custom event was dispatched
-      expect(document.dispatchEvent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: "briqpayDecision",
-          detail: expect.objectContaining({
-            data: mockDecisionData,
-          }),
-        }),
-      );
-
-      // Verify fetch was called with correct data
-      expect(global.fetch).toHaveBeenCalledWith(
-        "https://mock-processor.com/decision",
-        expect.objectContaining({
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Session-Id": "sess-123",
-          },
-          body: expect.stringContaining("briq-sess-123"),
-        }),
-      );
-
-      // Verify resumeDecision was called
-      expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
-    });
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      "https://mock-processor.com/decision",
+      expect.anything(),
+    );
+    // suspend() is intentionally NOT called here - Briqpay auto-suspends the
+    // widget itself for make_decision; only resumeDecision() is our job.
+    expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
   });
+
+  test("make_decision callback calls onDecision and sends its returned answer", async () => {
+    const onDecision = jest.fn<any>().mockResolvedValue({ decision: "reject" });
+    const builder = new BriqpayBuilder(baseOptions);
+    const decisionComponent = builder.build({ onDecision });
+
+    const subscribeCallbacks: Record<
+      string,
+      (data: Record<string, unknown>) => void
+    > = {};
+    window._briqpay.subscribe = jest.fn(
+      (event: string, callback: (data: Record<string, unknown>) => void) => {
+        subscribeCallbacks[event] = callback;
+      },
+    );
+
+    decisionComponent.mount("#container");
+    const scriptElement = document.querySelector("head")
+      ?.lastChild as HTMLScriptElement;
+    scriptElement.onload?.({} as Event);
+
+    const mockDecisionData = { orderData: { amount: 100 } };
+    await subscribeCallbacks["make_decision"](mockDecisionData);
+
+    expect(onDecision).toHaveBeenCalledWith(baseOptions.sdk, mockDecisionData);
+    expect(global.fetch).toHaveBeenCalledWith(
+      "https://mock-processor.com/decision",
+      expect.objectContaining({
+        body: JSON.stringify({
+          sessionId: "briq-sess-123",
+          decision: "reject",
+        }),
+      }),
+    );
+    expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
+  });
+
+  // Neither a stall nor a throw is an answer, so nothing is sent.
+  test.each([
+    ["never resolves", () => new Promise(() => {}), 20000],
+    ["throws", () => Promise.reject(new Error("validation blew up")), 0],
+  ])(
+    "make_decision callback abandons the decision when onDecision %s",
+    async (_label, makeAnswer, advanceBy) => {
+      jest.useFakeTimers();
+
+      const onDecision = jest.fn<any>().mockImplementation(makeAnswer);
+      const builder = new BriqpayBuilder(baseOptions);
+      const decisionComponent = builder.build({ onDecision });
+
+      const subscribeCallbacks: Record<
+        string,
+        (data: Record<string, unknown>) => void
+      > = {};
+      window._briqpay.subscribe = jest.fn(
+        (event: string, callback: (data: Record<string, unknown>) => void) => {
+          subscribeCallbacks[event] = callback;
+        },
+      );
+
+      decisionComponent.mount("#container");
+      const scriptElement = document.querySelector("head")
+        ?.lastChild as HTMLScriptElement;
+      scriptElement.onload?.({} as Event);
+
+      const settled = jest.fn();
+      void Promise.resolve(
+        subscribeCallbacks["make_decision"]({ orderData: { amount: 100 } }),
+      ).then(settled, settled);
+
+      await jest.advanceTimersByTimeAsync(advanceBy);
+
+      expect(settled).toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalledWith(
+        "https://mock-processor.com/decision",
+        expect.anything(),
+      );
+      expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
+
+      jest.useRealTimers();
+    },
+  );
 
   test("submit() posts to payments and calls onComplete on success", async () => {
     await component.submit();
@@ -259,8 +296,11 @@ describe("Briqpay", () => {
       resolved = true;
     }) as jest.MockedFunction<BaseOptions["onComplete"]>;
 
-    const builder = new BriqpayBuilder({ ...baseOptions, onComplete: asyncOnComplete });
-    const asyncComponent = builder.build();
+    const builder = new BriqpayBuilder({
+      ...baseOptions,
+      onComplete: asyncOnComplete,
+    });
+    const asyncComponent = builder.build({} as unknown as DecisionCallback);
 
     await asyncComponent.submit();
 

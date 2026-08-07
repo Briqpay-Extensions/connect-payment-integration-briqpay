@@ -3,10 +3,35 @@ export type BriqpaySdkParams = {
   sessionId: string;
 };
 
-export type DecisionResponse = {
-  success: boolean;
-  decision: 'allow' | 'reject';
+export enum BRIQPAY_DECISION {
+  ALLOW = "allow",
+  REJECT = "reject",
+}
+
+export enum BRIQPAY_REJECT_TYPE {
+  REJECT_WITH_ERROR = "reject_session_with_error",
+  NOTIFY_USER = "notify_user",
+}
+
+export type BriqpayDecisionOptions = {
+  rejectionType?: BRIQPAY_REJECT_TYPE;
+  hardError?: {
+    message: string;
+  };
+  softErrors?: {
+    message: string;
+  }[];
 };
+
+export type DecisionAnswer = {
+  decision: BRIQPAY_DECISION;
+} & BriqpayDecisionOptions;
+
+/**
+ * Matches Briqpay's default wait, so the decision is abandoned as Briqpay gives
+ * up on it rather than after. Merchants granted a longer window wait 40s there.
+ */
+export const DECISION_TIMEOUT_MS = 20000;
 
 /**
  * Represents a Briqpay SDK.
@@ -38,55 +63,6 @@ export class BriqpaySdk {
    */
   resume() {
     window._briqpay.v3.resume();
-  }
-
-  /**
-   * After receiving a briqpayDecision event, call this method with the outcome.
-   * This method securely calls the backend processor which validates the session
-   * and makes the decision through Briqpay's API with proper authentication.
-   *
-   * @example
-   * document.addEventListener("briqpayDecision", function (event) {
-   *   // Access the data using event.detail
-   *   const data = event.detail.data;
-   *
-   *   // Make the decision through the secure backend
-   *   await component.sdk.makeDecision(true);
-   * });
-   *
-   * @param decision true = allow, false = reject
-   * @returns Promise<DecisionResponse> - The result from the backend
-   * @throws Error if the backend call fails
-   */
-  async makeDecision(decision: boolean): Promise<DecisionResponse> {
-    const briqpayDecision = decision ? 'allow' : 'reject';
-
-    const response = await fetch(`${this.params.processorUrl}/decision`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-ID': this.params.sessionId,
-      },
-      body: JSON.stringify({
-        sessionId: this.params.sessionId,
-        decision: briqpayDecision,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Decision request failed: ${response.status} - ${errorText}`);
-    }
-
-    const result: DecisionResponse = await response.json();
-
-    // Dispatch the response event for Briqpay iframe to handle
-    const responseEvent = new CustomEvent('briqpayDecisionResponse', {
-      detail: { decision: result.success && result.decision === 'allow' },
-    });
-    document.dispatchEvent(responseEvent);
-
-    return result;
   }
 
   /**

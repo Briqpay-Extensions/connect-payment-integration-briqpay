@@ -240,6 +240,27 @@ describe('BriqpayService', () => {
     expect(requestBody.product).not.toHaveProperty('variantId')
   })
 
+  it('activates the payment decision module on session creation', async () => {
+    const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
+
+    let requestBody: any = null
+    global.fetch = jest.fn().mockImplementation((url, init: any) => {
+      requestBody = init.body ? JSON.parse(init.body) : null
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ sessionId: 'abc123' }),
+      } as Response)
+    }) as typeof fetch
+
+    await BriqpayService.createSession(
+      mockCart,
+      { centAmount: 10000, currencyCode: 'SEK', fractionDigits: 2 },
+      'localhost',
+    )
+
+    expect(requestBody.modules.config.payment.decision).toEqual({ enabled: true })
+  })
+
   it('should get a session by ID', async () => {
     const result = await BriqpayService.getSession('abc123')
     expect(result).toEqual({ sessionId: 'abc123' })

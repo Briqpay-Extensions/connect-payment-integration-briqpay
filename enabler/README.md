@@ -189,10 +189,14 @@ const dropin = builder.build({
   onDropinReady: async () => {
     console.log("Briqpay widget is ready");
   },
-  onPayButtonClick: async (sdk) => {
-    // Optional: Perform validation before the decision flow proceeds
-    // sdk.suspend() / sdk.resume() for cart updates
-    // sdk.makeDecision(true) to allow payment
+  // Required. The connector activates the decision step on every session, so
+  // Briqpay will ask for a decision. Validate here, then return the answer -
+  // returning it is what sends it.
+  onDecision: async (sdk, data) => {
+    const isValid = await validateOrder(data);
+    return {
+      decision: isValid ? BRIQPAY_DECISION.ALLOW : BRIQPAY_DECISION.REJECT,
+    };
   },
 });
 
@@ -201,14 +205,14 @@ dropin.mount("#payment-container");
 
 ### EnablerOptions
 
-| Option             | Type                                 | Required | Description                           |
-| ------------------ | ------------------------------------ | -------- | ------------------------------------- |
-| `processorUrl`     | `string`                             | Yes      | URL of the payment processor          |
-| `sessionId`        | `string`                             | Yes      | commercetools session ID              |
-| `locale`           | `string`                             | No       | Locale for the payment widget         |
-| `onComplete`       | `(result: PaymentResult) => void`    | No       | Callback when payment completes. You must handle post-payment navigation (e.g., redirect to confirmation page) in this callback.       |
-| `onError`          | `(error: unknown, context?) => void` | No       | Callback when an error occurs         |
-| `onActionRequired` | `() => Promise<void>`                | No       | Callback when user action is required |
+| Option             | Type                                 | Required | Description                                                                                                                      |
+| ------------------ | ------------------------------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `processorUrl`     | `string`                             | Yes      | URL of the payment processor                                                                                                     |
+| `sessionId`        | `string`                             | Yes      | commercetools session ID                                                                                                         |
+| `locale`           | `string`                             | No       | Locale for the payment widget                                                                                                    |
+| `onComplete`       | `(result: PaymentResult) => void`    | No       | Callback when payment completes. You must handle post-payment navigation (e.g., redirect to confirmation page) in this callback. |
+| `onError`          | `(error: unknown, context?) => void` | No       | Callback when an error occurs                                                                                                    |
+| `onActionRequired` | `() => Promise<void>`                | No       | Callback when user action is required                                                                                            |
 
 ### PaymentResult
 
@@ -226,24 +230,23 @@ The main enabler class exported as `Enabler`.
 
 #### Methods
 
-| Method                                  | Returns                            | Description                                                      |
-| --------------------------------------- | ---------------------------------- | ---------------------------------------------------------------- |
-| `create(options: EnablerOptions)`       | `Promise<BriqpayPaymentEnabler>`   | Static factory method to create an enabler instance              |
+| Method                                  | Returns                            | Description                                                                                     |
+| --------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `create(options: EnablerOptions)`       | `Promise<BriqpayPaymentEnabler>`   | Static factory method to create an enabler instance                                             |
 | `createDropinBuilder(type: DropinType)` | `Promise<PaymentDropinBuilder>`    | Creates a drop-in builder (supports `'briqpay'` and the backward-compatible `'embedded'` alias) |
-| `createComponentBuilder(type: string)`  | `Promise<PaymentComponentBuilder>` | Creates a component builder (currently no components registered) |
+| `createComponentBuilder(type: string)`  | `Promise<PaymentComponentBuilder>` | Creates a component builder (`'briqpay'`). Its `build()` takes the same `onDecision` callback   |
 
 ### BriqpaySdk
 
-The SDK instance is available via the `onPayButtonClick` callback.
+The SDK instance is passed as the first argument to the `onDecision` callback.
 
 #### Methods
 
-| Method                               | Description                                                                      |
-| ------------------------------------ | -------------------------------------------------------------------------------- |
-| `suspend()`                          | Adds an overlay over the payment widget (use during cart updates)                |
-| `resume()`                           | Removes the overlay and rehydrates the iframe                                    |
-| `rehydrate(autoRehydrate?: boolean)` | Fetches latest session config and optionally resumes                             |
-| `makeDecision(decision: boolean)`    | Makes a decision through the backend processor. `true` = allow, `false` = reject |
+| Method                                      | Description                                                                                                  |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `suspend()`                                 | Adds an overlay over the payment widget (use during cart updates, not for decisions)                         |
+| `resume()`                                  | Removes the overlay and rehydrates the iframe                                                                |
+| `rehydrate(autoRehydrate?: boolean)`        | Fetches latest session config and optionally resumes                                                         |
 
 ### DropinComponent
 
@@ -254,60 +257,59 @@ The SDK instance is available via the `onPayButtonClick` callback.
 
 ### DropinOptions
 
-| Option             | Type                                 | Description                                                                                                       |
-| ------------------ | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `onDropinReady`    | `() => Promise<void>`                | Called when the drop-in is ready                                                                                  |
-| `onPayButtonClick` | `(sdk: BriqpaySdk) => Promise<void>` | Called when Checkout's pay button is clicked, before Briqpay's decision flow proceeds. Use for validation/cart updates. |
-| `onBeforeDecision` | `(sdk: BriqpaySdk) => Promise<void>` | Deprecated alias for `onPayButtonClick`, kept for backward compatibility.                                        |
+| Option          | Type                                     | Description                                                                         |
+| --------------- | ---------------------------------------- | ----------------------------------------------------------------------------------- |
+| `onDropinReady` | `() => Promise<void>`                    | Optional. Called when the drop-in is ready                                          |
+| `onDecision`    | `(sdk, data) => Promise<DecisionAnswer>` | **Required.** Called when Briqpay asks for a decision. Return the answer to send it |
 
 ## Briqpay Events
 
-The enabler subscribes to Briqpay widget events and emits custom DOM events for integration.
+The enabler subscribes to these Briqpay widget events on your behalf. You do not need to handle them yourself.
 
-### Subscribed Events
+| Event              | Description                                                              |
+| ------------------ | ------------------------------------------------------------------------ |
+| `session_complete` | Fired when the payment session is completed. Triggers `submit()`.        |
+| `make_decision`    | Fired when a decision is required. Routed to your `onDecision` callback. |
 
-| Event              | Description                                                       |
-| ------------------ | ----------------------------------------------------------------- |
-| `session_complete` | Fired when the payment session is completed. Triggers `submit()`. |
-| `make_decision`    | Fired when a decision is required before proceeding.              |
+## Payment Decisions
 
-### Custom DOM Events
-
-#### `briqpayDecision`
-
-Dispatched when a decision is required. Listen to this event to implement custom validation logic.
+The connector activates the decision step on every session it creates, so `onDecision` is required. Validate whatever you need, then return the answer.
 
 ```typescript
-document.addEventListener("briqpayDecision", (event: CustomEvent) => {
-  const data = event.detail.data;
+import { BRIQPAY_DECISION, BRIQPAY_REJECT_TYPE } from "connector-enabler";
 
-  // Perform your validation...
-  const isValid = validateOrder();
+const dropin = builder.build({
+  onDecision: async (sdk, data) => {
+    const cartIsUnchanged = await checkCartAgainstSession(data.sessionId);
 
-  // Respond with decision
-  const responseEvent = new CustomEvent("briqpayDecisionResponse", {
-    detail: {
-      decision: isValid ? "allow" : "reject",
-      // Optional rejection details:
-      // rejectionType: 'notify_user',
-      // softErrors: [{ message: 'Please fix...' }],
-      // hardError: { message: 'Cannot proceed' }
-    },
-  });
-  document.dispatchEvent(responseEvent);
+    if (cartIsUnchanged) {
+      return { decision: BRIQPAY_DECISION.ALLOW };
+    }
+
+    // Reject without ending the session, so the buyer can correct and retry.
+    return {
+      decision: BRIQPAY_DECISION.REJECT,
+      rejectionType: BRIQPAY_REJECT_TYPE.NOTIFY_USER,
+      softErrors: [{ message: "Your cart changed, please review the total" }],
+    };
+  },
 });
 ```
 
-#### Decision Response Options
+`data` carries the `sessionId`, not the amounts, so compare against the session server-side.
 
-| Field           | Type                                           | Description                            |
-| --------------- | ---------------------------------------------- | -------------------------------------- |
-| `decision`      | `'allow' \| 'reject'`                          | Whether to allow or reject the payment |
-| `rejectionType` | `'reject_session_with_error' \| 'notify_user'` | How to handle rejection                |
-| `softErrors`    | `{ message: string }[]`                        | Non-blocking error messages            |
-| `hardError`     | `{ message: string }`                          | Blocking error message                 |
+### DecisionAnswer
 
-> **Note**: If no response is received within 10 seconds, the decision defaults to allow (`{ decision: true }`).
+| Field           | Type                    | Description                                                                                                                       |
+| --------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `decision`      | `BRIQPAY_DECISION`      | `ALLOW` or `REJECT`                                                                                                               |
+| `rejectionType` | `BRIQPAY_REJECT_TYPE`   | `NOTIFY_USER` shows a message and keeps the session open; `REJECT_WITH_ERROR` closes it                                            |
+| `softErrors`    | `{ message: string }[]` | Messages shown to the buyer with `NOTIFY_USER`                                                                                    |
+| `hardError`     | `{ message: string }`   | Message shown in an overlay with `REJECT_WITH_ERROR`                                                                              |
+
+Both enums and the `DecisionAnswer` type are exported from `connector-enabler`.
+
+> **Note**: If `onDecision` has not answered within 20 seconds the decision is abandoned and nothing is sent. Briqpay blocks the purchase and asks the buyer to try again. Nothing is charged. A missing `onDecision` is treated the same way, since allowing by default would record an approval no merchant made.
 
 ## Testing
 

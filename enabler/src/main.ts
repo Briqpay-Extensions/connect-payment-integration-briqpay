@@ -1,9 +1,9 @@
-import { 
-  BriqpayPaymentEnabler, 
+import {
+  BriqpayPaymentEnabler,
   DropinType,
   EnablerOptions,
   PaymentComponentBuilder,
-  PaymentDropinBuilder
+  PaymentDropinBuilder,
 } from "./payment-enabler/payment-enabler-briqpay";
 
 // Create a proxy class that maintains backward compatibility while avoiding async in constructor
@@ -30,3 +30,6 @@ export const createEnabler = BriqpayPaymentEnabler.create;
 export const createEnablerSync = BriqpayPaymentEnabler.createSync;
 export { BriqpayPaymentEnabler };
 export type { EnablerOptions };
+
+export { BRIQPAY_DECISION, BRIQPAY_REJECT_TYPE } from "./briqpay-sdk";
+export type { BriqpayDecisionOptions, DecisionAnswer } from "./briqpay-sdk";

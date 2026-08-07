@@ -7,7 +7,7 @@ export PATH="/usr/local/bin:$PATH"
 
 # Always validate before pushing
 echo "Running commercetools connect validation..."
-commercetools connect validate .
+npx @commercetools/cli connect validate .
 if [ $? -ne 0 ]; then
   echo "❌ commercetools connect validation failed"
   exit 1

@@ -1,12 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, expect, jest, test } from "@jest/globals";
 import {
-  BRIQPAY_DECISION,
   DropinComponents,
   DropinEmbeddedBuilder,
 } from "../../src/dropin/dropin-embedded";
 import { DropinOptions } from "../../src/payment-enabler/payment-enabler";
-import { BriqpaySdk } from "../../src/briqpay-sdk";
+import { BRIQPAY_DECISION, BriqpaySdk } from "../../src/briqpay-sdk";
 
 describe("DropinEmbeddedBuilder", () => {
   // Mock fetch
@@ -23,6 +22,9 @@ describe("DropinEmbeddedBuilder", () => {
 
     const config: DropinOptions = {
       onDropinReady: jest.fn<any>().mockResolvedValue(undefined), // Mock it to return a Promise
+      onDecision: jest
+        .fn<any>()
+        .mockResolvedValue({ decision: BRIQPAY_DECISION.ALLOW }),
     };
 
     const dropin = builder.build(config);
@@ -43,6 +45,9 @@ describe("DropinComponents", () => {
   test("should initialize with given options", () => {
     const config: DropinOptions = {
       onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+      onDecision: jest
+        .fn<any>()
+        .mockResolvedValue({ decision: BRIQPAY_DECISION.ALLOW }),
     };
     const dropin = new DropinComponents(
       { dropinOptions: config },
@@ -72,6 +77,9 @@ describe("DropinComponents", () => {
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+          onDecision: jest
+            .fn<any>()
+            .mockResolvedValue({ decision: BRIQPAY_DECISION.ALLOW }),
         },
       },
       {
@@ -96,6 +104,9 @@ describe("DropinComponents", () => {
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+          onDecision: jest
+            .fn<any>()
+            .mockResolvedValue({ decision: BRIQPAY_DECISION.ALLOW }),
         },
       },
       {
@@ -122,6 +133,9 @@ describe("DropinComponents", () => {
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+          onDecision: jest
+            .fn<any>()
+            .mockResolvedValue({ decision: BRIQPAY_DECISION.ALLOW }),
         },
       },
       {
@@ -139,30 +153,71 @@ describe("DropinComponents", () => {
     await expect(dropin.submit()).rejects.toThrow();
   });
 
-  test("handleDecision should work", async () => {
-    // Mock document.addEventListener to capture the callback
-    const addEventListenerSpy = jest.spyOn(document, "addEventListener");
-    let _eventCallback: ((event: Event) => void) | null = null;
+  // Allowing would record an approval no merchant made.
+  test("handleDecision sends nothing when no onDecision is configured", async () => {
+    (global.fetch as jest.Mock).mockClear();
+    window._briqpay = {
+      subscribe: jest.fn(),
+      v3: {
+        suspend: jest.fn(),
+        resume: jest.fn(),
+        resumeDecision: jest.fn(),
+      },
+    };
 
-    addEventListenerSpy.mockImplementation((_event: string, callback: any) => {
-      if (_event === "briqpayDecisionResponse") {
-        _eventCallback = callback;
-      }
+    // Deliberately bypasses the DropinOptions type (which now requires
+    // onDecision) to simulate a plain-JS/untyped caller that omits it, and
+    // exercise the runtime defensive fallback rather than the type check.
+    const dropin = new DropinComponents(
+      {
+        dropinOptions: {
+          onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+        } as unknown as DropinOptions,
+      },
+      {
+        processorUrl: "http://localhost:8080",
+        sessionId: "123",
+        briqpaySessionId: "abc123",
+        snippet: "Dropin Embedded",
+        sdk: {} as BriqpaySdk,
+        environment: "test",
+        onComplete: () => {},
+        onError: () => {},
+      },
+    );
+
+    await expect(dropin.handleDecision({})).resolves.not.toThrow();
+
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      "http://localhost:8080/decision",
+      expect.anything(),
+    );
+    // suspend() is intentionally NOT called here - Briqpay auto-suspends the
+    // widget itself for make_decision; only resumeDecision() is our job.
+    expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
+  });
+
+  test("handleDecision calls onDecision and sends its returned answer", async () => {
+    window._briqpay = {
+      subscribe: jest.fn(),
+      v3: {
+        suspend: jest.fn(),
+        resume: jest.fn(),
+        resumeDecision: jest.fn(),
+      },
+    };
+
+    const sdk = {} as BriqpaySdk;
+    const onDecision = jest.fn<any>().mockResolvedValue({
+      decision: BRIQPAY_DECISION.REJECT,
+      softErrors: [{ message: "please retry" }],
     });
 
-    window._briqpay = {
-      subscribe: jest.fn(),
-      v3: {
-        suspend: jest.fn().mockReturnValueOnce({}),
-        resume: jest.fn().mockReturnValueOnce({}),
-        resumeDecision: jest.fn().mockReturnValueOnce({}),
-      },
-    };
-
     const dropin = new DropinComponents(
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+          onDecision,
         },
       },
       {
@@ -170,61 +225,47 @@ describe("DropinComponents", () => {
         sessionId: "123",
         briqpaySessionId: "abc123",
         snippet: "Dropin Embedded",
-        sdk: {} as BriqpaySdk,
+        sdk,
         environment: "test",
         onComplete: () => {},
         onError: () => {},
       },
     );
 
-    const decisionPromise = dropin.handleDecision(BRIQPAY_DECISION._ALLOW);
+    await dropin.handleDecision({ orderData: {} });
 
-    // Simulate the response event
-    if (_eventCallback) {
-      const event = new CustomEvent("briqpayDecisionResponse", {
-        detail: {
-          decision: "allow",
-          softErrors: [],
-          hardError: null,
-          rejectionType: null,
-        },
-      });
-      (_eventCallback as (event: Event) => void)(event);
-    }
-
-    await expect(decisionPromise).resolves.not.toThrow();
-
-    addEventListenerSpy.mockRestore();
+    expect(onDecision).toHaveBeenCalledWith(sdk, { orderData: {} });
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://localhost:8080/decision",
+      expect.objectContaining({
+        body: JSON.stringify({
+          sessionId: "abc123",
+          decision: BRIQPAY_DECISION.REJECT,
+          softErrors: [{ message: "please retry" }],
+        }),
+      }),
+    );
+    expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
   });
 
-  test("handleDecision should work with invalid decision", async () => {
-    // Mock document.addEventListener to capture the callback
-    const addEventListenerSpy = jest.spyOn(document, "addEventListener");
-    let _eventCallback: ((event: Event) => void) | null = null;
-    const onBeforeDecision = jest.fn<any>().mockResolvedValue(undefined);
-
-    addEventListenerSpy.mockImplementation(
-      (_event: string, callback: any, _options?: any) => {
-        if (_event === "briqpayDecisionResponse") {
-          _eventCallback = callback;
-        }
-      },
-    );
-
+  test("handleDecision resumes without sending when onDecision returns an invalid answer", async () => {
     window._briqpay = {
       subscribe: jest.fn(),
       v3: {
-        suspend: jest.fn().mockReturnValueOnce({}),
-        resume: jest.fn().mockReturnValueOnce({}),
-        resumeDecision: jest.fn().mockReturnValueOnce({}),
+        suspend: jest.fn(),
+        resume: jest.fn(),
+        resumeDecision: jest.fn(),
       },
     };
+
+    const onDecision = jest.fn<any>().mockResolvedValue({ decision: "maybe" });
+    (global.fetch as jest.Mock).mockClear();
 
     const dropin = new DropinComponents(
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
-          onBeforeDecision,
+          onDecision,
         },
       },
       {
@@ -239,61 +280,36 @@ describe("DropinComponents", () => {
       },
     );
 
-    const decisionPromise = dropin.handleDecision("invalid");
+    await dropin.handleDecision({});
 
-    // Wait a bit for the event listener to be set up
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    // Simulate the response event
-    if (_eventCallback) {
-      const event = new CustomEvent("briqpayDecisionResponse", {
-        detail: {
-          decision: "allow",
-          softErrors: ["softErrors"],
-          hardError: "hardError",
-          rejectionType: "rejected",
-        },
-      });
-      (_eventCallback as (event: Event) => void)(event);
-    }
-
-    await expect(decisionPromise).resolves.not.toThrow();
-    expect(onBeforeDecision).toHaveBeenCalledTimes(1);
-
-    addEventListenerSpy.mockRestore();
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      "http://localhost:8080/decision",
+      expect.anything(),
+    );
+    expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
   });
 
-  test("handleDecision should prefer onPayButtonClick over onBeforeDecision", async () => {
-    // Mock document.addEventListener to capture the callback
-    const addEventListenerSpy = jest.spyOn(document, "addEventListener");
-    let _eventCallback: ((event: Event) => void) | null = null;
-
-    addEventListenerSpy.mockImplementation(
-      (_event: string, callback: any, _options?: any) => {
-        if (_event === "briqpayDecisionResponse") {
-          _eventCallback = callback;
-        }
-      },
-    );
+  // Must settle rather than stay pending forever, and send nothing once it does.
+  test("handleDecision abandons the decision when onDecision never resolves", async () => {
+    jest.useFakeTimers();
+    (global.fetch as jest.Mock).mockClear();
 
     window._briqpay = {
       subscribe: jest.fn(),
       v3: {
-        suspend: jest.fn().mockReturnValueOnce({}),
-        resume: jest.fn().mockReturnValueOnce({}),
-        resumeDecision: jest.fn().mockReturnValueOnce({}),
+        suspend: jest.fn(),
+        resume: jest.fn(),
+        resumeDecision: jest.fn(),
       },
     };
 
-    const onPayButtonClick = jest.fn<any>().mockResolvedValue(undefined);
-    const onBeforeDecision = jest.fn<any>().mockResolvedValue(undefined);
+    const onDecision = jest.fn<any>().mockReturnValue(new Promise(() => {}));
 
     const dropin = new DropinComponents(
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
-          onPayButtonClick,
-          onBeforeDecision,
+          onDecision,
         },
       },
       {
@@ -308,28 +324,62 @@ describe("DropinComponents", () => {
       },
     );
 
-    const decisionPromise = dropin.handleDecision("invalid");
+    const settled = jest.fn();
+    void dropin.handleDecision({}).then(settled, settled);
 
-    // Wait a bit for the event listener to be set up
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await jest.advanceTimersByTimeAsync(20000);
 
-    // Simulate the response event
-    if (_eventCallback) {
-      const event = new CustomEvent("briqpayDecisionResponse", {
-        detail: {
-          decision: "allow",
-          softErrors: ["softErrors"],
-          hardError: "hardError",
-          rejectionType: "rejected",
+    expect(settled).toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      "http://localhost:8080/decision",
+      expect.anything(),
+    );
+    expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
+
+    jest.useRealTimers();
+  });
+
+  // A throw is not an answer, and must not reject out of the subscriber.
+  test("handleDecision abandons the decision when onDecision throws", async () => {
+    window._briqpay = {
+      subscribe: jest.fn(),
+      v3: {
+        suspend: jest.fn(),
+        resume: jest.fn(),
+        resumeDecision: jest.fn(),
+      },
+    };
+
+    const onDecision = jest
+      .fn<any>()
+      .mockRejectedValue(new Error("validation blew up"));
+    (global.fetch as jest.Mock).mockClear();
+
+    const dropin = new DropinComponents(
+      {
+        dropinOptions: {
+          onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+          onDecision,
         },
-      });
-      (_eventCallback as (event: Event) => void)(event);
-    }
+      },
+      {
+        processorUrl: "http://localhost:8080",
+        sessionId: "123",
+        briqpaySessionId: "abc123",
+        snippet: "Dropin Embedded",
+        sdk: {} as BriqpaySdk,
+        environment: "test",
+        onComplete: () => {},
+        onError: () => {},
+      },
+    );
 
-    await expect(decisionPromise).resolves.not.toThrow();
-    expect(onPayButtonClick).toHaveBeenCalledTimes(1);
-    expect(onBeforeDecision).not.toHaveBeenCalled();
+    await expect(dropin.handleDecision({})).resolves.not.toThrow();
 
-    addEventListenerSpy.mockRestore();
+    expect(global.fetch).not.toHaveBeenCalledWith(
+      "http://localhost:8080/decision",
+      expect.anything(),
+    );
+    expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
   });
 });

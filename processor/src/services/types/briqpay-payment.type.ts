@@ -459,7 +459,7 @@ export interface CreateSessionRequestBody {
   modules?: {
     loadModules?: MODULE_TYPE[]
     config?: {
-      [MODULE_TYPE.COMPANY_LOOKUP]: {
+      [MODULE_TYPE.COMPANY_LOOKUP]?: {
         companyPrefillLock?: COMPANY_PREFILL_LOCK
       }
       [MODULE_TYPE.BILLING]?: {
@@ -470,6 +470,9 @@ export interface CreateSessionRequestBody {
       }
       [MODULE_TYPE.PAYMENT]?: {
         pspRulesOverride?: PSPRulesOverride
+        decision?: {
+          enabled: boolean
+        }
       }
       [MODULE_TYPE.ORDER_NOTE]?: {
         customInputs?: CustomInput[]

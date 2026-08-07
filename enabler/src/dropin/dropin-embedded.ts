@@ -9,27 +9,11 @@ import {
   PaymentMethod,
 } from "../payment-enabler/payment-enabler";
 import { BaseOptions } from "../payment-enabler/payment-enabler-briqpay";
-
-export enum BRIQPAY_DECISION {
-  _ALLOW = "allow",
-  _REJECT = "reject",
-}
-
-enum BRIQPAY_REJECT_TYPE {
-  _REJECT_WITH_ERROR = "reject_session_with_error",
-  _NOTIFY_USER = "notify_user",
-}
-
-type BriqpayDecisionRequest = {
-  decision: BRIQPAY_DECISION;
-  rejectionType?: BRIQPAY_REJECT_TYPE;
-  hardError?: {
-    message: string;
-  };
-  softErrors?: {
-    message: string;
-  }[];
-};
+import {
+  BRIQPAY_DECISION,
+  DECISION_TIMEOUT_MS,
+  DecisionAnswer,
+} from "../briqpay-sdk";
 
 declare global {
   interface Window {
@@ -94,92 +78,61 @@ export class DropinComponents implements DropinComponent {
   }
 
   public async handleDecision(data: unknown) {
-    window._briqpay.v3.suspend();
+    // Briqpay blocks its own pay-button flow while awaiting the decision, so
+    // nothing needs suspending here. resumeDecision() releases that block.
+    // suspend()/resume() are a separate mechanism for cart updates and are not
+    // cleared by resumeDecision().
+    const decisionAnswer = await this.resolveDecisionAnswer(data);
 
-    const onPayButtonClickPromise = this.runOnPayButtonClick();
-    if (onPayButtonClickPromise) {
-      await onPayButtonClickPromise;
-    }
-
-    const customDecisionResponse = await this.getCustomDecisionResponse(data);
-
-    if (!this.isValidDecision(customDecisionResponse)) {
+    // Nothing usable. Briqpay gates on the decision it recorded, so unlocking
+    // without one fails the purchase and shows the buyer an error.
+    if (!this.isValidDecisionAnswer(decisionAnswer)) {
       window._briqpay.v3.resumeDecision();
       return;
     }
 
-    await this.sendDecision(customDecisionResponse as BriqpayDecisionRequest);
-    window._briqpay.v3.resumeDecision();
+    try {
+      await this.sendDecision(decisionAnswer);
+    } finally {
+      window._briqpay.v3.resumeDecision();
+    }
   }
 
-  private runOnPayButtonClick() {
-    const callback =
-      this.dropinOptions.onPayButtonClick ?? this.getOnBeforeDecisionCompat();
-
-    if (!callback) {
-      return;
+  private async resolveDecisionAnswer(
+    data: unknown,
+  ): Promise<DecisionAnswer | undefined> {
+    const onDecision = this.dropinOptions.onDecision;
+    if (!onDecision) {
+      // Required by DropinOptions, so an untyped caller omitted it. Allowing
+      // would record an approval no merchant made.
+      return undefined;
     }
 
-    return callback(this.baseOptions.sdk);
-  }
-
-  private getOnBeforeDecisionCompat():
-    | ((sdk: BaseOptions["sdk"]) => Promise<void>)
-    | undefined {
-    const compatOptions = this.dropinOptions as unknown as {
-      onBeforeDecision?: (sdk: BaseOptions["sdk"]) => Promise<void>;
-    };
-
-    return compatOptions.onBeforeDecision;
-  }
-
-  private async getCustomDecisionResponse(data: unknown) {
-    const promiseForResponse = new Promise((resolve) => {
-      document.addEventListener(
-        "briqpayDecisionResponse",
-        function (e: Event) {
-          resolve((e as CustomEvent).detail);
-        },
-        { once: true },
-      );
-    });
-
-    const event = new CustomEvent("briqpayDecision", {
-      detail: { data },
-    });
-    document.dispatchEvent(event);
-
+    // A late answer loses the race and is never sent, so a verdict Briqpay has
+    // already timed out on cannot land. A throw is not an answer either.
     return Promise.race([
-      promiseForResponse,
-      new Promise((resolve) =>
-        setTimeout(() => {
-          resolve({ decision: true });
-        }, 10000),
+      onDecision(this.baseOptions.sdk, data),
+      new Promise<undefined>((resolve) =>
+        setTimeout(() => resolve(undefined), DECISION_TIMEOUT_MS),
       ),
-    ]);
+    ]).catch(() => undefined);
   }
 
-  private isValidDecision(customDecisionResponse: unknown) {
+  private isValidDecisionAnswer(
+    decisionAnswer: unknown,
+  ): decisionAnswer is DecisionAnswer {
     return (
-      customDecisionResponse &&
-      typeof customDecisionResponse === "object" &&
-      "decision" in customDecisionResponse
+      typeof decisionAnswer === "object" &&
+      decisionAnswer !== null &&
+      "decision" in decisionAnswer &&
+      ((decisionAnswer as { decision: unknown }).decision ===
+        BRIQPAY_DECISION.ALLOW ||
+        (decisionAnswer as { decision: unknown }).decision ===
+          BRIQPAY_DECISION.REJECT)
     );
   }
 
-  private async sendDecision(customDecisionResponse: BriqpayDecisionRequest) {
-    const { decision, softErrors, hardError, rejectionType } =
-      customDecisionResponse;
-
-    const request: BriqpayDecisionRequest = {
-      decision:
-        (decision?.toLowerCase() as BRIQPAY_DECISION) ||
-        BRIQPAY_DECISION._ALLOW,
-      ...(softErrors && { softErrors }),
-      ...(hardError && { hardError }),
-      ...(rejectionType && { rejectionType }),
-    };
-
+  private async sendDecision(decisionAnswer: DecisionAnswer) {
     await fetch(this.baseOptions.processorUrl + "/decision", {
       method: "POST",
       headers: {
@@ -188,7 +141,7 @@ export class DropinComponents implements DropinComponent {
       },
       body: JSON.stringify({
         sessionId: this.baseOptions.briqpaySessionId,
-        ...request,
+        ...decisionAnswer,
       }),
     });
   }

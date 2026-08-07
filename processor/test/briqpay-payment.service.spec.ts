@@ -3318,6 +3318,206 @@ describe('briqpay-payment.service', () => {
     expect(createSpy).not.toHaveBeenCalled()
   })
 
+  /**
+   * What an order_status webhook must do to the commercetools transaction, written from the required
+   * behaviour rather than from the current handlers. Scenarios that already work are included as the
+   * regression net for the ones being changed.
+   */
+  describe('order_status webhook -> commercetools transaction state', () => {
+    const SESSION = 'abc123'
+    const AMOUNT = 119000
+
+    const authorization = (state: TransactionState, centAmount = AMOUNT): Transaction =>
+      ({
+        id: `auth-${state}`,
+        type: 'Authorization' as TransactionType,
+        interactionId: SESSION,
+        state,
+        amount: { centAmount, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        timestamp: '2024-01-01T00:00:00.000Z',
+      }) as unknown as Transaction
+
+    // Mirrors what cancelPayment writes: no interactionId, state Success.
+    const cancelAuthorization = (): Transaction =>
+      ({
+        id: 'cancel-1',
+        type: 'CancelAuthorization' as TransactionType,
+        state: 'Success',
+        amount: { centAmount: AMOUNT, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        timestamp: '2024-01-01T00:00:00.000Z',
+      }) as unknown as Transaction
+
+    /** The CT Payment the webhook will find, carrying whatever earlier steps already wrote. */
+    const ctHolds = (transactions: Transaction[]) => {
+      jest
+        .spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId')
+        .mockImplementation(
+          async () => [{ ...mockGetPaymentResult, id: 'payment-id-1', interfaceId: SESSION, transactions }] as never,
+        )
+    }
+
+    const deliver = async (status: BRIQPAY_WEBHOOK_STATUS, transactionStatus: TRANSACTION_STATUS) => {
+      jest.spyOn(Briqpay, 'getSession').mockResolvedValue(createMockBriqpaySession({ sessionId: SESSION }))
+
+      const data: NotificationRequestSchemaDTO = {
+        sessionId: SESSION,
+        event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+        status,
+        transaction: { transactionId: 'tx-1', status: transactionStatus, amountIncVat: AMOUNT, currency: 'EUR' },
+      }
+      const { rawBody, signatureHeader } = createSignedWebhookRequest(data)
+      await briqpayPaymentService.processNotification({ data, rawBody, signatureHeader })
+    }
+
+    /** Every transaction the connector asked commercetools to write, in order. */
+    const written = (spy: jest.SpiedFunction<typeof paymentSDK.ctPaymentService.updatePayment>) =>
+      spy.mock.calls.map(([call]) => ({ type: call.transaction?.type, state: call.transaction?.state }))
+
+    test('1. order_pending records the authorization as Pending', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as never)
+      ctHolds([])
+
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING, TRANSACTION_STATUS.PENDING)
+
+      expect(written(updateSpy)).toContainEqual({ type: 'Authorization', state: 'Pending' })
+    })
+
+    test('2. order_approved_not_captured records the authorization as Success', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as never)
+      ctHolds([authorization('Pending')])
+
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED, TRANSACTION_STATUS.APPROVED)
+
+      expect(written(updateSpy)).toContainEqual({ type: 'Authorization', state: 'Success' })
+    })
+
+    test('3. order_rejected records the authorization as failed', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as never)
+      ctHolds([authorization('Pending')])
+
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_REJECTED, TRANSACTION_STATUS.REJECTED)
+
+      expect(written(updateSpy)).toContainEqual({ type: 'Authorization', state: 'Failure' })
+    })
+
+    test('4. order_cancelled records the authorization as cancelled', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as never)
+      ctHolds([authorization('Pending')])
+
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_CANCELLED, TRANSACTION_STATUS.CANCELLED)
+
+      expect(written(updateSpy)).toContainEqual({ type: 'CancelAuthorization', state: 'Success' })
+    })
+
+    test('5. pending then rejected ends as failed', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as never)
+
+      ctHolds([])
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING, TRANSACTION_STATUS.PENDING)
+
+      ctHolds([authorization('Pending')])
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_REJECTED, TRANSACTION_STATUS.REJECTED)
+
+      expect(written(updateSpy).at(-1)).toEqual({ type: 'Authorization', state: 'Failure' })
+    })
+
+    // Pierce: insufficient funds, approved on the third attempt. MSS made rejected non-terminal, so
+    // commercetools must be able to recover too.
+    test('6. pending, rejected, then approved ends as Success', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as never)
+
+      ctHolds([])
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING, TRANSACTION_STATUS.PENDING)
+
+      ctHolds([authorization('Pending')])
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_REJECTED, TRANSACTION_STATUS.REJECTED)
+
+      ctHolds([authorization('Failure')])
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED, TRANSACTION_STATUS.APPROVED)
+
+      // The whole sequence, not just the end state: asserting only the last write would pass even if
+      // the rejection were dropped, which is exactly how this looked before the fix.
+      expect(written(updateSpy)).toEqual([
+        { type: 'Authorization', state: 'Pending' },
+        { type: 'Authorization', state: 'Failure' },
+        { type: 'Authorization', state: 'Success' },
+      ])
+    })
+
+    test('7. pending, approved, then a late rejection ends as failed', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as never)
+
+      ctHolds([])
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_PENDING, TRANSACTION_STATUS.PENDING)
+
+      ctHolds([authorization('Pending')])
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED, TRANSACTION_STATUS.APPROVED)
+
+      ctHolds([authorization('Success')])
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_REJECTED, TRANSACTION_STATUS.REJECTED)
+
+      expect(written(updateSpy).at(-1)).toEqual({ type: 'Authorization', state: 'Failure' })
+    })
+
+    // A CT-initiated cancel already wrote its own record, and Briqpay echoes order_cancelled back.
+    test('8. a cancel already recorded by commercetools is not recorded twice', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as never)
+      ctHolds([authorization('Success'), cancelAuthorization()])
+
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_CANCELLED, TRANSACTION_STATUS.CANCELLED)
+
+      expect(written(updateSpy).filter((tx) => tx.type === 'CancelAuthorization')).toHaveLength(0)
+    })
+
+    // Briqpay webhooks are at-least-once. Redelivery must not create a second transaction: every write
+    // has to target the same identity, which is what lets commercetools consolidate them. It then
+    // discards the repeat entirely, since a same-state write yields no actions and updatePayment
+    // short-circuits on an empty action list.
+    test('9. a redelivered rejection cannot create a second transaction', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as never)
+
+      ctHolds([authorization('Pending')])
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_REJECTED, TRANSACTION_STATUS.REJECTED)
+
+      ctHolds([authorization('Failure')])
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_REJECTED, TRANSACTION_STATUS.REJECTED)
+
+      const identities = updateSpy.mock.calls.map(([call]) => ({
+        type: call.transaction?.type,
+        interactionId: call.transaction?.interactionId,
+        state: call.transaction?.state,
+      }))
+
+      expect(identities).toHaveLength(2)
+      expect(new Set(identities.map((tx) => JSON.stringify(tx))).size).toBe(1)
+      expect(identities[0]).toEqual({ type: 'Authorization', interactionId: SESSION, state: 'Failure' })
+    })
+
+    test('10. order_rejected with no commercetools payment writes nothing and does not throw', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as never)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockImplementation(async () => [])
+
+      await expect(deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_REJECTED, TRANSACTION_STATUS.REJECTED)).resolves.not.toThrow()
+
+      expect(updateSpy).not.toHaveBeenCalled()
+    })
+
+    test('11. order_rejected records the amount Briqpay reported', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as never)
+      ctHolds([authorization('Pending')])
+
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_REJECTED, TRANSACTION_STATUS.REJECTED)
+
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          transaction: expect.objectContaining({
+            amount: expect.objectContaining({ centAmount: AMOUNT, currencyCode: 'EUR' }),
+          }),
+        }),
+      )
+    })
+  })
+
   test('ORDER_PENDING with a persisted tag creates one tagged Payment + Authorization Pending', async () => {
     const cartWithTag = {
       ...mockGetCartResult(),

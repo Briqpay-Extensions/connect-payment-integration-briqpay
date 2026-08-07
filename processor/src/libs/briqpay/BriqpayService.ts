@@ -546,6 +546,11 @@ class BriqpayService {
       },
       modules: {
         loadModules: [MODULE_TYPE.PAYMENT],
+        config: {
+          [MODULE_TYPE.PAYMENT]: {
+            decision: { enabled: true },
+          },
+        },
       },
     }
   }
@@ -795,15 +800,15 @@ class BriqpayService {
 
   async capture(
     ctCart: Cart,
-    amountPlanned: Omit<PaymentAmount, 'fractionDigits'>,
+    amount: Omit<PaymentAmount, 'fractionDigits'>,
     sessionId: string,
   ): Promise<{ captureId: string; status: PaymentOutcome } & Record<string, unknown>> {
     const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.customLineItems, ctCart.locale)
     const briqpayCaptureRequest: Pick<CreateSessionRequestBody, 'data'> = {
       data: {
         order: {
-          currency: amountPlanned.currencyCode,
-          amountIncVat: amountPlanned.centAmount,
+          currency: amount.currencyCode,
+          amountIncVat: amount.centAmount,
           amountExVat:
             ctCart.taxedPrice?.totalNet?.centAmount ??
             (ctCart.lineItems.reduce(
@@ -816,7 +821,7 @@ class BriqpayService {
                 (acc, item) => acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.totalPrice.centAmount),
                 0,
               ) ||
-              amountPlanned.centAmount),
+              amount.centAmount),
           cart: cartItems,
         },
         // Temporary cast
@@ -847,7 +852,7 @@ class BriqpayService {
 
   async refund(
     ctCart: Cart,
-    amountPlanned: Omit<PaymentAmount, 'fractionDigits'>,
+    amount: Omit<PaymentAmount, 'fractionDigits'>,
     sessionId: string,
     captureId?: string,
   ): Promise<{ refundId: string; status: PaymentOutcome } & Record<string, unknown>> {
@@ -857,7 +862,7 @@ class BriqpayService {
       data: {
         order: {
           currency: ctCart.totalPrice.currencyCode,
-          amountIncVat: amountPlanned.centAmount,
+          amountIncVat: amount.centAmount,
           amountExVat:
             ctCart.taxedPrice?.totalNet?.centAmount ??
             (ctCart.lineItems.reduce(
@@ -870,7 +875,7 @@ class BriqpayService {
                 (acc, item) => acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.totalPrice.centAmount),
                 0,
               ) ||
-              amountPlanned.centAmount),
+              amount.centAmount),
           cart: cartItems,
         },
       },

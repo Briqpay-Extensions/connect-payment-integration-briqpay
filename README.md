@@ -325,28 +325,35 @@ flowchart TD
         processor
     end
     subgraph coco["commercetools"]
-        cart
         payment
     end
     subgraph briqpay["Briqpay"]
         session.decision
     end
 
-    widget--"1. User completes payment form"-->enabler
-    enabler--"2. Send decision request"-->processor
-    processor--"3. Submit decision"-->briqpay
-    briqpay--"4. Return decision result"-->processor
-    processor--"5. Create payment"-->coco
-    processor--"6. Return payment result"-->enabler
-    style coco height:150
+    widget--"1a. make_decision (may be skipped)"-->enabler
+    enabler--"2a. Submit decision via onDecision"-->processor
+    processor--"3a. Forward decision"-->briqpay
+    briqpay--"4a. Approve / deny"-->processor
+    processor--"5a. Resume widget"-->enabler
+    widget--"1b. session_complete"-->enabler
+    enabler--"2b. Create payment"-->processor
+    processor--"3b. Create payment"-->coco
+    processor--"4b. Return payment result"-->enabler
+    style coco height:100
 ```
 
-1. User completes the payment form in the Briqpay widget and triggers `session_complete` event.
-2. The `enabler` captures the event and sends a decision request to the `processor`.
-3. The `processor` submits the decision to Briqpay API.
-4. Briqpay returns the decision result (approved/denied).
-5. The `processor` creates a payment in commercetools with the authorization transaction.
-6. The result is returned to the frontend for order completion.
+The connector activates the decision step (`modules.config.payment.decision.enabled`) for every session it creates, so `onDecision` is required — see [Enabler Usage](#enabler-usage). Briqpay's widget fires one of two events when the buyer submits the payment form:
+
+1. **`make_decision`** — fired when Briqpay needs a decision. Briqpay decides when one is needed, so it does not necessarily fire on every submission.
+   1. The `enabler` calls the merchant-supplied `onDecision` callback (see [Enabler Usage](#enabler-usage)) and sends its answer to the `processor` via `/decision`.
+   2. The `processor` forwards the decision to Briqpay's API.
+   3. Briqpay approves or denies it.
+   4. The `enabler` resumes the widget with the result.
+2. **`session_complete`** — fired once Briqpay is ready to finalize, either right after an approved decision or directly if no decision was needed.
+   1. The `enabler` calls `/payments` on the `processor`.
+   2. The `processor` creates the payment in commercetools with the authorization transaction.
+   3. The result is returned to the frontend for order completion.
 
 ### Webhook Notification Flow
 
@@ -436,11 +443,11 @@ await createCTSession({
 
 For any cart that completes a purchase, the following three values are guaranteed identical:
 
-| Source                                            | Field                                              |
-| ------------------------------------------------- | -------------------------------------------------- |
-| commercetools Cart                                | `custom.fields["briqpay-future-order-number"]`     |
-| commercetools auto-created Order                  | `orderNumber`                                      |
-| Briqpay session                                   | `references.reference1`                            |
+| Source                           | Field                                          |
+| -------------------------------- | ---------------------------------------------- |
+| commercetools Cart               | `custom.fields["briqpay-future-order-number"]` |
+| commercetools auto-created Order | `orderNumber`                                  |
+| Briqpay session                  | `references.reference1`                        |
 
 This holds regardless of how many CT Sessions are minted against the same cart or how long the customer takes to return.
 
@@ -489,8 +496,15 @@ await axios.post(
   {
     version: cartVersion,
     actions: [
-      { action: 'setCustomType', type: { key: 'briqpay-session-id', typeId: 'type' } },
-      { action: 'setCustomField', name: 'briqpay-variant-id', value: chosenBriqpayVariantId },
+      {
+        action: "setCustomType",
+        type: { key: "briqpay-session-id", typeId: "type" },
+      },
+      {
+        action: "setCustomField",
+        name: "briqpay-variant-id",
+        value: chosenBriqpayVariantId,
+      },
     ],
   },
   { headers: { Authorization: `Bearer ${accessToken}` } },
@@ -747,24 +761,24 @@ deployAs:
 
 ### Configuration Variables
 
-| Variable                          | Description                         | Required | Default                                                                   |
-| --------------------------------- | ----------------------------------- | -------- | ------------------------------------------------------------------------- |
-| `CTP_PROJECT_KEY`                 | commercetools project key           | Yes      | -                                                                         |
-| `CTP_CLIENT_ID`                   | commercetools client ID             | Yes      | -                                                                         |
-| `CTP_CLIENT_SECRET`               | commercetools client secret         | Yes      | -                                                                         |
-| `CTP_AUTH_URL`                    | commercetools Auth URL              | Yes      | `https://auth.europe-west1.gcp.commercetools.com`                         |
-| `CTP_API_URL`                     | commercetools API URL               | Yes      | `https://api.europe-west1.gcp.commercetools.com`                          |
-| `CTP_SESSION_URL`                 | Session API URL                     | Yes      | `https://session.europe-west1.gcp.commercetools.com`                      |
-| `CTP_JWKS_URL`                    | JWKs URL for JWT validation         | Yes      | `https://mc-api.europe-west1.gcp.commercetools.com/.well-known/jwks.json` |
-| `CTP_JWT_ISSUER`                  | JWT Issuer URL                      | Yes      | `https://mc-api.europe-west1.gcp.commercetools.com`                       |
-| `BRIQPAY_USERNAME`                | Briqpay API username                | Yes      | -                                                                         |
-| `BRIQPAY_SECRET`                  | Briqpay API secret                  | Yes      | -                                                                         |
-| `BRIQPAY_BASE_URL`                | Briqpay API URL                     | Yes      | `https://playground-api.briqpay.com/v3`                                   |
-| `BRIQPAY_TERMS_URL`               | URL to terms page                   | Yes      | -                                                                         |
-| `BRIQPAY_SESSION_CUSTOM_TYPE_KEY` | Custom type key for session storage | No       | `briqpay-session-id`                                                      |
-| `BRIQPAY_FUTURE_ORDER_NUMBER_KEY` | Cart custom field name for the persisted future order number (see [Future Order Number Persistence](#future-order-number-persistence)) | No       | `briqpay-future-order-number`                                            |
-| `BRIQPAY_CHECKOUT_TRANSACTION_ITEM_ID_KEY` | Cart custom field name for the persisted Checkout transaction-item id, used by the webhook to recover payment/order creation when the buyer never returns (see [Webhook-Driven Payment & Order Recovery](#webhook-driven-payment--order-recovery)) | No       | `briqpay-checkout-transaction-item-id`                                   |
-| `BRIQPAY_VARIANT_ID_KEY`          | Cart custom field name the merchant sets to select the Briqpay checkout variant per cart (see [Per-Cart Variant Selection](#per-cart-variant-selection)) | No       | `briqpay-variant-id`                                                     |
+| Variable                                   | Description                                                                                                                                                                                                                                        | Required | Default                                                                   |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------- |
+| `CTP_PROJECT_KEY`                          | commercetools project key                                                                                                                                                                                                                          | Yes      | -                                                                         |
+| `CTP_CLIENT_ID`                            | commercetools client ID                                                                                                                                                                                                                            | Yes      | -                                                                         |
+| `CTP_CLIENT_SECRET`                        | commercetools client secret                                                                                                                                                                                                                        | Yes      | -                                                                         |
+| `CTP_AUTH_URL`                             | commercetools Auth URL                                                                                                                                                                                                                             | Yes      | `https://auth.europe-west1.gcp.commercetools.com`                         |
+| `CTP_API_URL`                              | commercetools API URL                                                                                                                                                                                                                              | Yes      | `https://api.europe-west1.gcp.commercetools.com`                          |
+| `CTP_SESSION_URL`                          | Session API URL                                                                                                                                                                                                                                    | Yes      | `https://session.europe-west1.gcp.commercetools.com`                      |
+| `CTP_JWKS_URL`                             | JWKs URL for JWT validation                                                                                                                                                                                                                        | Yes      | `https://mc-api.europe-west1.gcp.commercetools.com/.well-known/jwks.json` |
+| `CTP_JWT_ISSUER`                           | JWT Issuer URL                                                                                                                                                                                                                                     | Yes      | `https://mc-api.europe-west1.gcp.commercetools.com`                       |
+| `BRIQPAY_USERNAME`                         | Briqpay API username                                                                                                                                                                                                                               | Yes      | -                                                                         |
+| `BRIQPAY_SECRET`                           | Briqpay API secret                                                                                                                                                                                                                                 | Yes      | -                                                                         |
+| `BRIQPAY_BASE_URL`                         | Briqpay API URL                                                                                                                                                                                                                                    | Yes      | `https://playground-api.briqpay.com/v3`                                   |
+| `BRIQPAY_TERMS_URL`                        | URL to terms page                                                                                                                                                                                                                                  | Yes      | -                                                                         |
+| `BRIQPAY_SESSION_CUSTOM_TYPE_KEY`          | Custom type key for session storage                                                                                                                                                                                                                | No       | `briqpay-session-id`                                                      |
+| `BRIQPAY_FUTURE_ORDER_NUMBER_KEY`          | Cart custom field name for the persisted future order number (see [Future Order Number Persistence](#future-order-number-persistence))                                                                                                             | No       | `briqpay-future-order-number`                                             |
+| `BRIQPAY_CHECKOUT_TRANSACTION_ITEM_ID_KEY` | Cart custom field name for the persisted Checkout transaction-item id, used by the webhook to recover payment/order creation when the buyer never returns (see [Webhook-Driven Payment & Order Recovery](#webhook-driven-payment--order-recovery)) | No       | `briqpay-checkout-transaction-item-id`                                    |
+| `BRIQPAY_VARIANT_ID_KEY`                   | Cart custom field name the merchant sets to select the Briqpay checkout variant per cart (see [Per-Cart Variant Selection](#per-cart-variant-selection))                                                                                           | No       | `briqpay-variant-id`                                                      |
 
 ### Enabler Usage
 
@@ -797,11 +811,21 @@ const dropin = builder.build({
   onDropinReady: async () => {
     console.log("Briqpay widget is ready");
   },
-  onPayButtonClick: async (sdk) => {
-    // Optional: Perform validation before the decision flow proceeds
-    // sdk.suspend() / sdk.resume() for cart updates
+  // Required. The connector activates the decision step on every session, so
+  // Briqpay will ask for a decision. It decides when one is needed, so this
+  // does not necessarily fire on every submission.
+  onDecision: async (sdk, data) => {
+    // Validate here, then return the answer - returning it is what sends it.
+    // BRIQPAY_DECISION and BRIQPAY_REJECT_TYPE are exported by the enabler.
+    const isValid = await validateOrder(data);
+    return {
+      decision: isValid ? BRIQPAY_DECISION.ALLOW : BRIQPAY_DECISION.REJECT,
+    };
   },
 });
+// If onDecision has not answered within 20 seconds the decision is abandoned
+// and nothing is sent. Briqpay blocks the purchase and asks the buyer to retry.
+// Nothing is charged.
 
 // Mount to your container element
 dropin.mount("#payment-container");
@@ -825,7 +849,7 @@ curl --location 'http://localhost:8080/decision' \
   --header 'X-Session-Id: your-checkout-session-id' \
   --data '{
     "sessionId": "briqpay-session-id",
-    "decision": "approve"
+    "decision": "allow"
   }'
 
 # Create payment

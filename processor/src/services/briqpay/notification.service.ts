@@ -601,6 +601,10 @@ export class BriqpayNotificationService {
         this.dispatchAuthorization(this.handleAuthorizationPending, payment, briqpaySession, cartId),
       [BRIQPAY_WEBHOOK_STATUS.ORDER_APPROVED_NOT_CAPTURED]: () =>
         this.dispatchAuthorization(this.handleAuthorizationApproved, payment, briqpaySession, cartId),
+      [BRIQPAY_WEBHOOK_STATUS.ORDER_REJECTED]: () =>
+        this.dispatchAuthorization(this.handleAuthorizationRejected, payment, briqpaySession, cartId),
+      [BRIQPAY_WEBHOOK_STATUS.ORDER_CANCELLED]: () =>
+        this.dispatchAuthorization(this.handleAuthorizationCancelled, payment, briqpaySession, cartId),
     }
 
     const handler = orderHandlers[orderWebhookStatus]
@@ -608,9 +612,9 @@ export class BriqpayNotificationService {
       return handler()
     }
 
-    appLogger.info(
+    appLogger.warn(
       { briqpaySessionId: briqpaySession.sessionId, orderWebhookStatus },
-      'Order rejected/cancelled - no CT update needed',
+      'Unhandled order status - CT left untouched',
     )
 
     return payment
@@ -911,6 +915,56 @@ export class BriqpayNotificationService {
     })
 
     appLogger.info({ updatedPayment, transactionId: transaction?.transactionId }, 'Created Authorization Failure')
+  }
+
+  /**
+   * Handles Authorization Cancelled status.
+   * Maps to CT Transaction Type: CancelAuthorization with state: Success
+   *
+   * A cancel is recorded as a cancellation rather than a failed authorization so that a cancel made
+   * from the Briqpay portal looks the same in commercetools as one made through cancelPayment. Briqpay
+   * emits order_cancelled for both, so cancelPayment's own record has to be left alone when it echoes
+   * back - and the SDK cannot match it, since it carries no interactionId.
+   */
+  private handleAuthorizationCancelled = async (
+    payments: Payment[],
+    briqpaySession: MediumBriqpayResponse,
+  ): Promise<void> => {
+    const briqpaySessionId = briqpaySession.sessionId
+    const transaction = getTransaction(briqpaySession)
+
+    if (!payments.length) {
+      appLogger.info({ briqpaySessionId }, 'No payment found for cancelled authorization, skipping.')
+
+      return
+    }
+
+    const alreadyCancelled = payments[0].transactions.some((tx) => tx.type === 'CancelAuthorization')
+    if (alreadyCancelled) {
+      appLogger.info({ briqpaySessionId }, 'CancelAuthorization already exists, skipping.')
+
+      return
+    }
+
+    const amount = transaction?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat
+    const currency = transaction?.currency ?? briqpaySession.data?.order?.currency
+    if (!amount || !currency) {
+      appLogger.error({ briqpaySessionId }, 'Cancelled notification carries no amount, skipping.')
+
+      return
+    }
+
+    const updatedPayment = await this.ctPaymentService.updatePayment({
+      id: payments[0].id,
+      transaction: {
+        type: 'CancelAuthorization',
+        interactionId: briqpaySessionId,
+        amount: { centAmount: amount, currencyCode: currency },
+        state: 'Success',
+      },
+    })
+
+    appLogger.info({ updatedPayment, transactionId: transaction?.transactionId }, 'Created CancelAuthorization')
   }
 
   /**
