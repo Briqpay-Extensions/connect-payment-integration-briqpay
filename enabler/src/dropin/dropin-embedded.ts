@@ -13,6 +13,7 @@ import {
   BRIQPAY_DECISION,
   DECISION_TIMEOUT_MS,
   DecisionAnswer,
+  getRegisteredOnDecision,
 } from "../briqpay-sdk";
 
 declare global {
@@ -101,11 +102,14 @@ export class DropinComponents implements DropinComponent {
   private async resolveDecisionAnswer(
     data: unknown,
   ): Promise<DecisionAnswer | undefined> {
-    const onDecision = this.dropinOptions.onDecision;
+    const onDecision = getRegisteredOnDecision();
     if (!onDecision) {
-      // Required by DropinOptions, so an untyped caller omitted it. Allowing
-      // would record an approval no merchant made.
-      return undefined;
+      // Nobody opted into registerBriqpayDecision(), so there is no merchant
+      // check to run - let the purchase proceed. This is different from a
+      // registered handler that times out or throws below: that merchant
+      // asked for validation, so a broken/slow check must not silently turn
+      // into an approval it never made.
+      return { decision: BRIQPAY_DECISION.ALLOW };
     }
 
     // A late answer loses the race and is never sent, so a verdict Briqpay has

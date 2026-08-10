@@ -1,11 +1,15 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { describe, expect, jest, test } from "@jest/globals";
+import { describe, expect, jest, test, beforeEach } from "@jest/globals";
 import {
   DropinComponents,
   DropinEmbeddedBuilder,
 } from "../../src/dropin/dropin-embedded";
 import { DropinOptions } from "../../src/payment-enabler/payment-enabler";
-import { BRIQPAY_DECISION, BriqpaySdk } from "../../src/briqpay-sdk";
+import {
+  BRIQPAY_DECISION,
+  BriqpaySdk,
+  registerBriqpayDecision,
+} from "../../src/briqpay-sdk";
 
 describe("DropinEmbeddedBuilder", () => {
   // Mock fetch
@@ -16,15 +20,16 @@ describe("DropinEmbeddedBuilder", () => {
     } as unknown as Response),
   ) as unknown as typeof fetch;
 
+  beforeEach(() => {
+    delete (window as any).briqpayConnector;
+  });
+
   test("should create DropinComponents with correct config", () => {
     const baseOptions = { sdk: {} } as any;
     const builder = new DropinEmbeddedBuilder(baseOptions);
 
     const config: DropinOptions = {
       onDropinReady: jest.fn<any>().mockResolvedValue(undefined), // Mock it to return a Promise
-      onDecision: jest
-        .fn<any>()
-        .mockResolvedValue({ decision: BRIQPAY_DECISION.ALLOW }),
     };
 
     const dropin = builder.build(config);
@@ -42,12 +47,13 @@ describe("DropinEmbeddedBuilder", () => {
 });
 
 describe("DropinComponents", () => {
+  beforeEach(() => {
+    delete (window as any).briqpayConnector;
+  });
+
   test("should initialize with given options", () => {
     const config: DropinOptions = {
       onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
-      onDecision: jest
-        .fn<any>()
-        .mockResolvedValue({ decision: BRIQPAY_DECISION.ALLOW }),
     };
     const dropin = new DropinComponents(
       { dropinOptions: config },
@@ -77,9 +83,6 @@ describe("DropinComponents", () => {
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
-          onDecision: jest
-            .fn<any>()
-            .mockResolvedValue({ decision: BRIQPAY_DECISION.ALLOW }),
         },
       },
       {
@@ -104,9 +107,6 @@ describe("DropinComponents", () => {
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
-          onDecision: jest
-            .fn<any>()
-            .mockResolvedValue({ decision: BRIQPAY_DECISION.ALLOW }),
         },
       },
       {
@@ -133,9 +133,6 @@ describe("DropinComponents", () => {
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
-          onDecision: jest
-            .fn<any>()
-            .mockResolvedValue({ decision: BRIQPAY_DECISION.ALLOW }),
         },
       },
       {
@@ -154,7 +151,7 @@ describe("DropinComponents", () => {
   });
 
   // Allowing would record an approval no merchant made.
-  test("handleDecision sends nothing when no onDecision is configured", async () => {
+  test("handleDecision sends an allow decision when no decision handler is registered", async () => {
     (global.fetch as jest.Mock).mockClear();
     window._briqpay = {
       subscribe: jest.fn(),
@@ -165,14 +162,13 @@ describe("DropinComponents", () => {
       },
     };
 
-    // Deliberately bypasses the DropinOptions type (which now requires
-    // onDecision) to simulate a plain-JS/untyped caller that omits it, and
-    // exercise the runtime defensive fallback rather than the type check.
+    // Deliberately does not call registerBriqpayDecision(), to exercise the
+    // default-allow fallback for a merchant who never registered a handler.
     const dropin = new DropinComponents(
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
-        } as unknown as DropinOptions,
+        },
       },
       {
         processorUrl: "http://localhost:8080",
@@ -188,16 +184,21 @@ describe("DropinComponents", () => {
 
     await expect(dropin.handleDecision({})).resolves.not.toThrow();
 
-    expect(global.fetch).not.toHaveBeenCalledWith(
+    expect(global.fetch).toHaveBeenCalledWith(
       "http://localhost:8080/decision",
-      expect.anything(),
+      expect.objectContaining({
+        body: JSON.stringify({
+          sessionId: "abc123",
+          decision: BRIQPAY_DECISION.ALLOW,
+        }),
+      }),
     );
     // suspend() is intentionally NOT called here - Briqpay auto-suspends the
     // widget itself for make_decision; only resumeDecision() is our job.
     expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
   });
 
-  test("handleDecision calls onDecision and sends its returned answer", async () => {
+  test("handleDecision calls the registered decision handler and sends its returned answer", async () => {
     window._briqpay = {
       subscribe: jest.fn(),
       v3: {
@@ -212,12 +213,12 @@ describe("DropinComponents", () => {
       decision: BRIQPAY_DECISION.REJECT,
       softErrors: [{ message: "please retry" }],
     });
+    registerBriqpayDecision(onDecision);
 
     const dropin = new DropinComponents(
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
-          onDecision,
         },
       },
       {
@@ -248,7 +249,7 @@ describe("DropinComponents", () => {
     expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
   });
 
-  test("handleDecision resumes without sending when onDecision returns an invalid answer", async () => {
+  test("handleDecision resumes without sending when the registered handler returns an invalid answer", async () => {
     window._briqpay = {
       subscribe: jest.fn(),
       v3: {
@@ -259,13 +260,13 @@ describe("DropinComponents", () => {
     };
 
     const onDecision = jest.fn<any>().mockResolvedValue({ decision: "maybe" });
+    registerBriqpayDecision(onDecision);
     (global.fetch as jest.Mock).mockClear();
 
     const dropin = new DropinComponents(
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
-          onDecision,
         },
       },
       {
@@ -290,7 +291,7 @@ describe("DropinComponents", () => {
   });
 
   // Must settle rather than stay pending forever, and send nothing once it does.
-  test("handleDecision abandons the decision when onDecision never resolves", async () => {
+  test("handleDecision abandons the decision when the registered handler never resolves", async () => {
     jest.useFakeTimers();
     (global.fetch as jest.Mock).mockClear();
 
@@ -304,12 +305,12 @@ describe("DropinComponents", () => {
     };
 
     const onDecision = jest.fn<any>().mockReturnValue(new Promise(() => {}));
+    registerBriqpayDecision(onDecision);
 
     const dropin = new DropinComponents(
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
-          onDecision,
         },
       },
       {
@@ -340,7 +341,7 @@ describe("DropinComponents", () => {
   });
 
   // A throw is not an answer, and must not reject out of the subscriber.
-  test("handleDecision abandons the decision when onDecision throws", async () => {
+  test("handleDecision abandons the decision when the registered handler throws", async () => {
     window._briqpay = {
       subscribe: jest.fn(),
       v3: {
@@ -353,13 +354,13 @@ describe("DropinComponents", () => {
     const onDecision = jest
       .fn<any>()
       .mockRejectedValue(new Error("validation blew up"));
+    registerBriqpayDecision(onDecision);
     (global.fetch as jest.Mock).mockClear();
 
     const dropin = new DropinComponents(
       {
         dropinOptions: {
           onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
-          onDecision,
         },
       },
       {

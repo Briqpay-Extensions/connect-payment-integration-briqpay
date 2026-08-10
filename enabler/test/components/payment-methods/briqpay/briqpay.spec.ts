@@ -5,12 +5,13 @@ import {
   BriqpayBuilder,
 } from "../../../../src/components/payment-methods/briqpay/briqpay";
 import { BaseOptions } from "../../../../src/payment-enabler/payment-enabler-briqpay";
-import { BriqpaySdk } from "../../../../src/briqpay-sdk";
-import { PaymentOutcome } from "../../../../src/dtos/mock-payment.dto";
 import {
-  DecisionCallback,
-  PaymentComponent,
-} from "../../../../src/payment-enabler/payment-enabler";
+  BRIQPAY_DECISION,
+  BriqpaySdk,
+  registerBriqpayDecision,
+} from "../../../../src/briqpay-sdk";
+import { PaymentOutcome } from "../../../../src/dtos/mock-payment.dto";
+import { PaymentComponent } from "../../../../src/payment-enabler/payment-enabler";
 
 // Don't mock the Briqpay class - we want to test the actual implementation
 // jest.mock("../../../../src/components/payment-methods/briqpay/briqpay");
@@ -39,6 +40,7 @@ describe("Briqpay", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    delete (window as any).briqpayConnector;
 
     // Clear DOM
     document.body.innerHTML = "<div id='container'></div>";
@@ -53,13 +55,12 @@ describe("Briqpay", () => {
       subscribe: jest.fn(),
     };
 
-    // Create the component instance. Deliberately bypasses the
-    // DecisionCallback type (which now requires onDecision) to simulate a
-    // plain-JS/untyped caller that omits it, matching several tests below
-    // that don't exercise decision handling and one that specifically
-    // relies on the runtime defensive fallback for a missing onDecision.
+    // Create the component instance. No decision handler is registered by
+    // default, matching several tests below that don't exercise decision
+    // handling and one that specifically relies on the runtime defensive
+    // fallback for a missing handler.
     const builder = new BriqpayBuilder(baseOptions);
-    component = builder.build({} as unknown as DecisionCallback);
+    component = builder.build({});
   });
 
   test("mount() injects script and renders snippet", () => {
@@ -84,10 +85,7 @@ describe("Briqpay", () => {
     const sessionCompleteSpy = jest.fn();
     const makeDecisionSpy = jest.fn();
 
-    const mockComponent = new Briqpay(
-      baseOptions,
-      {} as unknown as DecisionCallback,
-    );
+    const mockComponent = new Briqpay(baseOptions);
 
     // Mock the subscribe method to capture the callbacks
     mockComponent.mount("#container");
@@ -134,7 +132,7 @@ describe("Briqpay", () => {
   });
 
   // Allowing would record an approval no merchant made.
-  test("make_decision callback sends nothing when no onDecision is configured", async () => {
+  test("make_decision callback sends an allow decision when no decision handler is registered", async () => {
     component.mount("#container");
 
     const scriptElement = document.querySelector("head")
@@ -151,19 +149,26 @@ describe("Briqpay", () => {
 
     await liveMakeDecisionCallback(mockDecisionData);
 
-    expect(global.fetch).not.toHaveBeenCalledWith(
+    expect(global.fetch).toHaveBeenCalledWith(
       "https://mock-processor.com/decision",
-      expect.anything(),
+      expect.objectContaining({
+        body: JSON.stringify({
+          sessionId: "briq-sess-123",
+          decision: BRIQPAY_DECISION.ALLOW,
+        }),
+      }),
     );
     // suspend() is intentionally NOT called here - Briqpay auto-suspends the
     // widget itself for make_decision; only resumeDecision() is our job.
     expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
   });
 
-  test("make_decision callback calls onDecision and sends its returned answer", async () => {
+  test("make_decision callback calls the registered decision handler and sends its returned answer", async () => {
     const onDecision = jest.fn<any>().mockResolvedValue({ decision: "reject" });
+    registerBriqpayDecision(onDecision);
+
     const builder = new BriqpayBuilder(baseOptions);
-    const decisionComponent = builder.build({ onDecision });
+    const decisionComponent = builder.build({});
 
     const subscribeCallbacks: Record<
       string,
@@ -201,13 +206,15 @@ describe("Briqpay", () => {
     ["never resolves", () => new Promise(() => {}), 20000],
     ["throws", () => Promise.reject(new Error("validation blew up")), 0],
   ])(
-    "make_decision callback abandons the decision when onDecision %s",
+    "make_decision callback abandons the decision when the registered handler %s",
     async (_label, makeAnswer, advanceBy) => {
       jest.useFakeTimers();
 
       const onDecision = jest.fn<any>().mockImplementation(makeAnswer);
+      registerBriqpayDecision(onDecision);
+
       const builder = new BriqpayBuilder(baseOptions);
-      const decisionComponent = builder.build({ onDecision });
+      const decisionComponent = builder.build({});
 
       const subscribeCallbacks: Record<
         string,
@@ -300,7 +307,7 @@ describe("Briqpay", () => {
       ...baseOptions,
       onComplete: asyncOnComplete,
     });
-    const asyncComponent = builder.build({} as unknown as DecisionCallback);
+    const asyncComponent = builder.build({});
 
     await asyncComponent.submit();
 

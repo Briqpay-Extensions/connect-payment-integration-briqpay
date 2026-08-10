@@ -1,5 +1,3 @@
-import { BriqpaySdk, DecisionAnswer } from "../briqpay-sdk";
-
 /**
  * Represents the payment enabler. The payment enabler is the entry point for creating the components.
  *
@@ -97,24 +95,6 @@ export interface PaymentComponent {
 }
 
 /**
- * Represents the options shared by anything that can be asked for a
- * payment decision (both drop-ins and components).
- */
-export type DecisionCallback = {
-  /**
-   * Required. The connector requests the decision step on every session it
-   * creates, so Briqpay will ask for a decision. Briqpay decides when one is
-   * needed, so do not assume it fires on every submission.
-   *
-   * Validate here, then return the answer. Returning it is what sends it.
-   *
-   * Not answering within 20 seconds abandons the decision and nothing is sent.
-   * Briqpay blocks the purchase and asks the buyer to retry. Nothing is charged.
-   */
-  onDecision: (_sdk: BriqpaySdk, _data: unknown) => Promise<DecisionAnswer>;
-};
-
-/**
  * Represents the interface for a payment component builder.
  */
 export interface PaymentComponentBuilder {
@@ -128,7 +108,7 @@ export interface PaymentComponentBuilder {
    * @param config - The configuration options for the payment component.
    * @returns The built payment component.
    */
-  build(_config: DecisionCallback): PaymentComponent;
+  build(_config: ComponentOptions): PaymentComponent;
 }
 
 /**
@@ -251,7 +231,7 @@ export interface DropinComponent {
 /**
  * Represents the options for a drop-in component.
  */
-export type DropinOptions = DecisionCallback & {
+export type DropinOptions = {
   /**
    * A callback function that is called when the drop-in component is ready.
    * @returns A Promise indicating whether the drop-in component is ready.

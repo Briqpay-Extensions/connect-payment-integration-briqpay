@@ -332,7 +332,7 @@ flowchart TD
     end
 
     widget--"1a. make_decision (may be skipped)"-->enabler
-    enabler--"2a. Submit decision via onDecision"-->processor
+    enabler--"2a. Submit decision via registerBriqpayDecision"-->processor
     processor--"3a. Forward decision"-->briqpay
     briqpay--"4a. Approve / deny"-->processor
     processor--"5a. Resume widget"-->enabler
@@ -343,10 +343,10 @@ flowchart TD
     style coco height:100
 ```
 
-The connector activates the decision step (`modules.config.payment.decision.enabled`) for every session it creates, so `onDecision` is required — see [Enabler Usage](#enabler-usage). Briqpay's widget fires one of two events when the buyer submits the payment form:
+The connector activates the decision step (`modules.config.payment.decision.enabled`) for every session it creates, so Briqpay will ask for a decision on some sessions regardless of whether a handler is registered — see [Registering the purchase-decision handler](#registering-the-purchase-decision-handler). Briqpay's widget fires one of two events when the buyer submits the payment form:
 
 1. **`make_decision`** — fired when Briqpay needs a decision. Briqpay decides when one is needed, so it does not necessarily fire on every submission.
-   1. The `enabler` calls the merchant-supplied `onDecision` callback (see [Enabler Usage](#enabler-usage)) and sends its answer to the `processor` via `/decision`.
+   1. The `enabler` calls the handler registered via `registerBriqpayDecision`, or answers `ALLOW` automatically if none is registered, and sends the answer to the `processor` via `/decision`.
    2. The `processor` forwards the decision to Briqpay's API.
    3. Briqpay approves or denies it.
    4. The `enabler` resumes the widget with the result.
@@ -811,21 +811,7 @@ const dropin = builder.build({
   onDropinReady: async () => {
     console.log("Briqpay widget is ready");
   },
-  // Required. The connector activates the decision step on every session, so
-  // Briqpay will ask for a decision. It decides when one is needed, so this
-  // does not necessarily fire on every submission.
-  onDecision: async (sdk, data) => {
-    // Validate here, then return the answer - returning it is what sends it.
-    // BRIQPAY_DECISION and BRIQPAY_REJECT_TYPE are exported by the enabler.
-    const isValid = await validateOrder(data);
-    return {
-      decision: isValid ? BRIQPAY_DECISION.ALLOW : BRIQPAY_DECISION.REJECT,
-    };
-  },
 });
-// If onDecision has not answered within 20 seconds the decision is abandoned
-// and nothing is sent. Briqpay blocks the purchase and asks the buyer to retry.
-// Nothing is charged.
 
 // Mount to your container element
 dropin.mount("#payment-container");
@@ -833,6 +819,79 @@ dropin.mount("#payment-container");
 // When user is ready to complete payment
 await dropin.submit();
 ```
+
+#### Registering the purchase-decision handler
+
+Optional — the connector activates the decision step on every session it
+creates, so Briqpay will ask for a decision, but if nothing is registered
+the enabler answers `ALLOW` automatically and the purchase proceeds as if
+the decision step didn't exist. Register a handler only if you want to run
+your own validation first. Briqpay decides when a decision is needed, so
+this does not necessarily fire on every submission.
+
+There is no `.build()`-time option for this: the enabler only ever *reads*
+`window.briqpayConnector.onDecision`, it never calls into your code to ask
+for it. Set it directly, anywhere on the page, at any time before the buyer
+reaches the payment step:
+
+```typescript
+window.briqpayConnector = window.briqpayConnector || {};
+window.briqpayConnector.onDecision = async (sdk, data) => {
+  // Validate here, then return the answer - returning it is what sends it.
+  const isValid = await validateOrder(data);
+  return {
+    decision: isValid ? "allow" : "reject",
+  };
+};
+```
+
+`window.briqpayConnector` is this connector's own config namespace — kept
+deliberately separate from `window._briqpay`, which is Briqpay's core
+widget script's global (`briq.min.js`, shared across every Briqpay
+integration). Merchants only ever call into `_briqpay`; `briqpayConnector`
+is the reverse direction, a value the merchant sets and the enabler reads.
+The `|| {}` merge is defensive, matching the same pattern commercetools'
+own SDK uses for `window.commercetoolsCheckout` — this connector is the
+only thing that populates `briqpayConnector` today, but keeping the merge
+means adding a second key later never risks clobbering the first.
+
+This works the same way regardless of how you render the payment step — a
+custom UI built with `createDropinBuilder`/`createComponentBuilder`, or the
+hosted commercetools Checkout (`paymentFlow`/`checkoutFlow`), which has no
+config surface of its own for a per-payment-method callback. It matters
+most for the hosted case: the enabler bundle is injected by commercetools'
+checkout application at a time you don't control, so a mechanism that
+requires calling *into* enabler code (rather than the enabler reading a
+value *you* set) would race against that load. A plain assignment has no
+such dependency.
+
+If you already import `connector-enabler` directly — e.g. because you're
+building a custom UI with `createDropinBuilder`/`createComponentBuilder` —
+`registerBriqpayDecision` is equivalent sugar for the same assignment, with
+type-checking on the callback:
+
+```typescript
+import { BRIQPAY_DECISION, registerBriqpayDecision } from "connector-enabler";
+
+registerBriqpayDecision(async (sdk, data) => {
+  const isValid = await validateOrder(data);
+  return {
+    decision: isValid ? BRIQPAY_DECISION.ALLOW : BRIQPAY_DECISION.REJECT,
+  };
+});
+```
+
+Once registered, if it has not answered within 20 seconds — or throws —
+the decision is abandoned and nothing is sent. Briqpay blocks the purchase
+and asks the buyer to retry. Nothing is charged. That failure mode only
+applies to a handler that was actually asked to validate: it is not the
+same as never registering one at all, which defaults to `ALLOW` instead.
+
+> **Note:** the handler runs in the buyer's browser and its answer is
+> forwarded to `/decision` largely as given — treat this as an interim
+> mechanism, not a trust boundary. A server-side decision path (validated
+> independently of the client) is planned; this will be replaced once
+> that ships.
 
 ### Local Testing
 

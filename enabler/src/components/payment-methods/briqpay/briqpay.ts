@@ -1,5 +1,5 @@
 import {
-  DecisionCallback,
+  ComponentOptions,
   PaymentComponent,
   PaymentComponentBuilder,
   PaymentMethod,
@@ -14,6 +14,7 @@ import {
   BRIQPAY_DECISION,
   DECISION_TIMEOUT_MS,
   DecisionAnswer,
+  getRegisteredOnDecision,
 } from "../../../briqpay-sdk.ts";
 
 declare global {
@@ -35,13 +36,11 @@ declare global {
 export class Briqpay extends BaseComponent {
   private snippet: string;
   private briqpaySessionId: string;
-  private decisionCallback: DecisionCallback;
 
-  constructor(baseOptions: BaseOptions, decisionCallback: DecisionCallback) {
+  constructor(baseOptions: BaseOptions) {
     super(PaymentMethod._briqpay, baseOptions);
     this.snippet = baseOptions.snippet;
     this.briqpaySessionId = baseOptions.briqpaySessionId;
-    this.decisionCallback = decisionCallback;
   }
 
   mount(_selector: string) {
@@ -95,11 +94,14 @@ export class Briqpay extends BaseComponent {
   private async resolveDecisionAnswer(
     data: unknown,
   ): Promise<DecisionAnswer | undefined> {
-    const onDecision = this.decisionCallback.onDecision;
+    const onDecision = getRegisteredOnDecision();
     if (!onDecision) {
-      // Required by DecisionCallback, so an untyped caller omitted it. Allowing
-      // would record an approval no merchant made.
-      return undefined;
+      // Nobody opted into registerBriqpayDecision(), so there is no merchant
+      // check to run - let the purchase proceed. This is different from a
+      // registered handler that times out or throws below: that merchant
+      // asked for validation, so a broken/slow check must not silently turn
+      // into an approval it never made.
+      return { decision: BRIQPAY_DECISION.ALLOW };
     }
 
     // A late answer loses the race and is never sent, so a verdict Briqpay has
@@ -201,7 +203,7 @@ export class BriqpayBuilder implements PaymentComponentBuilder {
 
   constructor(private _baseOptions: BaseOptions) {}
 
-  build(_config: DecisionCallback): PaymentComponent {
-    return new Briqpay(this._baseOptions, _config);
+  build(_config: ComponentOptions): PaymentComponent {
+    return new Briqpay(this._baseOptions);
   }
 }

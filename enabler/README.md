@@ -189,19 +189,12 @@ const dropin = builder.build({
   onDropinReady: async () => {
     console.log("Briqpay widget is ready");
   },
-  // Required. The connector activates the decision step on every session, so
-  // Briqpay will ask for a decision. Validate here, then return the answer -
-  // returning it is what sends it.
-  onDecision: async (sdk, data) => {
-    const isValid = await validateOrder(data);
-    return {
-      decision: isValid ? BRIQPAY_DECISION.ALLOW : BRIQPAY_DECISION.REJECT,
-    };
-  },
 });
 
 dropin.mount("#payment-container");
 ```
+
+Required, and not part of `.build()` — see [Payment Decisions](#payment-decisions) below. The connector activates the decision step on every session, so Briqpay will ask for a decision, and the enabler always reads the handler registered via `registerBriqpayDecision`.
 
 ### EnablerOptions
 
@@ -234,11 +227,11 @@ The main enabler class exported as `Enabler`.
 | --------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `create(options: EnablerOptions)`       | `Promise<BriqpayPaymentEnabler>`   | Static factory method to create an enabler instance                                             |
 | `createDropinBuilder(type: DropinType)` | `Promise<PaymentDropinBuilder>`    | Creates a drop-in builder (supports `'briqpay'` and the backward-compatible `'embedded'` alias) |
-| `createComponentBuilder(type: string)`  | `Promise<PaymentComponentBuilder>` | Creates a component builder (`'briqpay'`). Its `build()` takes the same `onDecision` callback   |
+| `createComponentBuilder(type: string)`  | `Promise<PaymentComponentBuilder>` | Creates a component builder (`'briqpay'`)                                                       |
 
 ### BriqpaySdk
 
-The SDK instance is passed as the first argument to the `onDecision` callback.
+The SDK instance is passed as the first argument to the handler registered via `registerBriqpayDecision`.
 
 #### Methods
 
@@ -257,46 +250,70 @@ The SDK instance is passed as the first argument to the `onDecision` callback.
 
 ### DropinOptions
 
-| Option          | Type                                     | Description                                                                         |
-| --------------- | ---------------------------------------- | ----------------------------------------------------------------------------------- |
-| `onDropinReady` | `() => Promise<void>`                    | Optional. Called when the drop-in is ready                                          |
-| `onDecision`    | `(sdk, data) => Promise<DecisionAnswer>` | **Required.** Called when Briqpay asks for a decision. Return the answer to send it |
+| Option          | Type                   | Description                                |
+| --------------- | ---------------------- | ------------------------------------------- |
+| `onDropinReady` | `() => Promise<void>` | Optional. Called when the drop-in is ready  |
 
 ## Briqpay Events
 
 The enabler subscribes to these Briqpay widget events on your behalf. You do not need to handle them yourself.
 
-| Event              | Description                                                              |
-| ------------------ | ------------------------------------------------------------------------ |
-| `session_complete` | Fired when the payment session is completed. Triggers `submit()`.        |
-| `make_decision`    | Fired when a decision is required. Routed to your `onDecision` callback. |
+| Event              | Description                                                                                         |
+| ------------------ | ---------------------------------------------------------------------------------------------------- |
+| `session_complete` | Fired when the payment session is completed. Triggers `submit()`.                                    |
+| `make_decision`    | Fired when a decision is required. Routed to the handler registered via `registerBriqpayDecision`.   |
 
 ## Payment Decisions
 
-The connector activates the decision step on every session it creates, so `onDecision` is required. Validate whatever you need, then return the answer.
+The connector activates the decision step on every session it creates, so Briqpay will ask for a decision on some sessions regardless of whether a handler is registered. If nothing is registered, the enabler answers `ALLOW` automatically and the purchase proceeds as normal — register a handler only if you want to run your own validation first.
+
+There is no `.build()`-time option for this: the enabler only ever *reads* `window.briqpayConnector.onDecision`, it never calls into your code to ask for it. Set it directly, at any time before the buyer reaches the payment step:
 
 ```typescript
-import { BRIQPAY_DECISION, BRIQPAY_REJECT_TYPE } from "connector-enabler";
+window.briqpayConnector = window.briqpayConnector || {};
+window.briqpayConnector.onDecision = async (sdk, data) => {
+  const cartIsUnchanged = await checkCartAgainstSession(data.sessionId);
 
-const dropin = builder.build({
-  onDecision: async (sdk, data) => {
-    const cartIsUnchanged = await checkCartAgainstSession(data.sessionId);
+  if (cartIsUnchanged) {
+    return { decision: "allow" };
+  }
 
-    if (cartIsUnchanged) {
-      return { decision: BRIQPAY_DECISION.ALLOW };
-    }
+  // Reject without ending the session, so the buyer can correct and retry.
+  return {
+    decision: "reject",
+    rejectionType: "notify_user",
+    softErrors: [{ message: "Your cart changed, please review the total" }],
+  };
+};
+```
 
-    // Reject without ending the session, so the buyer can correct and retry.
-    return {
-      decision: BRIQPAY_DECISION.REJECT,
-      rejectionType: BRIQPAY_REJECT_TYPE.NOTIFY_USER,
-      softErrors: [{ message: "Your cart changed, please review the total" }],
-    };
-  },
+`window.briqpayConnector` is this connector's own config namespace, kept deliberately separate from `window._briqpay` — Briqpay's core widget script's global (`briq.min.js`, shared across every Briqpay integration). Merchants only ever call into `_briqpay`; `briqpayConnector` is the reverse direction, a value the merchant sets and the enabler reads. The `|| {}` merge mirrors how commercetools' own SDK guards `window.commercetoolsCheckout` — nothing else populates `briqpayConnector` today, but it costs nothing and protects a future second key.
+
+This works the same way whether you're rendering a custom UI (`createDropinBuilder`/`createComponentBuilder`) or embedding under the hosted commercetools Checkout (`paymentFlow`/`checkoutFlow`), which has no config surface of its own for this. It matters most for the hosted case: the enabler bundle is injected by commercetools' checkout application at a time you don't control, so a mechanism that requires calling *into* enabler code would race against that load — a plain assignment has no such dependency.
+
+If you already import `connector-enabler` directly, `registerBriqpayDecision` is equivalent sugar for the same assignment, with type-checking on the callback:
+
+```typescript
+import { BRIQPAY_DECISION, BRIQPAY_REJECT_TYPE, registerBriqpayDecision } from "connector-enabler";
+
+registerBriqpayDecision(async (sdk, data) => {
+  const cartIsUnchanged = await checkCartAgainstSession(data.sessionId);
+
+  if (cartIsUnchanged) {
+    return { decision: BRIQPAY_DECISION.ALLOW };
+  }
+
+  return {
+    decision: BRIQPAY_DECISION.REJECT,
+    rejectionType: BRIQPAY_REJECT_TYPE.NOTIFY_USER,
+    softErrors: [{ message: "Your cart changed, please review the total" }],
+  };
 });
 ```
 
 `data` carries the `sessionId`, not the amounts, so compare against the session server-side.
+
+> **Security note**: this handler runs in the buyer's browser, and the processor forwards its answer to Briqpay largely as given — it does not independently re-validate it. Treat this as an interim mechanism, not a trust boundary: perform any check the buyer must not be able to influence on your own server, not solely in this callback. A server-side decision path is planned and will replace this.
 
 ### DecisionAnswer
 
@@ -309,7 +326,7 @@ const dropin = builder.build({
 
 Both enums and the `DecisionAnswer` type are exported from `connector-enabler`.
 
-> **Note**: If `onDecision` has not answered within 20 seconds the decision is abandoned and nothing is sent. Briqpay blocks the purchase and asks the buyer to try again. Nothing is charged. A missing `onDecision` is treated the same way, since allowing by default would record an approval no merchant made.
+> **Note**: If the registered handler has not answered within 20 seconds, or throws, the decision is abandoned and nothing is sent. Briqpay blocks the purchase and asks the buyer to try again. Nothing is charged. This is different from having no handler registered at all — with nothing registered, the enabler answers `ALLOW` automatically so the purchase proceeds as if the decision step didn't exist. Only a handler that was actually asked to validate and failed to answer is treated as abandoned; a merchant who never opted in isn't blocked by a feature they didn't configure.
 
 ## Testing
 

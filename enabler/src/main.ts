@@ -31,5 +31,13 @@ export const createEnablerSync = BriqpayPaymentEnabler.createSync;
 export { BriqpayPaymentEnabler };
 export type { EnablerOptions };
 
-export { BRIQPAY_DECISION, BRIQPAY_REJECT_TYPE } from "./briqpay-sdk";
-export type { BriqpayDecisionOptions, DecisionAnswer } from "./briqpay-sdk";
+export {
+  BRIQPAY_DECISION,
+  BRIQPAY_REJECT_TYPE,
+  registerBriqpayDecision,
+} from "./briqpay-sdk";
+export type {
+  BriqpayDecisionOptions,
+  DecisionAnswer,
+  OnDecision,
+} from "./briqpay-sdk";
