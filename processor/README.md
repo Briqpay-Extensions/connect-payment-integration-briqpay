@@ -470,7 +470,7 @@ The processor implements several security measures for production readiness:
 
 ### Decision Amount Verification
 
-- A buyer `allow` decision is only forwarded to Briqpay after the processor verifies the Briqpay session amount (±5 minor units for rounding) and currency against the cart. On mismatch, or when verification fails, a soft reject (`notify_user`) is sent instead. Kill switch: `BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK=true`.
+- A buyer `allow` decision is only forwarded to Briqpay after the processor verifies the Briqpay session amount (±5 minor units for rounding) and currency against the cart. On mismatch, or when verification fails, the session is re-synced to the cart (best effort) and a soft reject (`notify_user`) is sent instead — the widget rehydrates with the corrected amounts, so the buyer's retry can succeed. Kill switch: `BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK=true`.
 
 ### Security Headers
 

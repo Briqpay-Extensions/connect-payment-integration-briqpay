@@ -1,4 +1,5 @@
 import { Cart, healthCheckCommercetoolsPermissions, statusHandler } from '@commercetools/connect-payments-sdk'
+import type { Cart as PlatformCart } from '@commercetools/platform-sdk'
 import {
   CancelPaymentRequest,
   CapturePaymentRequest,
@@ -230,6 +231,27 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     return this.operationService.createPayment(request)
   }
 
+  /**
+   * Best-effort re-sync of the Briqpay session to the cart, so the buyer's retry can
+   * succeed after the reject (the widget rehydrates on resume). Never throws.
+   */
+  private async repairSessionFromCart(ctCart: Cart, sessionId: string): Promise<void> {
+    try {
+      const amountPlanned = await this.ctCartService.getPlannedPaymentAmount({ cart: ctCart })
+      await BriqpayService.updateSession(sessionId, ctCart as PlatformCart, amountPlanned)
+      appLogger.info({ cartId: ctCart.id, sessionId }, 'Re-synced Briqpay session to cart after amount mismatch')
+    } catch (error) {
+      appLogger.error(
+        {
+          cartId: ctCart.id,
+          sessionId,
+          error: error instanceof Error ? error.message : error,
+        },
+        'Failed to re-sync Briqpay session after amount mismatch',
+      )
+    }
+  }
+
   /** Fail-closed: any error or missing session amount counts as a mismatch. Never throws. */
   private async verifySessionAmountMatchesCart(ctCart: Cart, sessionId: string): Promise<boolean> {
     try {
@@ -276,8 +298,8 @@ export class BriqpayPaymentService extends AbstractPaymentService {
    * Makes a decision on a Briqpay session.
    * This is the secure server-side implementation that validates the session
    * belongs to the current cart before calling Briqpay's API. An allow is only
-   * forwarded if the session amount still matches the cart; on mismatch a soft
-   * reject is sent instead.
+   * forwarded if the session amount still matches the cart; on mismatch the
+   * session is re-synced to the cart and a soft reject is sent instead.
    *
    * @param request - The decision request containing sessionId and decision
    * @returns the decision actually sent to Briqpay; success is false when it was overridden
@@ -320,13 +342,15 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       throw new SessionError('Session does not belong to this cart', 403)
     }
 
-    // SECURITY: an allow that cannot be verified against the cart becomes a soft reject
+    // SECURITY: an allow that cannot be verified against the cart becomes a soft reject.
+    // The session is re-synced first, so it must land before the reject resumes the widget.
     let outbound: BriqpayDecisionRequest = { decision, rejectionType, hardError, softErrors }
     if (
       decision === BRIQPAY_DECISION.ALLOW &&
       !isDecisionAmountCheckDisabled() &&
       !(await this.verifySessionAmountMatchesCart(ctCart, sessionId))
     ) {
+      await this.repairSessionFromCart(ctCart, sessionId)
       outbound = {
         decision: BRIQPAY_DECISION.REJECT,
         rejectionType: BRIQPAY_REJECT_TYPE.NOTIFY_USER,

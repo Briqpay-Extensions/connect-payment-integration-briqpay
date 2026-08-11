@@ -347,7 +347,7 @@ The connector activates the decision step (`modules.config.payment.decision.enab
 
 1. **`make_decision`** — fired when Briqpay needs a decision. Briqpay decides when one is needed, so it does not necessarily fire on every submission.
    1. The `enabler` calls the handler registered via `registerBriqpayDecision`, or answers `ALLOW` automatically if none is registered, and sends the answer to the `processor` via `/decision`.
-   2. The `processor` forwards the decision to Briqpay's API, downgrading an `allow` to a soft reject if the session amount no longer matches the cart.
+   2. The `processor` forwards the decision to Briqpay's API, downgrading an `allow` to a soft reject if the session amount no longer matches the cart — re-syncing the session to the cart first, so a retry can succeed.
    3. Briqpay approves or denies it.
    4. The `enabler` resumes the widget with the result.
 2. **`session_complete`** — fired once Briqpay is ready to finalize, either right after an approved decision or directly if no decision was needed.

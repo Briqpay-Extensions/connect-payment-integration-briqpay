@@ -4872,15 +4872,20 @@ describe('briqpay-payment.service', () => {
             },
           },
         } as any)
+        jest
+          .spyOn(Briqpay, 'updateSession')
+          .mockResolvedValue({ sessionId: 'abc123', htmlSnippet: '<div>Briqpay</div>' })
       })
 
       test('should forward allow when the session amount and currency match the cart', async () => {
         const getSessionSpy = mockSessionOrder({ amountIncVat: 119000, currency: 'EUR' })
+        const updateSessionSpy = jest.spyOn(Briqpay, 'updateSession')
         const makeDecisionSpy = mockMakeDecisionOk()
 
         const result = await makeAllowDecision()
 
         expect(getSessionSpy).toHaveBeenCalledWith('abc123')
+        expect(updateSessionSpy).not.toHaveBeenCalled()
         expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', { decision: BRIQPAY_DECISION.ALLOW })
         expect(result).toEqual({ success: true, decision: BRIQPAY_DECISION.ALLOW })
       })
@@ -4897,6 +4902,33 @@ describe('briqpay-payment.service', () => {
 
       test('should send a soft reject when the amount drift exceeds the rounding tolerance', async () => {
         mockSessionOrder({ amountIncVat: 119006, currency: 'EUR' })
+        const updateSessionSpy = jest.spyOn(Briqpay, 'updateSession')
+        const makeDecisionSpy = mockMakeDecisionOk()
+
+        const result = await makeAllowDecision()
+
+        expect(updateSessionSpy).toHaveBeenCalledWith('abc123', expect.anything(), {
+          centAmount: 119000,
+          currencyCode: 'EUR',
+          fractionDigits: 2,
+        })
+        expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', softRejectPayload)
+        expect(result).toEqual({ success: false, decision: BRIQPAY_DECISION.REJECT })
+      })
+
+      test('should re-sync the session before sending the soft reject', async () => {
+        mockSessionOrder({ amountIncVat: 99900, currency: 'EUR' })
+        const updateSessionSpy = jest.spyOn(Briqpay, 'updateSession')
+        const makeDecisionSpy = mockMakeDecisionOk()
+
+        await makeAllowDecision()
+
+        expect(updateSessionSpy.mock.invocationCallOrder[0]).toBeLessThan(makeDecisionSpy.mock.invocationCallOrder[0])
+      })
+
+      test('should still send the soft reject when the session re-sync fails', async () => {
+        mockSessionOrder({ amountIncVat: 99900, currency: 'EUR' })
+        jest.spyOn(Briqpay, 'updateSession').mockRejectedValue(new Error('Briqpay API error: 409'))
         const makeDecisionSpy = mockMakeDecisionOk()
 
         const result = await makeAllowDecision()
@@ -4917,6 +4949,7 @@ describe('briqpay-payment.service', () => {
 
       test('should not consult the Briqpay session for reject decisions', async () => {
         const getSessionSpy = jest.spyOn(Briqpay, 'getSession')
+        const updateSessionSpy = jest.spyOn(Briqpay, 'updateSession')
         const makeDecisionSpy = mockMakeDecisionOk()
 
         await briqpayPaymentService.makeDecision({
@@ -4927,6 +4960,7 @@ describe('briqpay-payment.service', () => {
         })
 
         expect(getSessionSpy).not.toHaveBeenCalled()
+        expect(updateSessionSpy).not.toHaveBeenCalled()
         expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', {
           decision: BRIQPAY_DECISION.REJECT,
           rejectionType: BRIQPAY_REJECT_TYPE.NOTIFY_USER,
@@ -4971,11 +5005,13 @@ describe('briqpay-payment.service', () => {
         process.env.BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK = 'true'
         try {
           const getSessionSpy = mockSessionOrder({ amountIncVat: 99900, currency: 'EUR' })
+          const updateSessionSpy = jest.spyOn(Briqpay, 'updateSession')
           const makeDecisionSpy = mockMakeDecisionOk()
 
           const result = await makeAllowDecision()
 
           expect(getSessionSpy).not.toHaveBeenCalled()
+          expect(updateSessionSpy).not.toHaveBeenCalled()
           expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', { decision: BRIQPAY_DECISION.ALLOW })
           expect(result).toEqual({ success: true, decision: BRIQPAY_DECISION.ALLOW })
         } finally {
