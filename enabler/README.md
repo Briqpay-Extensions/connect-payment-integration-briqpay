@@ -313,7 +313,7 @@ registerBriqpayDecision(async (sdk, data) => {
 
 `data` carries the `sessionId`, not the amounts, so compare against the session server-side.
 
-> **Security note**: this handler runs in the buyer's browser, and the processor forwards its answer to Briqpay largely as given — it does not independently re-validate it. Treat this as an interim mechanism, not a trust boundary: perform any check the buyer must not be able to influence on your own server, not solely in this callback. A server-side decision path is planned and will replace this.
+> **Security note**: this handler runs in the buyer's browser. The processor independently verifies the Briqpay session amount and currency against the cart before forwarding an `allow` — mismatches become a soft reject. Anything beyond the amount (stock, credit, permissions) is only as strong as the browser: run checks the buyer must not influence on your own server, not solely in this callback.
 
 ### DecisionAnswer
 

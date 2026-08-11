@@ -115,6 +115,9 @@ deployAs:
         - key: BRIQPAY_EXTERNAL_WEBHOOK_URL
           description: Optional external webhook URL to receive order_status, capture_status, and refund_status events from Briqpay. When set, additional hooks are registered alongside the internal connector hooks. Must use HTTPS.
           required: false
+        - key: BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK
+          description: Leave empty (recommended). Type exactly "true" to disable the server-side check that verifies the Briqpay session amount and currency against the cart before a buyer "allow" decision is forwarded (mismatches are soft-rejected). Any other value is ignored and the check stays enabled.
+          required: false
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
           description: commercetools client secret

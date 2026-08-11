@@ -7,6 +7,7 @@ import {
 import { BaseOptions } from "../../../../src/payment-enabler/payment-enabler-briqpay";
 import {
   BRIQPAY_DECISION,
+  BRIQPAY_REJECT_TYPE,
   BriqpaySdk,
   registerBriqpayDecision,
 } from "../../../../src/briqpay-sdk";
@@ -172,10 +173,10 @@ describe("Briqpay", () => {
 
     const subscribeCallbacks: Record<
       string,
-      (data: Record<string, unknown>) => void
+      (data: Record<string, unknown>) => void | Promise<void>
     > = {};
     window._briqpay.subscribe = jest.fn(
-      (event: string, callback: (data: Record<string, unknown>) => void) => {
+      (event: string, callback: (data: Record<string, unknown>) => void | Promise<void>) => {
         subscribeCallbacks[event] = callback;
       },
     );
@@ -218,10 +219,10 @@ describe("Briqpay", () => {
 
       const subscribeCallbacks: Record<
         string,
-        (data: Record<string, unknown>) => void
+        (data: Record<string, unknown>) => void | Promise<void>
       > = {};
       window._briqpay.subscribe = jest.fn(
-        (event: string, callback: (data: Record<string, unknown>) => void) => {
+        (event: string, callback: (data: Record<string, unknown>) => void | Promise<void>) => {
           subscribeCallbacks[event] = callback;
         },
       );
@@ -248,6 +249,148 @@ describe("Briqpay", () => {
       jest.useRealTimers();
     },
   );
+
+  // resumeDecision() unblocks Briqpay's own pay-button flow, so it must run even when the /decision
+  // POST itself fails - mirrors the equivalent dropin-embedded.spec.ts test.
+  test("make_decision callback still resumes when sendDecision's fetch itself rejects", async () => {
+    const onDecision = jest
+      .fn<any>()
+      .mockResolvedValue({ decision: BRIQPAY_DECISION.ALLOW });
+    registerBriqpayDecision(onDecision);
+    (global.fetch as jest.Mock).mockImplementationOnce(() =>
+      Promise.reject(new Error("network down")),
+    );
+
+    const builder = new BriqpayBuilder(baseOptions);
+    const decisionComponent = builder.build({});
+
+    const subscribeCallbacks: Record<
+      string,
+      (data: Record<string, unknown>) => void | Promise<void>
+    > = {};
+    window._briqpay.subscribe = jest.fn(
+      (event: string, callback: (data: Record<string, unknown>) => void | Promise<void>) => {
+        subscribeCallbacks[event] = callback;
+      },
+    );
+
+    decisionComponent.mount("#container");
+    const scriptElement = document.querySelector("head")
+      ?.lastChild as HTMLScriptElement;
+    scriptElement.onload?.({} as Event);
+
+    await expect(
+      Promise.resolve(subscribeCallbacks["make_decision"]({})),
+    ).rejects.toThrow("network down");
+    expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
+  });
+
+  test("make_decision callback sends a notify_user rejection with its softErrors and rejectionType", async () => {
+    const onDecision = jest.fn<any>().mockResolvedValue({
+      decision: BRIQPAY_DECISION.REJECT,
+      rejectionType: BRIQPAY_REJECT_TYPE.NOTIFY_USER,
+      softErrors: [{ message: "Please update your billing address" }],
+    });
+    registerBriqpayDecision(onDecision);
+
+    const builder = new BriqpayBuilder(baseOptions);
+    const decisionComponent = builder.build({});
+
+    const subscribeCallbacks: Record<
+      string,
+      (data: Record<string, unknown>) => void | Promise<void>
+    > = {};
+    window._briqpay.subscribe = jest.fn(
+      (event: string, callback: (data: Record<string, unknown>) => void | Promise<void>) => {
+        subscribeCallbacks[event] = callback;
+      },
+    );
+
+    decisionComponent.mount("#container");
+    const scriptElement = document.querySelector("head")
+      ?.lastChild as HTMLScriptElement;
+    scriptElement.onload?.({} as Event);
+
+    await subscribeCallbacks["make_decision"]({});
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "https://mock-processor.com/decision",
+      expect.objectContaining({
+        body: JSON.stringify({
+          sessionId: "briq-sess-123",
+          decision: BRIQPAY_DECISION.REJECT,
+          rejectionType: BRIQPAY_REJECT_TYPE.NOTIFY_USER,
+          softErrors: [{ message: "Please update your billing address" }],
+        }),
+      }),
+    );
+    expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
+  });
+
+  test("make_decision callback sends a reject_session_with_error rejection with its hardError", async () => {
+    const onDecision = jest.fn<any>().mockResolvedValue({
+      decision: BRIQPAY_DECISION.REJECT,
+      rejectionType: BRIQPAY_REJECT_TYPE.REJECT_WITH_ERROR,
+      hardError: { message: "This purchase cannot be completed." },
+    });
+    registerBriqpayDecision(onDecision);
+
+    const builder = new BriqpayBuilder(baseOptions);
+    const decisionComponent = builder.build({});
+
+    const subscribeCallbacks: Record<
+      string,
+      (data: Record<string, unknown>) => void | Promise<void>
+    > = {};
+    window._briqpay.subscribe = jest.fn(
+      (event: string, callback: (data: Record<string, unknown>) => void | Promise<void>) => {
+        subscribeCallbacks[event] = callback;
+      },
+    );
+
+    decisionComponent.mount("#container");
+    const scriptElement = document.querySelector("head")
+      ?.lastChild as HTMLScriptElement;
+    scriptElement.onload?.({} as Event);
+
+    await subscribeCallbacks["make_decision"]({});
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "https://mock-processor.com/decision",
+      expect.objectContaining({
+        body: JSON.stringify({
+          sessionId: "briq-sess-123",
+          decision: BRIQPAY_DECISION.REJECT,
+          rejectionType: BRIQPAY_REJECT_TYPE.REJECT_WITH_ERROR,
+          hardError: { message: "This purchase cannot be completed." },
+        }),
+      }),
+    );
+    expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
+  });
+
+  // Documents a real gap: submit() has no re-entrancy guard, so if Briqpay (or a flaky network
+  // layer) redelivers session_complete, the enabler will POST /payments a second time instead of
+  // no-op'ing. Mirrors the equivalent dropin-embedded.spec.ts test.
+  test("session_complete firing twice invokes submit() twice (no idempotency guard)", () => {
+    const submitSpy = jest.spyOn(component, "submit").mockResolvedValue();
+
+    component.mount("#container");
+    const scriptElement = document.querySelector("head")
+      ?.lastChild as HTMLScriptElement;
+    scriptElement.onload?.({} as Event);
+
+    const sessionComplete = (
+      window._briqpay.subscribe as jest.Mock
+    ).mock.calls.find(
+      (call: unknown[]) => call[0] === "session_complete",
+    )?.[1] as (data: Record<string, unknown>) => void;
+
+    sessionComplete({});
+    sessionComplete({});
+
+    expect(submitSpy).toHaveBeenCalledTimes(2);
+  });
 
   test("submit() posts to payments and calls onComplete on success", async () => {
     await component.submit();

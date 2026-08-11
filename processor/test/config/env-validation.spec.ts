@@ -63,6 +63,19 @@ describe('env-validation', () => {
     })
   })
 
+  describe('BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK', () => {
+    it('should pass validation when BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK is not set', () => {
+      expect(() => validateEnvironment()).not.toThrow()
+    })
+
+    it('should never fail validation regardless of value - a typo must not block a deployment', () => {
+      for (const value of ['true', 'false', '1', 'TRUE', 'garbage']) {
+        process.env.BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK = value
+        expect(() => validateEnvironment()).not.toThrow()
+      }
+    })
+  })
+
   describe('missing required variables', () => {
     it('should throw EnvValidationError when a required var is missing', () => {
       delete process.env.CTP_PROJECT_KEY

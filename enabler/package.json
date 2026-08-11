@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --port 3000",
     "start": "serve public -l 8080 --cors",
-    "lint": "eslint src --ext .ts,.js",
+    "lint": "eslint src test --ext .ts,.js",
     "test": "jest --detectOpenHandles",
     "test:coverage": "jest --detectOpenHandles --coverage --collectCoverageFrom='src/**/*.{ts,jsx,tsx,js}' --coverageDirectory='./coverage'",
     "build": "tsc && vite build",

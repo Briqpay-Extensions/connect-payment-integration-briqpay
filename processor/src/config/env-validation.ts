@@ -116,6 +116,12 @@ const OPTIONAL_ENV_VARS: EnvVarConfig[] = [
     validator: (value) => value.startsWith('https://'),
     errorMessage: 'BRIQPAY_EXTERNAL_WEBHOOK_URL must use HTTPS',
   },
+  // No validator on purpose: only the exact value 'true' disables the amount check,
+  // anything else is ignored — a typo here must never block a deployment.
+  {
+    name: 'BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK',
+    required: false,
+  },
 ]
 
 export class EnvValidationError extends Error {

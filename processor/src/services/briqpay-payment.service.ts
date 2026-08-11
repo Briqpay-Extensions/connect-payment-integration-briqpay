@@ -1,4 +1,4 @@
-import { healthCheckCommercetoolsPermissions, statusHandler } from '@commercetools/connect-payments-sdk'
+import { Cart, healthCheckCommercetoolsPermissions, statusHandler } from '@commercetools/connect-payments-sdk'
 import {
   CancelPaymentRequest,
   CapturePaymentRequest,
@@ -18,6 +18,8 @@ import { appLogger, paymentSDK } from '../payment-sdk'
 import { BriqpayPaymentServiceOptions, CreatePaymentRequest } from './types/briqpay-payment.type'
 import {
   BRIQPAY_DECISION,
+  BRIQPAY_REJECT_TYPE,
+  BriqpayDecisionRequest,
   DecisionRequestSchemaDTO,
   NotificationRequestSchemaDTO,
   PaymentResponseSchemaDTO,
@@ -34,6 +36,11 @@ import { BriqpayOperationService } from './briqpay/operation.service'
 import { BriqpayNotificationService } from './briqpay/notification.service'
 import { SessionError, UpstreamError, ValidationError } from '../libs/errors/briqpay-errors'
 import { briqpaySessionIdFieldName } from '../custom-types/custom-types'
+
+const isDecisionAmountCheckDisabled = (): boolean => process.env.BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK === 'true'
+
+// Briqpay and commercetools can round VAT differently; drift within this is not a mismatch
+const DECISION_AMOUNT_TOLERANCE_MINOR_UNITS = 5
 
 export class BriqpayPaymentService extends AbstractPaymentService {
   private sessionService: BriqpaySessionService
@@ -223,13 +230,57 @@ export class BriqpayPaymentService extends AbstractPaymentService {
     return this.operationService.createPayment(request)
   }
 
+  /** Fail-closed: any error or missing session amount counts as a mismatch. Never throws. */
+  private async verifySessionAmountMatchesCart(ctCart: Cart, sessionId: string): Promise<boolean> {
+    try {
+      const briqpaySession = await BriqpayService.getSession(sessionId)
+      const sessionAmount = briqpaySession.data?.order?.amountIncVat
+      const sessionCurrency = briqpaySession.data?.order?.currency
+      // Same amount basis the session was created and updated with
+      const cartAmount = await this.ctCartService.getPlannedPaymentAmount({ cart: ctCart })
+
+      if (
+        typeof sessionAmount !== 'number' ||
+        Math.abs(sessionAmount - cartAmount.centAmount) > DECISION_AMOUNT_TOLERANCE_MINOR_UNITS ||
+        sessionCurrency !== cartAmount.currencyCode
+      ) {
+        appLogger.error(
+          {
+            cartId: ctCart.id,
+            sessionId,
+            sessionAmount,
+            sessionCurrency,
+            cartAmount: cartAmount.centAmount,
+            cartCurrency: cartAmount.currencyCode,
+          },
+          'Amount mismatch between Briqpay session and cart - potential security violation',
+        )
+        return false
+      }
+
+      return true
+    } catch (error) {
+      appLogger.error(
+        {
+          cartId: ctCart.id,
+          sessionId,
+          error: error instanceof Error ? error.message : error,
+        },
+        'Could not verify Briqpay session amount - failing closed with reject',
+      )
+      return false
+    }
+  }
+
   /**
    * Makes a decision on a Briqpay session.
    * This is the secure server-side implementation that validates the session
-   * belongs to the current cart before calling Briqpay's API.
+   * belongs to the current cart before calling Briqpay's API. An allow is only
+   * forwarded if the session amount still matches the cart; on mismatch a soft
+   * reject is sent instead.
    *
    * @param request - The decision request containing sessionId and decision
-   * @returns Promise with success status and decision made
+   * @returns the decision actually sent to Briqpay; success is false when it was overridden
    * @throws SessionError if session validation fails
    * @throws UpstreamError if Briqpay API call fails
    */
@@ -269,14 +320,22 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       throw new SessionError('Session does not belong to this cart', 403)
     }
 
+    // SECURITY: an allow that cannot be verified against the cart becomes a soft reject
+    let outbound: BriqpayDecisionRequest = { decision, rejectionType, hardError, softErrors }
+    if (
+      decision === BRIQPAY_DECISION.ALLOW &&
+      !isDecisionAmountCheckDisabled() &&
+      !(await this.verifySessionAmountMatchesCart(ctCart, sessionId))
+    ) {
+      outbound = {
+        decision: BRIQPAY_DECISION.REJECT,
+        rejectionType: BRIQPAY_REJECT_TYPE.NOTIFY_USER,
+      }
+    }
+
     // SECURITY: Call Briqpay's API server-side with proper authentication
     try {
-      const response = await BriqpayService.makeDecision(sessionId, {
-        decision,
-        rejectionType,
-        hardError,
-        softErrors,
-      })
+      const response = await BriqpayService.makeDecision(sessionId, outbound)
 
       if (!response.ok) {
         const errorText = await response.text()
@@ -295,15 +354,16 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       appLogger.info(
         {
           sessionId,
-          decision,
+          requestedDecision: decision,
+          decision: outbound.decision,
           status: response.status,
         },
         'Decision successfully sent to Briqpay',
       )
 
       return {
-        success: true,
-        decision,
+        success: outbound.decision === decision,
+        decision: outbound.decision,
       }
     } catch (error) {
       if (error instanceof SessionError || error instanceof UpstreamError) {

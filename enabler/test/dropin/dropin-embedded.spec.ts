@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { describe, expect, jest, test, beforeEach } from "@jest/globals";
+import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 import {
   DropinComponents,
   DropinEmbeddedBuilder,
@@ -7,6 +7,7 @@ import {
 import { DropinOptions } from "../../src/payment-enabler/payment-enabler";
 import {
   BRIQPAY_DECISION,
+  BRIQPAY_REJECT_TYPE,
   BriqpaySdk,
   registerBriqpayDecision,
 } from "../../src/briqpay-sdk";
@@ -382,5 +383,200 @@ describe("DropinComponents", () => {
       expect.anything(),
     );
     expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
+  });
+
+  // resumeDecision() unblocks Briqpay's own pay-button flow, so it must run
+  // even when the /decision POST itself fails - a merchant's network blip
+  // must not leave the widget stuck forever.
+  test("handleDecision still resumes when sendDecision's fetch itself rejects", async () => {
+    window._briqpay = {
+      subscribe: jest.fn(),
+      v3: {
+        suspend: jest.fn(),
+        resume: jest.fn(),
+        resumeDecision: jest.fn(),
+      },
+    };
+
+    const onDecision = jest
+      .fn<any>()
+      .mockResolvedValue({ decision: BRIQPAY_DECISION.ALLOW });
+    registerBriqpayDecision(onDecision);
+    (global.fetch as jest.Mock).mockImplementationOnce(() =>
+      Promise.reject(new Error("network down")),
+    );
+
+    const dropin = new DropinComponents(
+      {
+        dropinOptions: {
+          onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+        },
+      },
+      {
+        processorUrl: "http://localhost:8080",
+        sessionId: "123",
+        briqpaySessionId: "abc123",
+        snippet: "Dropin Embedded",
+        sdk: {} as BriqpaySdk,
+        environment: "test",
+        onComplete: () => {},
+        onError: () => {},
+      },
+    );
+
+    // handleDecision has no catch of its own around sendDecision, so the
+    // fetch failure propagates - the finally must still have run first.
+    await expect(dropin.handleDecision({})).rejects.toThrow("network down");
+    expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
+  });
+
+  test("handleDecision sends a notify_user rejection with its softErrors and rejectionType", async () => {
+    window._briqpay = {
+      subscribe: jest.fn(),
+      v3: {
+        suspend: jest.fn(),
+        resume: jest.fn(),
+        resumeDecision: jest.fn(),
+      },
+    };
+
+    const onDecision = jest.fn<any>().mockResolvedValue({
+      decision: BRIQPAY_DECISION.REJECT,
+      rejectionType: BRIQPAY_REJECT_TYPE.NOTIFY_USER,
+      softErrors: [{ message: "Please update your billing address" }],
+    });
+    registerBriqpayDecision(onDecision);
+    (global.fetch as jest.Mock).mockClear();
+
+    const dropin = new DropinComponents(
+      {
+        dropinOptions: {
+          onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+        },
+      },
+      {
+        processorUrl: "http://localhost:8080",
+        sessionId: "123",
+        briqpaySessionId: "abc123",
+        snippet: "Dropin Embedded",
+        sdk: {} as BriqpaySdk,
+        environment: "test",
+        onComplete: () => {},
+        onError: () => {},
+      },
+    );
+
+    await dropin.handleDecision({});
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://localhost:8080/decision",
+      expect.objectContaining({
+        body: JSON.stringify({
+          sessionId: "abc123",
+          decision: BRIQPAY_DECISION.REJECT,
+          rejectionType: BRIQPAY_REJECT_TYPE.NOTIFY_USER,
+          softErrors: [{ message: "Please update your billing address" }],
+        }),
+      }),
+    );
+    expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
+  });
+
+  test("handleDecision sends a reject_session_with_error rejection with its hardError", async () => {
+    window._briqpay = {
+      subscribe: jest.fn(),
+      v3: {
+        suspend: jest.fn(),
+        resume: jest.fn(),
+        resumeDecision: jest.fn(),
+      },
+    };
+
+    const onDecision = jest.fn<any>().mockResolvedValue({
+      decision: BRIQPAY_DECISION.REJECT,
+      rejectionType: BRIQPAY_REJECT_TYPE.REJECT_WITH_ERROR,
+      hardError: { message: "This purchase cannot be completed." },
+    });
+    registerBriqpayDecision(onDecision);
+    (global.fetch as jest.Mock).mockClear();
+
+    const dropin = new DropinComponents(
+      {
+        dropinOptions: {
+          onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+        },
+      },
+      {
+        processorUrl: "http://localhost:8080",
+        sessionId: "123",
+        briqpaySessionId: "abc123",
+        snippet: "Dropin Embedded",
+        sdk: {} as BriqpaySdk,
+        environment: "test",
+        onComplete: () => {},
+        onError: () => {},
+      },
+    );
+
+    await dropin.handleDecision({});
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://localhost:8080/decision",
+      expect.objectContaining({
+        body: JSON.stringify({
+          sessionId: "abc123",
+          decision: BRIQPAY_DECISION.REJECT,
+          rejectionType: BRIQPAY_REJECT_TYPE.REJECT_WITH_ERROR,
+          hardError: { message: "This purchase cannot be completed." },
+        }),
+      }),
+    );
+    expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
+  });
+
+  // Documents a real gap: submit() has no re-entrancy guard, so if Briqpay
+  // (or a flaky network layer) redelivers session_complete, the enabler
+  // will POST /payments a second time instead of no-op'ing.
+  test("session_complete firing twice invokes submit() twice (no idempotency guard)", () => {
+    window._briqpay = {
+      subscribe: jest.fn(),
+      v3: {
+        suspend: jest.fn(),
+        resume: jest.fn(),
+        resumeDecision: jest.fn(),
+      },
+    };
+
+    const dropin = new DropinComponents(
+      {
+        dropinOptions: {
+          onDropinReady: jest.fn<any>().mockResolvedValue(undefined),
+        },
+      },
+      {
+        processorUrl: "http://localhost:8080",
+        sessionId: "123",
+        briqpaySessionId: "abc123",
+        snippet: "Dropin Embedded",
+        sdk: {} as BriqpaySdk,
+        environment: "test",
+        onComplete: () => {},
+        onError: () => {},
+      },
+    );
+
+    const submitSpy = jest.spyOn(dropin, "submit").mockResolvedValue(undefined);
+
+    (dropin as any).subscribeToEvents();
+    const sessionCompleteHandler = (
+      window._briqpay.subscribe as jest.Mock
+    ).mock.calls.find((call: any) => call[0] === "session_complete")?.[1] as (
+      data: Record<string, unknown>,
+    ) => void;
+
+    sessionCompleteHandler({});
+    sessionCompleteHandler({});
+
+    expect(submitSpy).toHaveBeenCalledTimes(2);
   });
 });

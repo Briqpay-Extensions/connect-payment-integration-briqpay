@@ -347,7 +347,7 @@ The connector activates the decision step (`modules.config.payment.decision.enab
 
 1. **`make_decision`** — fired when Briqpay needs a decision. Briqpay decides when one is needed, so it does not necessarily fire on every submission.
    1. The `enabler` calls the handler registered via `registerBriqpayDecision`, or answers `ALLOW` automatically if none is registered, and sends the answer to the `processor` via `/decision`.
-   2. The `processor` forwards the decision to Briqpay's API.
+   2. The `processor` forwards the decision to Briqpay's API, downgrading an `allow` to a soft reject if the session amount no longer matches the cart.
    3. Briqpay approves or denies it.
    4. The `enabler` resumes the widget with the result.
 2. **`session_complete`** — fired once Briqpay is ready to finalize, either right after an approved decision or directly if no decision was needed.
@@ -887,11 +887,11 @@ and asks the buyer to retry. Nothing is charged. That failure mode only
 applies to a handler that was actually asked to validate: it is not the
 same as never registering one at all, which defaults to `ALLOW` instead.
 
-> **Note:** the handler runs in the buyer's browser and its answer is
-> forwarded to `/decision` largely as given — treat this as an interim
-> mechanism, not a trust boundary. A server-side decision path (validated
-> independently of the client) is planned; this will be replaced once
-> that ships.
+> **Note:** the handler runs in the buyer's browser, so its answer can be
+> forged. The processor guards the money independently: an `allow` is only
+> forwarded if the Briqpay session amount and currency still match the cart
+> (see `BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK` in the processor README).
+> Run any other check the buyer must not influence on your own server.
 
 ### Local Testing
 
@@ -1526,7 +1526,7 @@ Authentication is handled by the commercetools Connect Payments SDK:
 - **Security Headers**: X-Frame-Options, X-Content-Type-Options, HSTS, CSP, and more
 - **Audit Logging**: Request/response logging with correlation IDs for security monitoring
 - **Environment Validation**: Fail-fast startup if required environment variables are missing
-- **Server-Side Decision Handling**: Payment decisions validated server-side to prevent client manipulation
+- **Server-Side Decision Handling**: `/decision` verifies session ownership and the session amount against the cart before forwarding an `allow` (soft reject on mismatch)
 
 ### Testing Strategy
 

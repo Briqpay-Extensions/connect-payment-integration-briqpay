@@ -272,4 +272,53 @@ describe('BriqpayOperationService amount reconciliation', () => {
       expect(mockedBriqpay.refund).not.toHaveBeenCalled()
     })
   })
+
+  // The guard only ever compares the capture/refund request against the CURRENT cart total - it never
+  // checks back against amountPlanned (what was actually authorized on the Briqpay session). A cart
+  // that drifts a second time after the payment was created can walk the requested amount arbitrarily
+  // far from what was actually authorized, and this guard alone does not catch it. This documents that
+  // gap rather than asserting a fix - see DEV-3731 follow-up.
+  describe('three amounts differing: authorized/planned vs cart-at-capture vs requested (documents a gap)', () => {
+    const SECOND_DRIFT_TOTAL = 17650
+
+    test('a capture matching a since-drifted cart total is not checked against amountPlanned', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      expect(payment.amountPlanned.centAmount).toBe(PRE_SHIPPING_TOTAL)
+
+      // Cart drifted a second time, to a third distinct total, after the payment was authorized.
+      jest.mocked(mockCtCartService.getCartByPaymentId).mockResolvedValue(cartAtTotal(SECOND_DRIFT_TOTAL))
+
+      await operationService.capturePayment({
+        payment,
+        amount: { centAmount: SECOND_DRIFT_TOTAL, currencyCode: 'EUR' },
+      } as never)
+
+      // Three genuinely different amounts were in play - what was authorized/planned
+      // (PRE_SHIPPING_TOTAL), the cart total at capture time, and the requested capture amount -
+      // yet the capture proceeded, because the guard only checks request.amount against the
+      // current cart total and never looks at amountPlanned.
+      expect(mockedBriqpay.capture).toHaveBeenCalled()
+      expect(mockedBriqpay.capture.mock.calls[0][1].centAmount).toBe(SECOND_DRIFT_TOTAL)
+      expect(mockedBriqpay.capture.mock.calls[0][1].centAmount).not.toBe(payment.amountPlanned.centAmount)
+    })
+
+    test('a refund matching a since-drifted cart total is not checked against amountPlanned', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      expect(payment.amountPlanned.centAmount).toBe(PRE_SHIPPING_TOTAL)
+
+      jest.mocked(mockCtCartService.getCartByPaymentId).mockResolvedValue(cartAtTotal(SECOND_DRIFT_TOTAL))
+
+      await operationService.refundPayment({
+        payment: {
+          ...payment,
+          transactions: [...payment.transactions, ...chargeWrittenByCapture(SECOND_DRIFT_TOTAL)],
+        },
+        amount: { centAmount: SECOND_DRIFT_TOTAL, currencyCode: 'EUR' },
+      } as never)
+
+      expect(mockedBriqpay.refund).toHaveBeenCalled()
+      expect(mockedBriqpay.refund.mock.calls[0][1].centAmount).toBe(SECOND_DRIFT_TOTAL)
+      expect(mockedBriqpay.refund.mock.calls[0][1].centAmount).not.toBe(payment.amountPlanned.centAmount)
+    })
+  })
 })

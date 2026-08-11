@@ -94,6 +94,7 @@ const buildBriqpayPayment = (opts: {
     paymentMethodInfo: {
       ...(opts.paymentInterface !== null && { paymentInterface: opts.paymentInterface ?? 'Briqpay' }),
     },
+    paymentStatus: {},
     transactions,
     interfaceInteractions: [],
     createdAt: '2026-05-06T00:00:00.000Z',
@@ -119,7 +120,7 @@ const createSignedWebhookRequest = (data: NotificationRequestSchemaDTO) => {
 
 // Mock actions module to avoid paymentSDK initialization issues
 jest.mock('../src/connectors/actions', () => ({
-  getBriqpayTypeKey: jest.fn().mockResolvedValue('briqpay-session-id'),
+  getBriqpayTypeKey: jest.fn<() => Promise<string>>().mockResolvedValue('briqpay-session-id'),
   clearBriqpayTypeKeyCache: jest.fn(),
 }))
 
@@ -292,7 +293,7 @@ describe('briqpay-payment.service', () => {
     jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
       ...mockGetCartResult(),
       custom: {
-        type: { typeId: 'type', id: 'briqpay-session-id' }, // This matches your type definition
+        type: { typeId: 'type' as const, id: 'briqpay-session-id' }, // This matches your type definition
         fields: {
           [briqpaySessionIdCustomType.name]: 'abc123',
         },
@@ -353,7 +354,7 @@ describe('briqpay-payment.service', () => {
     jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
       ...mockGetCartResult(),
       custom: {
-        type: { typeId: 'type', id: 'briqpay-session-id' },
+        type: { typeId: 'type' as const, id: 'briqpay-session-id' },
         fields: {
           [briqpaySessionIdCustomType.name]: 'abc123',
         },
@@ -380,7 +381,7 @@ describe('briqpay-payment.service', () => {
       ...mockGetCartResult(),
       totalPrice: { centAmount: 130000, currencyCode: 'EUR' }, // Different amount
       custom: {
-        type: { typeId: 'type', id: 'briqpay-session-id' },
+        type: { typeId: 'type' as const, id: 'briqpay-session-id' },
         fields: {
           [briqpaySessionIdCustomType.name]: 'abc123',
         },
@@ -422,7 +423,7 @@ describe('briqpay-payment.service', () => {
     const mockCart: Cart = {
       ...JSON.parse(JSON.stringify(mockGetCartResult())),
       custom: {
-        type: { typeId: 'type', id: 'briqpay-session-id' },
+        type: { typeId: 'type' as const, id: 'briqpay-session-id' },
         fields: {
           [briqpaySessionIdCustomType.name]: sessionId,
         },
@@ -1427,7 +1428,7 @@ describe('briqpay-payment.service', () => {
     type CartUpdateBody = { version: number; actions: Array<{ action: string; payment?: { id: string } }> }
 
     const setupCartUpdateMock = () => {
-      const postMock = jest.fn<any>().mockReturnValue({
+      const postMock = jest.fn<(args: { body: CartUpdateBody }) => unknown>().mockReturnValue({
         execute: jest.fn<any>().mockResolvedValue({ body: { version: 2 } }),
       })
       ;(apiRoot.carts as jest.Mock<any>).mockReturnValue({
@@ -2613,7 +2614,7 @@ describe('briqpay-payment.service', () => {
       // detachStaleBriqpayPayments describe block, since the handleTransaction
       // describe doesn't have its own setupCartUpdateMock helper.
       type CartUpdateBody = { version: number; actions: Array<{ action: string; payment?: { id: string } }> }
-      const postMock = jest.fn<any>().mockReturnValue({
+      const postMock = jest.fn<(args: { body: CartUpdateBody }) => unknown>().mockReturnValue({
         execute: jest.fn<any>().mockResolvedValue({ body: { version: 2 } }),
       })
       ;(apiRoot.carts as jest.Mock<any>).mockReturnValue({
@@ -2628,7 +2629,7 @@ describe('briqpay-payment.service', () => {
 
       await briqpayPaymentService.handleTransaction(transactionDraft)
 
-      const updateBodies = postMock.mock.calls.map(([args]: [{ body: CartUpdateBody }]) => args.body)
+      const updateBodies = postMock.mock.calls.map(([args]) => args.body)
       const removed = updateBodies.flatMap((b: CartUpdateBody) =>
         b.actions.filter((a) => a.action === 'removePayment').map((a) => a.payment?.id),
       )
@@ -3516,6 +3517,43 @@ describe('briqpay-payment.service', () => {
         }),
       )
     })
+
+    // handleAuthorizationRejected has no equivalent to handleAuthorizationCancelled's "already
+    // cancelled" guard, so a rejection arriving after a capture already succeeded still flips the
+    // Authorization to Failure - leaving Authorization: Failure sitting next to Charge: Success on
+    // the same payment. This documents the current behavior rather than asserting a fix - see
+    // DEV-3728 follow-up.
+    test('12. order_rejected after a successful capture still flips the authorization to Failure', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as never)
+      const chargeSuccess: Transaction = {
+        id: 'charge-1',
+        type: 'Charge' as TransactionType,
+        interactionId: 'briqpay-capture-1',
+        state: 'Success',
+        amount: { centAmount: AMOUNT, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+        timestamp: '2024-01-01T00:00:00.000Z',
+      } as unknown as Transaction
+      ctHolds([authorization('Success'), chargeSuccess])
+
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_REJECTED, TRANSACTION_STATUS.REJECTED)
+
+      expect(written(updateSpy)).toContainEqual({ type: 'Authorization', state: 'Failure' })
+    })
+
+    // Mirrors test 9's redelivery check, for cancellation. Unlike the rejection path,
+    // handleAuthorizationCancelled's own "alreadyCancelled" guard should stop the second write
+    // outright, before the SDK's own same-state dedup would even get a chance to run.
+    test('13. a redelivered cancellation cannot create a second transaction', async () => {
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as never)
+
+      ctHolds([authorization('Success')])
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_CANCELLED, TRANSACTION_STATUS.CANCELLED)
+
+      ctHolds([authorization('Success'), cancelAuthorization()])
+      await deliver(BRIQPAY_WEBHOOK_STATUS.ORDER_CANCELLED, TRANSACTION_STATUS.CANCELLED)
+
+      expect(written(updateSpy).filter((tx) => tx.type === 'CancelAuthorization')).toHaveLength(1)
+    })
   })
 
   test('ORDER_PENDING with a persisted tag creates one tagged Payment + Authorization Pending', async () => {
@@ -3523,7 +3561,7 @@ describe('briqpay-payment.service', () => {
       ...mockGetCartResult(),
       id: 'webhook-cart-id-3',
       custom: {
-        type: { typeId: 'type', id: 'briqpay-type' },
+        type: { typeId: 'type' as const, id: 'briqpay-type' },
         fields: { 'briqpay-checkout-transaction-item-id': 'cti-xyz' },
       },
     }
@@ -3577,7 +3615,7 @@ describe('briqpay-payment.service', () => {
       ...mockGetCartResult(),
       id: 'webhook-cart-id-4',
       custom: {
-        type: { typeId: 'type', id: 'briqpay-type' },
+        type: { typeId: 'type' as const, id: 'briqpay-type' },
         fields: { 'briqpay-checkout-transaction-item-id': 'cti-xyz' },
       },
     }
@@ -3630,7 +3668,7 @@ describe('briqpay-payment.service', () => {
       ...mockGetCartResult(),
       id: 'webhook-cart-id-5',
       custom: {
-        type: { typeId: 'type', id: 'briqpay-type' },
+        type: { typeId: 'type' as const, id: 'briqpay-type' },
         fields: { 'briqpay-checkout-transaction-item-id': 'cti-xyz' },
       },
     }
@@ -4094,6 +4132,81 @@ describe('briqpay-payment.service', () => {
     expect(updateSpy).toHaveBeenCalledTimes(1)
   })
 
+  // Briqpay webhooks are at-least-once, and handleCaptureApproved has no explicit "alreadyCharged"
+  // guard of its own for the Success case (only handleCapturePending does) - so redelivery relies on
+  // the same commercetools SDK same-identity dedup that the order_status suite's test 9 relies on.
+  // This extends that same coverage to capture events.
+  test('a redelivered capture APPROVED notification cannot create a second Charge transaction', async () => {
+    const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as any)
+
+    jest.spyOn(Briqpay, 'getSession').mockResolvedValue(
+      createMockBriqpaySession({
+        orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        captures: [{ captureId: 'bcd123', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 119000, currency: 'EUR' }],
+      }),
+    )
+
+    const basePayment = {
+      id: 'payment-id-1',
+      key: 'payment-key',
+      interfaceId: '123',
+      paymentMethodInfo: { method: 'Briqpay', paymentInterface: 'Briqpay' },
+      amountPlanned: { centAmount: 10000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+      interfaceInteractions: [],
+      custom: undefined,
+      version: 1,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      lastModifiedAt: '2024-01-01T00:00:00.000Z',
+      paymentStatus: { interfaceCode: 'APPROVED', interfaceText: 'Awaiting confirmation' },
+    }
+
+    const chargeSuccess = {
+      id: 'charge-1',
+      type: 'Charge',
+      interactionId: 'bcd123',
+      state: 'Success',
+      amount: { centAmount: 119000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+      timestamp: '2024-01-01T00:00:00.000Z',
+    }
+
+    jest
+      .spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId')
+      .mockResolvedValueOnce([{ ...basePayment, transactions: [] } as any])
+      .mockResolvedValueOnce([{ ...basePayment, transactions: [chargeSuccess] } as any])
+
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.APPROVED,
+      captureId: 'bcd123',
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.APPROVED,
+        amountIncVat: 119000,
+        currency: 'EUR',
+      },
+    }
+
+    // Each delivery is signed fresh (like a real redelivery would be re-sent as its own request) so
+    // the replay-detection guard, which is keyed on timestamp+signature, does not itself block the
+    // second call before it ever reaches the dedup logic under test.
+    const first = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, ...first })
+    const second = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, ...second })
+
+    const chargeWrites = updateSpy.mock.calls
+      .map(([call]) => call.transaction)
+      .filter((tx): tx is NonNullable<typeof tx> => tx?.type === 'Charge')
+
+    expect(chargeWrites).toHaveLength(2)
+    expect(
+      new Set(
+        chargeWrites.map((tx) => JSON.stringify({ type: tx.type, interactionId: tx.interactionId, state: tx.state })),
+      ).size,
+    ).toBe(1)
+  })
+
   test('calls handleRefundPending on refund PENDING event', async () => {
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
 
@@ -4401,6 +4514,78 @@ describe('briqpay-payment.service', () => {
     expect(updateSpy).toHaveBeenCalledTimes(1)
   })
 
+  // Same coverage as the capture-redelivery test above, for refunds: handleRefundApproved has no
+  // explicit "alreadyRefunded" guard of its own for the Success case (only handleRefundPending
+  // does), so redelivery again relies entirely on the commercetools SDK's same-identity dedup.
+  test('a redelivered refund APPROVED notification cannot create a second Refund transaction', async () => {
+    const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue({} as any)
+
+    jest.spyOn(Briqpay, 'getSession').mockResolvedValue(
+      createMockBriqpaySession({
+        orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+        refunds: [{ refundId: 'cde123', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 119000, currency: 'EUR' }],
+      }),
+    )
+
+    const basePayment = {
+      id: 'payment-id-1',
+      key: 'payment-key',
+      interfaceId: '123',
+      paymentMethodInfo: { method: 'Briqpay', paymentInterface: 'Briqpay' },
+      amountPlanned: { centAmount: 10000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+      interfaceInteractions: [],
+      custom: undefined,
+      version: 1,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      lastModifiedAt: '2024-01-01T00:00:00.000Z',
+      paymentStatus: { interfaceCode: 'APPROVED', interfaceText: 'Awaiting confirmation' },
+    }
+
+    const refundSuccess = {
+      id: 'refund-1',
+      type: 'Refund',
+      interactionId: 'cde123',
+      state: 'Success',
+      amount: { centAmount: 119000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
+      timestamp: '2024-01-01T00:00:00.000Z',
+    }
+
+    jest
+      .spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId')
+      .mockResolvedValueOnce([{ ...basePayment, transactions: [] } as any])
+      .mockResolvedValueOnce([{ ...basePayment, transactions: [refundSuccess] } as any])
+
+    const data: NotificationRequestSchemaDTO = {
+      sessionId: 'abc123',
+      event: BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.APPROVED,
+      refundId: 'cde123',
+      transaction: {
+        transactionId: 'tx-1',
+        status: TRANSACTION_STATUS.APPROVED,
+        amountIncVat: 119000,
+        currency: 'EUR',
+      },
+    }
+
+    // Each delivery is signed fresh - see the equivalent capture-redelivery test above for why.
+    const first = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, ...first })
+    const second = createSignedWebhookRequest(data)
+    await briqpayPaymentService.processNotification({ data, ...second })
+
+    const refundWrites = updateSpy.mock.calls
+      .map(([call]) => call.transaction)
+      .filter((tx): tx is NonNullable<typeof tx> => tx?.type === 'Refund')
+
+    expect(refundWrites).toHaveLength(2)
+    expect(
+      new Set(
+        refundWrites.map((tx) => JSON.stringify({ type: tx.type, interactionId: tx.interactionId, state: tx.state })),
+      ).size,
+    ).toBe(1)
+  })
+
   test('calls refundPayment() with no transaction', async () => {
     await expect(
       briqpayPaymentService.refundPayment({
@@ -4523,7 +4708,7 @@ describe('briqpay-payment.service', () => {
       jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
         ...mockGetCartResult(),
         custom: {
-          type: { typeId: 'type', id: 'briqpay-session-id' },
+          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
           fields: {
             [briqpaySessionIdCustomType.name]: 'abc123',
           },
@@ -4564,7 +4749,7 @@ describe('briqpay-payment.service', () => {
       jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
         ...mockGetCartResult(),
         custom: {
-          type: { typeId: 'type', id: 'briqpay-session-id' },
+          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
           fields: {
             [briqpaySessionIdCustomType.name]: 'different-session-id',
           },
@@ -4583,7 +4768,7 @@ describe('briqpay-payment.service', () => {
       jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
         ...mockGetCartResult(),
         custom: {
-          type: { typeId: 'type', id: 'briqpay-session-id' },
+          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
           fields: {
             [briqpaySessionIdCustomType.name]: 'abc123',
           },
@@ -4609,7 +4794,7 @@ describe('briqpay-payment.service', () => {
       jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
         ...mockGetCartResult(),
         custom: {
-          type: { typeId: 'type', id: 'briqpay-session-id' },
+          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
           fields: {
             [briqpaySessionIdCustomType.name]: 'abc123',
           },
@@ -4630,7 +4815,7 @@ describe('briqpay-payment.service', () => {
       jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
         ...mockGetCartResult(),
         custom: {
-          type: { typeId: 'type', id: 'briqpay-session-id' },
+          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
           fields: {
             [briqpaySessionIdCustomType.name]: 'abc123',
           },
@@ -4655,6 +4840,160 @@ describe('briqpay-payment.service', () => {
         rejectionType: BRIQPAY_REJECT_TYPE.REJECT_WITH_ERROR,
         hardError: { message: 'Invalid address' },
         softErrors: [{ message: 'Missing phone' }],
+      })
+    })
+
+    describe('decision amount check', () => {
+      const softRejectPayload = {
+        decision: BRIQPAY_DECISION.REJECT,
+        rejectionType: BRIQPAY_REJECT_TYPE.NOTIFY_USER,
+      }
+
+      const mockSessionOrder = (order?: { amountIncVat: number; currency: string }) =>
+        jest.spyOn(Briqpay, 'getSession').mockResolvedValue({
+          sessionId: 'abc123',
+          htmlSnippet: '<div>Briqpay</div>',
+          ...(order && { data: { order: { ...order, cart: [] } } }),
+        })
+
+      const mockMakeDecisionOk = () =>
+        jest.spyOn(Briqpay, 'makeDecision').mockResolvedValue({ ok: true, status: 204 } as Response)
+
+      const makeAllowDecision = () =>
+        briqpayPaymentService.makeDecision({ sessionId: 'abc123', decision: BRIQPAY_DECISION.ALLOW })
+
+      beforeEach(() => {
+        jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
+          ...mockGetCartResult(),
+          custom: {
+            type: { typeId: 'type', id: 'briqpay-session-id' },
+            fields: {
+              [briqpaySessionIdCustomType.name]: 'abc123',
+            },
+          },
+        } as any)
+      })
+
+      test('should forward allow when the session amount and currency match the cart', async () => {
+        const getSessionSpy = mockSessionOrder({ amountIncVat: 119000, currency: 'EUR' })
+        const makeDecisionSpy = mockMakeDecisionOk()
+
+        const result = await makeAllowDecision()
+
+        expect(getSessionSpy).toHaveBeenCalledWith('abc123')
+        expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', { decision: BRIQPAY_DECISION.ALLOW })
+        expect(result).toEqual({ success: true, decision: BRIQPAY_DECISION.ALLOW })
+      })
+
+      test('should forward allow when the amount drift is within the rounding tolerance', async () => {
+        mockSessionOrder({ amountIncVat: 119005, currency: 'EUR' })
+        const makeDecisionSpy = mockMakeDecisionOk()
+
+        const result = await makeAllowDecision()
+
+        expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', { decision: BRIQPAY_DECISION.ALLOW })
+        expect(result).toEqual({ success: true, decision: BRIQPAY_DECISION.ALLOW })
+      })
+
+      test('should send a soft reject when the amount drift exceeds the rounding tolerance', async () => {
+        mockSessionOrder({ amountIncVat: 119006, currency: 'EUR' })
+        const makeDecisionSpy = mockMakeDecisionOk()
+
+        const result = await makeAllowDecision()
+
+        expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', softRejectPayload)
+        expect(result).toEqual({ success: false, decision: BRIQPAY_DECISION.REJECT })
+      })
+
+      test('should send a soft reject when the session currency does not match the cart', async () => {
+        mockSessionOrder({ amountIncVat: 119000, currency: 'SEK' })
+        const makeDecisionSpy = mockMakeDecisionOk()
+
+        const result = await makeAllowDecision()
+
+        expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', softRejectPayload)
+        expect(result).toEqual({ success: false, decision: BRIQPAY_DECISION.REJECT })
+      })
+
+      test('should not consult the Briqpay session for reject decisions', async () => {
+        const getSessionSpy = jest.spyOn(Briqpay, 'getSession')
+        const makeDecisionSpy = mockMakeDecisionOk()
+
+        await briqpayPaymentService.makeDecision({
+          sessionId: 'abc123',
+          decision: BRIQPAY_DECISION.REJECT,
+          rejectionType: BRIQPAY_REJECT_TYPE.NOTIFY_USER,
+          softErrors: [{ message: 'Out of stock' }],
+        })
+
+        expect(getSessionSpy).not.toHaveBeenCalled()
+        expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', {
+          decision: BRIQPAY_DECISION.REJECT,
+          rejectionType: BRIQPAY_REJECT_TYPE.NOTIFY_USER,
+          hardError: undefined,
+          softErrors: [{ message: 'Out of stock' }],
+        })
+      })
+
+      test('should fail closed when the Briqpay session cannot be fetched', async () => {
+        jest.spyOn(Briqpay, 'getSession').mockRejectedValue(new Error('Briqpay API error: 500 Internal Server Error'))
+        const makeDecisionSpy = mockMakeDecisionOk()
+
+        const result = await makeAllowDecision()
+
+        expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', softRejectPayload)
+        expect(result).toEqual({ success: false, decision: BRIQPAY_DECISION.REJECT })
+      })
+
+      test('should fail closed when the session has no order amount', async () => {
+        mockSessionOrder()
+        const makeDecisionSpy = mockMakeDecisionOk()
+
+        const result = await makeAllowDecision()
+
+        expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', softRejectPayload)
+        expect(result).toEqual({ success: false, decision: BRIQPAY_DECISION.REJECT })
+      })
+
+      test('should fail closed when the cart amount lookup fails', async () => {
+        jest
+          .spyOn(paymentSDK.ctCartService, 'getPlannedPaymentAmount')
+          .mockRejectedValue(new Error('The cart has already been paid in full'))
+        const makeDecisionSpy = mockMakeDecisionOk()
+
+        const result = await makeAllowDecision()
+
+        expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', softRejectPayload)
+        expect(result).toEqual({ success: false, decision: BRIQPAY_DECISION.REJECT })
+      })
+
+      test('should skip the check when BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK is set', async () => {
+        process.env.BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK = 'true'
+        try {
+          const getSessionSpy = mockSessionOrder({ amountIncVat: 99900, currency: 'EUR' })
+          const makeDecisionSpy = mockMakeDecisionOk()
+
+          const result = await makeAllowDecision()
+
+          expect(getSessionSpy).not.toHaveBeenCalled()
+          expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', { decision: BRIQPAY_DECISION.ALLOW })
+          expect(result).toEqual({ success: true, decision: BRIQPAY_DECISION.ALLOW })
+        } finally {
+          delete process.env.BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK
+        }
+      })
+
+      test('should throw UpstreamError when the soft reject cannot be delivered', async () => {
+        mockSessionOrder({ amountIncVat: 99900, currency: 'EUR' })
+        const makeDecisionSpy = jest.spyOn(Briqpay, 'makeDecision').mockResolvedValue({
+          ok: false,
+          status: 400,
+          statusText: 'Bad Request',
+          text: async () => 'Invalid decision',
+        } as Response)
+
+        await expect(makeAllowDecision()).rejects.toThrow('Briqpay decision failed: 400 Bad Request')
+        expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', softRejectPayload)
       })
     })
   })

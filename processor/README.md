@@ -190,6 +190,7 @@ Copy `.env.template` to `.env` and configure the following variables:
 | `BRIQPAY_WEBHOOK_SECRET`                                | Briqpay webhook signing secret (Mandatory)                                                                                                                                                                            | -                                                   |
 | `ALLOWED_ORIGINS`                                       | Comma-separated list of allowed CORS origins. Supports wildcard patterns (e.g. `https://*.preview.example.com`).                                                                                                      | -                                                   |
 | `BRIQPAY_EXTERNAL_WEBHOOK_URL`                          | Optional external webhook URL to receive `order_status`, `capture_status`, and `refund_status` events from Briqpay. When set, additional hooks are registered alongside the internal connector hooks. Must use HTTPS. | `https://your-service.com/briqpay-events`           |
+| `BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK`                 | Kill switch for the server-side amount check on buyer `allow` decisions. Type exactly `true` to disable; anything else is ignored and the check stays enabled.                                                        | -                                                   |
 
 ### Application Configuration
 
@@ -466,6 +467,10 @@ The processor implements several security measures for production readiness:
 - **HMAC Verification**: Webhooks are verified using mandatory HMAC-SHA256 signatures. `BRIQPAY_WEBHOOK_SECRET` must be configured for the processor to function.
 - **Duplicate Detection**: Checks if authorization already exists before processing
 - **Audit Logging**: All webhook processing logged with correlation IDs
+
+### Decision Amount Verification
+
+- A buyer `allow` decision is only forwarded to Briqpay after the processor verifies the Briqpay session amount (±5 minor units for rounding) and currency against the cart. On mismatch, or when verification fails, a soft reject (`notify_user`) is sent instead. Kill switch: `BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK=true`.
 
 ### Security Headers
 
