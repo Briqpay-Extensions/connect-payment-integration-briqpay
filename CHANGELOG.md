@@ -13,7 +13,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
   post-deploy to register the field. Without it the connector updates the session on every render,
   as before.
 - Each CT Payment now records the PSP that processed it:
-  `paymentMethodInfo.method` = Briqpay `pspIntegrationName` (e.g. `mollie_cards`),
+  `paymentMethodInfo.method` = Briqpay `pspIntegrationName` (e.g. `Mollie - Card Payments`),
   `paymentMethodInfo.name` = `pspDisplayName`.
 - `/payments` stages the Briqpay session's custom-field data onto the cart, so orders are created
   with PSP data attached instead of waiting for the first webhook.
