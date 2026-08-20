@@ -4,6 +4,12 @@ import { mockGetCartResult } from '../../utils/mock-cart-data'
 import Briqpay from '../../../src/libs/briqpay/BriqpayService'
 import type { CommercetoolsCartService, Cart } from '@commercetools/connect-payments-sdk'
 import { apiRoot } from '../../../src/libs/commercetools/api-root'
+import {
+  SessionAlreadyCompletedError,
+  SessionInitializationPendingError,
+  SessionNotFoundError,
+} from '../../../src/libs/errors/briqpay-errors'
+import { appLogger } from '../../../src/payment-sdk'
 
 // Mock apiRoot
 jest.mock('../../../src/libs/commercetools/api-root')
@@ -12,6 +18,7 @@ jest.mock('../../../src/libs/commercetools/api-root')
 jest.mock('../../../src/payment-sdk', () => ({
   appLogger: {
     info: jest.fn(),
+    warn: jest.fn(),
     error: jest.fn(),
   },
 }))
@@ -22,8 +29,6 @@ jest.mock('../../../src/connectors/actions', () => ({
   clearBriqpayTypeKeyCache: jest.fn(),
 }))
 
-// Mock Briqpay service methods but keep the real mapCustomLineItem — the session
-// comparison relies on it to mirror what createSession/updateSession actually send.
 jest.mock('../../../src/libs/briqpay/BriqpayService', () => {
   const actual = jest.requireActual('../../../src/libs/briqpay/BriqpayService') as Record<string, unknown>
   return {
@@ -33,6 +38,7 @@ jest.mock('../../../src/libs/briqpay/BriqpayService', () => {
       createSession: jest.fn(),
       getSession: jest.fn(),
       updateSession: jest.fn(),
+      buildSessionUpdateRequest: jest.fn(),
       capture: jest.fn(),
       refund: jest.fn(),
       makeDecision: jest.fn(),
@@ -48,6 +54,10 @@ const mockedBriqpay = jest.mocked(Briqpay)
 // Helper to get a Cart typed to the SDK's version (avoids duplicate node_modules type mismatch)
 const getCart = () => mockGetCartResult() as unknown as Cart
 
+// Hash the payload builder reports for the current cart, vs the one a create returns.
+const BUILT_HASH = 'hash-of-current-cart'
+const CREATED_HASH = 'hash-recorded-at-create'
+
 describe('BriqpaySessionService', () => {
   let sessionService: BriqpaySessionService
   const mockCtCartService = {
@@ -61,20 +71,30 @@ describe('BriqpaySessionService', () => {
 
     // Default mock implementations
     mockedBriqpay.createSession.mockResolvedValue({
-      sessionId: 'new-session-id',
-      htmlSnippet: '<div>Briqpay</div>',
-      data: { order: { amountIncVat: 119000, currency: 'EUR', cart: [] } },
+      session: {
+        sessionId: 'new-session-id',
+        htmlSnippet: '<div>Briqpay</div>',
+        data: { order: { amountIncVat: 119000, currency: 'EUR', cart: [] } },
+      },
+      syncedPayloadHash: CREATED_HASH,
     } as never)
 
+    // Amounts match the built payload by default, so an in-sync cart takes the GET path.
     mockedBriqpay.getSession.mockResolvedValue({
       sessionId: 'existing-session-id',
       htmlSnippet: '<div>Briqpay</div>',
-      data: { order: { amountIncVat: 119000, currency: 'EUR', cart: [] } },
+      data: { order: { currency: 'EUR', amountIncVat: 119000, amountExVat: 100000, cart: [] } },
     } as never)
 
     mockedBriqpay.updateSession.mockResolvedValue({
       sessionId: 'updated-session-id',
       htmlSnippet: '<div>Briqpay Updated</div>',
+    } as never)
+
+    mockedBriqpay.buildSessionUpdateRequest.mockResolvedValue({
+      body: '{"data":{}}',
+      hash: BUILT_HASH,
+      amounts: { currency: 'EUR', amountIncVat: 119000, amountExVat: 100000 },
     } as never)
     jest.mocked(mockCtCartService.getPaymentAmount).mockResolvedValue({
       centAmount: 119000,
@@ -109,13 +129,16 @@ describe('BriqpaySessionService', () => {
     return buildApiRootWithExecute(execute)
   }
 
-  describe('updateCartWithBriqpaySession - checkoutTransactionItemId persistence', () => {
+  describe('updateCTCartWithBriqpaySession - checkoutTransactionItemId persistence', () => {
     test('writes the checkoutTransactionItemId setCustomField when present and changed', async () => {
       const { post } = buildCapturingApiRoot()
       const cart = cartWithFields({ 'briqpay-session-id': 'sess-1' })
       jest.mocked(mockCtCartService.getCart).mockResolvedValue(cart)
 
-      await sessionService.updateCartWithBriqpaySession(cart, 'sess-1', undefined, 'cti-abc')
+      await sessionService.updateCTCartWithBriqpaySession(cart, {
+        briqpaySessionId: 'sess-1',
+        checkoutTransactionItemId: 'cti-abc',
+      })
 
       expect(post).toHaveBeenCalledWith({
         body: {
@@ -130,7 +153,10 @@ describe('BriqpaySessionService', () => {
       const cart = cartWithFields({ 'briqpay-session-id': 'sess-1', 'briqpay-checkout-transaction-item-id': 'cti-abc' })
       jest.mocked(mockCtCartService.getCart).mockResolvedValue(cart)
 
-      await sessionService.updateCartWithBriqpaySession(cart, 'sess-1', undefined, 'cti-abc')
+      await sessionService.updateCTCartWithBriqpaySession(cart, {
+        briqpaySessionId: 'sess-1',
+        checkoutTransactionItemId: 'cti-abc',
+      })
 
       expect(post).not.toHaveBeenCalled()
       // Snapshot already in sync: the no-op path must not spend a getCart round trip either
@@ -142,7 +168,11 @@ describe('BriqpaySessionService', () => {
       const bareCart: Cart = { ...getCart(), version: 1, custom: undefined }
       jest.mocked(mockCtCartService.getCart).mockResolvedValue(bareCart)
 
-      await sessionService.updateCartWithBriqpaySession(bareCart, 'sess-1', '80087238', 'cti-abc')
+      await sessionService.updateCTCartWithBriqpaySession(bareCart, {
+        briqpaySessionId: 'sess-1',
+        futureOrderNumber: '80087238',
+        checkoutTransactionItemId: 'cti-abc',
+      })
 
       expect(post).toHaveBeenCalledTimes(2)
       expect(post).toHaveBeenNthCalledWith(1, {
@@ -165,7 +195,7 @@ describe('BriqpaySessionService', () => {
     })
   })
 
-  describe('updateCartWithBriqpaySession - 409 ConcurrentModification retry', () => {
+  describe('updateCTCartWithBriqpaySession - 409 ConcurrentModification retry', () => {
     const conflictError = () => Object.assign(new Error('conflict'), { statusCode: 409 })
 
     test('re-fetches the cart and retries with the fresh version when CT rejects the write with 409', async () => {
@@ -179,7 +209,10 @@ describe('BriqpaySessionService', () => {
         .mockResolvedValueOnce({ body: { version: 126 } })
       const { post } = buildApiRootWithExecute(execute)
 
-      await sessionService.updateCartWithBriqpaySession(staleCart, 'sess-1', undefined, 'cti-abc')
+      await sessionService.updateCTCartWithBriqpaySession(staleCart, {
+        briqpaySessionId: 'sess-1',
+        checkoutTransactionItemId: 'cti-abc',
+      })
 
       expect(post).toHaveBeenCalledTimes(2)
       expect(post).toHaveBeenLastCalledWith({
@@ -202,7 +235,10 @@ describe('BriqpaySessionService', () => {
       const { post } = buildApiRootWithExecute(execute)
 
       await expect(
-        sessionService.updateCartWithBriqpaySession(staleCart, 'sess-1', undefined, 'cti-abc'),
+        sessionService.updateCTCartWithBriqpaySession(staleCart, {
+          briqpaySessionId: 'sess-1',
+          checkoutTransactionItemId: 'cti-abc',
+        }),
       ).resolves.toBeUndefined()
 
       expect(post).toHaveBeenCalledTimes(1)
@@ -219,7 +255,10 @@ describe('BriqpaySessionService', () => {
         .mockResolvedValueOnce({ body: { version: 6 } })
       const { post } = buildApiRootWithExecute(execute)
 
-      await sessionService.updateCartWithBriqpaySession(bareCart, 'sess-1', undefined, 'cti-abc')
+      await sessionService.updateCTCartWithBriqpaySession(bareCart, {
+        briqpaySessionId: 'sess-1',
+        checkoutTransactionItemId: 'cti-abc',
+      })
 
       expect(post).toHaveBeenCalledTimes(2)
       expect(post).toHaveBeenNthCalledWith(1, {
@@ -252,7 +291,11 @@ describe('BriqpaySessionService', () => {
         .mockResolvedValueOnce({ body: { version: 126 } })
       const { post } = buildApiRootWithExecute(execute)
 
-      await sessionService.updateCartWithBriqpaySession(staleCart, 'sess-1', '80087238', 'cti-abc')
+      await sessionService.updateCTCartWithBriqpaySession(staleCart, {
+        briqpaySessionId: 'sess-1',
+        futureOrderNumber: '80087238',
+        checkoutTransactionItemId: 'cti-abc',
+      })
 
       expect(post).toHaveBeenCalledTimes(2)
       expect(post).toHaveBeenNthCalledWith(1, {
@@ -286,7 +329,10 @@ describe('BriqpaySessionService', () => {
       const { post } = buildApiRootWithExecute(execute)
 
       await expect(
-        sessionService.updateCartWithBriqpaySession(activeCart, 'sess-1', undefined, 'cti-abc'),
+        sessionService.updateCTCartWithBriqpaySession(activeCart, {
+          briqpaySessionId: 'sess-1',
+          checkoutTransactionItemId: 'cti-abc',
+        }),
       ).resolves.toBeUndefined()
 
       expect(post).toHaveBeenCalledTimes(1)
@@ -307,7 +353,10 @@ describe('BriqpaySessionService', () => {
       buildApiRootWithExecute(execute)
 
       await expect(
-        sessionService.updateCartWithBriqpaySession(cartWithOldSession, 'sess-new', undefined, 'cti-abc'),
+        sessionService.updateCTCartWithBriqpaySession(cartWithOldSession, {
+          briqpaySessionId: 'sess-new',
+          checkoutTransactionItemId: 'cti-abc',
+        }),
       ).rejects.toThrow('The cart is not in active state.')
     })
 
@@ -324,7 +373,10 @@ describe('BriqpaySessionService', () => {
       buildApiRootWithExecute(execute)
 
       await expect(
-        sessionService.updateCartWithBriqpaySession(activeCart, 'sess-1', undefined, 'cti-abc'),
+        sessionService.updateCTCartWithBriqpaySession(activeCart, {
+          briqpaySessionId: 'sess-1',
+          checkoutTransactionItemId: 'cti-abc',
+        }),
       ).rejects.toThrow('The cart is not in active state.')
     })
 
@@ -341,7 +393,10 @@ describe('BriqpaySessionService', () => {
       const { post } = buildApiRootWithExecute(execute)
 
       await expect(
-        sessionService.updateCartWithBriqpaySession(activeCart, 'sess-1', undefined, 'cti-abc'),
+        sessionService.updateCTCartWithBriqpaySession(activeCart, {
+          briqpaySessionId: 'sess-1',
+          checkoutTransactionItemId: 'cti-abc',
+        }),
       ).rejects.toThrow('Field definition')
 
       expect(post).toHaveBeenCalledTimes(1)
@@ -356,7 +411,10 @@ describe('BriqpaySessionService', () => {
       const { post } = buildApiRootWithExecute(execute)
 
       await expect(
-        sessionService.updateCartWithBriqpaySession(cartWithFields({}, 1), 'sess-1', undefined, 'cti-abc'),
+        sessionService.updateCTCartWithBriqpaySession(cartWithFields({}, 1), {
+          briqpaySessionId: 'sess-1',
+          checkoutTransactionItemId: 'cti-abc',
+        }),
       ).rejects.toThrow('cart not found')
 
       expect(post).not.toHaveBeenCalled()
@@ -377,7 +435,10 @@ describe('BriqpaySessionService', () => {
       buildApiRootWithExecute(execute)
 
       await expect(
-        sessionService.updateCartWithBriqpaySession(activeCart, 'sess-1', undefined, 'cti-abc'),
+        sessionService.updateCTCartWithBriqpaySession(activeCart, {
+          briqpaySessionId: 'sess-1',
+          checkoutTransactionItemId: 'cti-abc',
+        }),
       ).rejects.toThrow('The cart is not in active state.')
     })
 
@@ -390,20 +451,121 @@ describe('BriqpaySessionService', () => {
         .mockRejectedValue(Object.assign(new Error('bad request'), { statusCode: 400 }))
       const { post } = buildApiRootWithExecute(execute)
 
-      await expect(sessionService.updateCartWithBriqpaySession(cart, 'sess-1', undefined, 'cti-abc')).rejects.toThrow(
-        'bad request',
-      )
+      await expect(
+        sessionService.updateCTCartWithBriqpaySession(cart, {
+          briqpaySessionId: 'sess-1',
+          checkoutTransactionItemId: 'cti-abc',
+        }),
+      ).rejects.toThrow('bad request')
 
       expect(post).toHaveBeenCalledTimes(1)
     })
   })
 
-  describe('createOrUpdateBriqpaySession', () => {
-    test('should create new session when no existing session', async () => {
-      const mockCart = getCart()
-      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
+  describe('updateCTCartWithBriqpaySession - synced payload hash', () => {
+    const metadata = { briqpaySessionId: 'sess-1', syncedPayloadHash: 'hash-abc' }
 
-      const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
+    test('writes the hash when it differs from the stored one', async () => {
+      const cart = cartWithFields({ 'briqpay-session-id': 'sess-1', 'briqpay-synced-payload-hash': 'hash-old' })
+      const { post } = buildCapturingApiRoot()
+      jest.mocked(mockCtCartService.getCart).mockResolvedValue(cart)
+
+      await sessionService.updateCTCartWithBriqpaySession(cart, metadata)
+
+      expect(post).toHaveBeenCalledWith({
+        body: {
+          version: cart.version,
+          actions: [{ action: 'setCustomField', name: 'briqpay-synced-payload-hash', value: 'hash-abc' }],
+        },
+      })
+    })
+
+    test('skips the write entirely when the stored hash already matches', async () => {
+      const cart = cartWithFields({ 'briqpay-session-id': 'sess-1', 'briqpay-synced-payload-hash': 'hash-abc' })
+      const { post } = buildCapturingApiRoot()
+
+      await sessionService.updateCTCartWithBriqpaySession(cart, metadata)
+
+      expect(post).not.toHaveBeenCalled()
+      expect(mockCtCartService.getCart).not.toHaveBeenCalled()
+    })
+
+    test('leaves the stored hash untouched when the caller passes none', async () => {
+      const cart = cartWithFields({ 'briqpay-session-id': 'sess-1', 'briqpay-synced-payload-hash': 'hash-old' })
+      const { post } = buildCapturingApiRoot()
+
+      // A session that could not be synced (completed/initializing) reports no hash, and
+      // clearing the marker would claim Briqpay holds a payload it does not.
+      await sessionService.updateCTCartWithBriqpaySession(cart, { briqpaySessionId: 'sess-1' })
+
+      expect(post).not.toHaveBeenCalled()
+    })
+
+    test('retries without the hash when the field is not yet on the cart custom type', async () => {
+      const cart = cartWithFields({ 'briqpay-session-id': 'sess-old' })
+      jest.mocked(mockCtCartService.getCart).mockResolvedValue(cart)
+
+      // postDeploy adds the field after the new version already serves traffic; a 400 here
+      // must not take checkout down for what is only an optimisation.
+      const execute = jest
+        .fn<() => Promise<{ body: { version: number } }>>()
+        .mockRejectedValueOnce(
+          Object.assign(new Error("Field definition for 'briqpay-synced-payload-hash' does not exist"), {
+            statusCode: 400,
+            code: 'InvalidOperation',
+          }),
+        )
+        .mockResolvedValue({ body: { version: 42 } })
+      const { post } = buildApiRootWithExecute(execute)
+
+      await sessionService.updateCTCartWithBriqpaySession(cart, metadata)
+
+      expect(post).toHaveBeenLastCalledWith({
+        body: {
+          version: cart.version,
+          actions: [{ action: 'setCustomField', name: 'briqpay-session-id', value: 'sess-1' }],
+        },
+      })
+      expect(appLogger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ field: 'briqpay-synced-payload-hash' }),
+        expect.stringContaining('post-deploy'),
+      )
+    })
+
+    test('propagates the original error when the retry without the hash also fails', async () => {
+      const cart = cartWithFields({ 'briqpay-session-id': 'sess-old' })
+      jest.mocked(mockCtCartService.getCart).mockResolvedValue(cart)
+
+      const execute = jest
+        .fn<() => Promise<{ body: { version: number } }>>()
+        .mockRejectedValue(
+          Object.assign(new Error('The cart is not in active state.'), { statusCode: 400, code: 'InvalidOperation' }),
+        )
+      buildApiRootWithExecute(execute)
+
+      await expect(sessionService.updateCTCartWithBriqpaySession(cart, metadata)).rejects.toThrow(
+        'The cart is not in active state.',
+      )
+    })
+  })
+
+  describe('resolveBriqpaySession', () => {
+    const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
+
+    const cartWithSession = (fields: Record<string, string> = {}) =>
+      ({
+        ...getCart(),
+        locale: 'en',
+        custom: {
+          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
+          fields: { 'briqpay-session-id': 'existing-session-id', ...fields },
+        },
+      }) as unknown as Cart
+
+    test('creates a session when the cart has none, without building or fetching one', async () => {
+      const mockCart = getCart()
+
+      const result = await sessionService.resolveBriqpaySession(mockCart, amountPlanned, 'localhost')
 
       expect(mockedBriqpay.createSession).toHaveBeenCalledWith(
         expect.objectContaining({ id: mockCart.id }),
@@ -411,456 +573,170 @@ describe('BriqpaySessionService', () => {
         'localhost',
         undefined,
       )
-      expect(result.sessionId).toBe('new-session-id')
+      expect(mockedBriqpay.buildSessionUpdateRequest).not.toHaveBeenCalled()
+      expect(mockedBriqpay.getSession).not.toHaveBeenCalled()
+      expect(mockedBriqpay.updateSession).not.toHaveBeenCalled()
+      expect(result.session.sessionId).toBe('new-session-id')
+      expect(result.syncedPayloadHash).toBe(CREATED_HASH)
     })
 
-    test('should retrieve existing session and compare cart', async () => {
-      const baseCart = getCart()
-      const mockCart = {
-        ...baseCart,
-        locale: 'en',
-        custom: {
-          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { 'briqpay-session-id': 'existing-session-id' },
-        },
-      } as unknown as Cart
+    test('only GETs when the stored hash matches - the whole point of the marker', async () => {
+      const cart = cartWithSession({ 'briqpay-synced-payload-hash': BUILT_HASH })
 
-      mockedBriqpay.getSession.mockResolvedValue({
-        sessionId: 'existing-session-id',
-        htmlSnippet: '<div>Briqpay</div>',
-        data: {
-          order: {
-            amountIncVat: 119000,
-            currency: 'EUR',
-            cart: [],
-          },
-        },
-      } as never)
+      const result = await sessionService.resolveBriqpaySession(cart, amountPlanned, 'localhost')
 
-      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
-
-      const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
-
+      // Exactly one call: the amount check reads this same response rather than fetching again.
+      expect(mockedBriqpay.getSession).toHaveBeenCalledTimes(1)
       expect(mockedBriqpay.getSession).toHaveBeenCalledWith('existing-session-id')
-      expect(result.sessionId).toBeDefined()
+      expect(mockedBriqpay.updateSession).not.toHaveBeenCalled()
+      expect(result.session.sessionId).toBe('existing-session-id')
+      expect(result.syncedPayloadHash).toBe(BUILT_HASH)
     })
 
-    test('should update session when cart amount differs', async () => {
-      const baseCart = getCart()
-      const mockCart = {
-        ...baseCart,
-        locale: 'en',
-        custom: {
-          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { 'briqpay-session-id': 'existing-session-id' },
-        },
-      } as unknown as Cart
+    test('updates when the hash is absent, which is every cart predating the field', async () => {
+      const result = await sessionService.resolveBriqpaySession(cartWithSession(), amountPlanned, 'localhost')
 
-      mockedBriqpay.getSession.mockResolvedValue({
-        sessionId: 'existing-session-id',
-        htmlSnippet: '<div>Briqpay</div>',
-        data: { order: { amountIncVat: 100000, currency: 'EUR', cart: [] } },
-      } as never)
+      expect(mockedBriqpay.updateSession).toHaveBeenCalledWith(
+        'existing-session-id',
+        expect.objectContaining({ hash: BUILT_HASH }),
+      )
+      expect(result.session.sessionId).toBe('updated-session-id')
+      expect(result.syncedPayloadHash).toBe(BUILT_HASH)
+    })
 
-      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
+    test('updates when the stored hash is stale', async () => {
+      const cart = cartWithSession({ 'briqpay-synced-payload-hash': 'hash-of-an-older-cart' })
 
-      const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
+      await sessionService.resolveBriqpaySession(cart, amountPlanned, 'localhost')
 
       expect(mockedBriqpay.updateSession).toHaveBeenCalled()
-      expect(result.sessionId).toBe('updated-session-id')
     })
 
-    test('should create new session when update fails', async () => {
-      const baseCart = getCart()
-      const mockCart = {
-        ...baseCart,
-        locale: 'en',
+    test('treats a non-string stored hash as stale rather than throwing', async () => {
+      const cart = {
+        ...getCart(),
         custom: {
           type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { 'briqpay-session-id': 'existing-session-id' },
+          fields: { 'briqpay-session-id': 'existing-session-id', 'briqpay-synced-payload-hash': 42 },
         },
       } as unknown as Cart
 
+      await sessionService.resolveBriqpaySession(cart, amountPlanned, 'localhost')
+
+      expect(mockedBriqpay.updateSession).toHaveBeenCalled()
+    })
+
+    test('re-syncs when the marker claims in-sync but Briqpay holds different amounts', async () => {
+      const cart = cartWithSession({ 'briqpay-synced-payload-hash': BUILT_HASH })
+      // Concurrent /config calls can leave the marker describing a payload Briqpay is
+      // not holding, so the GET response - not the marker - decides.
       mockedBriqpay.getSession.mockResolvedValue({
         sessionId: 'existing-session-id',
-        data: { order: { amountIncVat: 100000, currency: 'EUR', cart: [] } },
+        htmlSnippet: '<div>Briqpay</div>',
+        data: { order: { currency: 'EUR', amountIncVat: 100000, amountExVat: 90000, cart: [] } },
       } as never)
 
-      mockedBriqpay.updateSession.mockRejectedValue(new Error('Update failed'))
+      const result = await sessionService.resolveBriqpaySession(cart, amountPlanned, 'localhost')
 
-      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
-
-      const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
-
-      expect(mockedBriqpay.createSession).toHaveBeenCalled()
-      expect(result.sessionId).toBe('new-session-id')
+      expect(mockedBriqpay.updateSession).toHaveBeenCalled()
+      expect(result.session.sessionId).toBe('updated-session-id')
     })
 
-    test('should throw SessionError when all session operations fail', async () => {
-      const mockCart = getCart()
-      mockedBriqpay.createSession.mockRejectedValue(new Error('Create failed'))
+    test('creates a replacement when an update reports the session no longer exists', async () => {
+      const cart = cartWithSession()
+      mockedBriqpay.updateSession.mockRejectedValue(new SessionNotFoundError('session gone'))
 
-      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
+      const result = await sessionService.resolveBriqpaySession(cart, amountPlanned, 'localhost', 'ord-1')
 
-      await expect(sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')).rejects.toThrow(
-        'Failed to create Briqpay payment session',
+      expect(mockedBriqpay.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ id: cart.id }),
+        amountPlanned,
+        'localhost',
+        'ord-1',
       )
+      expect(result.session.sessionId).toBe('new-session-id')
     })
 
-    test('should create new session when getSession fails for existing session', async () => {
-      const baseCart = getCart()
-      const mockCart = {
-        ...baseCart,
-        custom: {
-          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { 'briqpay-session-id': 'existing-session-id' },
-        },
-      } as unknown as Cart
+    test('creates a replacement when the in-sync GET reports the session no longer exists', async () => {
+      const cart = cartWithSession({ 'briqpay-synced-payload-hash': BUILT_HASH })
+      mockedBriqpay.getSession.mockRejectedValue(new SessionNotFoundError('session gone'))
 
-      mockedBriqpay.getSession.mockRejectedValue(new Error('Session not found'))
-
-      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
-
-      const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
+      const result = await sessionService.resolveBriqpaySession(cart, amountPlanned, 'localhost')
 
       expect(mockedBriqpay.createSession).toHaveBeenCalled()
-      expect(result.sessionId).toBe('new-session-id')
+      expect(result.session.sessionId).toBe('new-session-id')
+    })
+
+    test('returns a completed session untouched and records no hash', async () => {
+      const cart = cartWithSession()
+      mockedBriqpay.updateSession.mockRejectedValue(new SessionAlreadyCompletedError('already completed'))
+      mockedBriqpay.getSession.mockResolvedValue({
+        sessionId: 'existing-session-id',
+        htmlSnippet: '<div>Briqpay</div>',
+        moduleStatus: { payment: { orderStatus: 'order_pending' } },
+        data: { order: { currency: 'EUR', amountIncVat: 119000, amountExVat: 100000, cart: [] } },
+      } as never)
+
+      const result = await sessionService.resolveBriqpaySession(cart, amountPlanned, 'localhost')
+
+      expect(mockedBriqpay.createSession).not.toHaveBeenCalled()
+      expect(result.session.sessionId).toBe('existing-session-id')
+      // Undefined leaves the stored marker alone: the payload was never applied.
+      expect(result.syncedPayloadHash).toBeUndefined()
+    })
+
+    test('returns an initializing session as-is so the widget still renders', async () => {
+      const cart = cartWithSession()
+      mockedBriqpay.updateSession.mockRejectedValue(new SessionInitializationPendingError('still initializing'))
+
+      const result = await sessionService.resolveBriqpaySession(cart, amountPlanned, 'localhost')
+
+      expect(result.session.sessionId).toBe('existing-session-id')
+      expect(result.syncedPayloadHash).toBeUndefined()
+      expect(mockedBriqpay.createSession).not.toHaveBeenCalled()
+    })
+
+    test('propagates a generic update failure instead of creating a replacement', async () => {
+      mockedBriqpay.updateSession.mockRejectedValue(new Error('Briqpay update exploded'))
+
+      await expect(sessionService.resolveBriqpaySession(cartWithSession(), amountPlanned, 'localhost')).rejects.toThrow(
+        'Briqpay update exploded',
+      )
+
+      expect(mockedBriqpay.createSession).not.toHaveBeenCalled()
+    })
+
+    test('propagates a generic GET failure on the in-sync path', async () => {
+      const cart = cartWithSession({ 'briqpay-synced-payload-hash': BUILT_HASH })
+      mockedBriqpay.getSession.mockRejectedValue(new Error('Briqpay API error: {"error":{"code":"INVALID_DATA"}}'))
+
+      await expect(sessionService.resolveBriqpaySession(cart, amountPlanned, 'localhost')).rejects.toThrow(
+        'Briqpay API error',
+      )
+
+      expect(mockedBriqpay.createSession).not.toHaveBeenCalled()
     })
   })
 
-  describe('compareCartWithSession - edge cases', () => {
-    test('should trigger update when cart item count differs', async () => {
-      const baseCart = getCart()
-      const mockCart = {
-        ...baseCart,
-        locale: 'en',
-        custom: {
-          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { 'briqpay-session-id': 'existing-session-id' },
+  describe('syncCTCartToBriqpaySession', () => {
+    test('updates Briqpay and records the resulting hash on the cart', async () => {
+      const cart = cartWithFields({ 'briqpay-session-id': 'sess-1' })
+      const { post } = buildCapturingApiRoot()
+      jest.mocked(mockCtCartService.getCart).mockResolvedValue(cart)
+
+      await sessionService.syncCTCartToBriqpaySession(cart, 'sess-1', {
+        centAmount: 119000,
+        currencyCode: 'EUR',
+        fractionDigits: 2,
+      })
+
+      expect(mockedBriqpay.updateSession).toHaveBeenCalledWith('sess-1', expect.objectContaining({ hash: BUILT_HASH }))
+      expect(post).toHaveBeenCalledWith({
+        body: {
+          version: cart.version,
+          actions: [{ action: 'setCustomField', name: 'briqpay-synced-payload-hash', value: BUILT_HASH }],
         },
-      } as unknown as Cart
-
-      mockedBriqpay.getSession.mockResolvedValue({
-        sessionId: 'existing-session-id',
-        data: {
-          order: {
-            amountIncVat: 119000,
-            currency: 'EUR',
-            cart: [],
-          },
-        },
-      } as never)
-
-      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
-
-      await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
-
-      expect(mockedBriqpay.updateSession).toHaveBeenCalled()
-    })
-
-    test('should handle cart with missing locale by falling back to en', async () => {
-      const baseCart = getCart()
-      const mockCart = {
-        ...baseCart,
-        locale: undefined,
-        custom: {
-          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { 'briqpay-session-id': 'existing-session-id' },
-        },
-      } as unknown as Cart
-
-      mockedBriqpay.getSession.mockResolvedValue({
-        sessionId: 'existing-session-id',
-        htmlSnippet: '<div>Briqpay</div>',
-        data: {
-          order: {
-            amountIncVat: 119000,
-            currency: 'EUR',
-            cart: [{ name: 'item', reference: 'ref' }],
-          },
-        },
-      } as never)
-
-      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
-
-      // Should NOT throw - falls back to 'en' locale and proceeds with comparison.
-      // Comparison may fail on item names (test mock data mismatch) but that's ok -
-      // the key assertion is that it doesn't throw a ValidationError.
-      const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
-      expect(result.sessionId).toBeDefined()
-    })
-
-    test('should NOT update session when cart including custom line item matches', async () => {
-      const baseCart = getCart()
-      const mockCart = {
-        ...baseCart,
-        locale: 'en',
-        custom: {
-          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { 'briqpay-session-id': 'existing-session-id' },
-        },
-      } as unknown as Cart
-
-      mockedBriqpay.getSession.mockResolvedValue({
-        sessionId: 'existing-session-id',
-        htmlSnippet: '<div>Briqpay</div>',
-        data: {
-          order: {
-            amountIncVat: 119000,
-            currency: 'EUR',
-            cart: [
-              {
-                productType: 'physical',
-                reference: baseCart.lineItems[0].id,
-                name: 'lineitem-name-1',
-                quantity: 1,
-                unitPrice: 119000,
-              },
-              {
-                productType: 'physical',
-                reference: 'customLineItem-id-1',
-                name: 'customLineItem-name-1',
-                quantity: 1,
-                unitPrice: 119000,
-                taxRate: 0,
-              },
-            ],
-          },
-        },
-      } as never)
-
-      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
-
-      const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
-
-      expect(mockedBriqpay.updateSession).not.toHaveBeenCalled()
-      expect(mockedBriqpay.createSession).not.toHaveBeenCalled()
-      expect(result.sessionId).toBe('existing-session-id')
-    })
-
-    test('should trigger update when custom line item is missing from session', async () => {
-      const baseCart = getCart()
-      const mockCart = {
-        ...baseCart,
-        locale: 'en',
-        custom: {
-          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { 'briqpay-session-id': 'existing-session-id' },
-        },
-      } as unknown as Cart
-
-      mockedBriqpay.getSession.mockResolvedValue({
-        sessionId: 'existing-session-id',
-        data: {
-          order: {
-            amountIncVat: 119000,
-            currency: 'EUR',
-            cart: [
-              {
-                productType: 'physical',
-                reference: baseCart.lineItems[0].id,
-                name: 'lineitem-name-1',
-                quantity: 1,
-                unitPrice: 119000,
-              },
-            ],
-          },
-        },
-      } as never)
-
-      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
-
-      await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
-
-      expect(mockedBriqpay.updateSession).toHaveBeenCalled()
-    })
-
-    test('should trigger update when custom line item price differs from session', async () => {
-      const baseCart = getCart()
-      const mockCart = {
-        ...baseCart,
-        locale: 'en',
-        custom: {
-          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { 'briqpay-session-id': 'existing-session-id' },
-        },
-      } as unknown as Cart
-
-      mockedBriqpay.getSession.mockResolvedValue({
-        sessionId: 'existing-session-id',
-        data: {
-          order: {
-            amountIncVat: 119000,
-            currency: 'EUR',
-            cart: [
-              {
-                productType: 'physical',
-                reference: baseCart.lineItems[0].id,
-                name: 'lineitem-name-1',
-                quantity: 1,
-                unitPrice: 119000,
-              },
-              {
-                productType: 'physical',
-                reference: 'customLineItem-id-1',
-                name: 'customLineItem-name-1',
-                quantity: 1,
-                unitPrice: 100000, // stale price in session; cart says 119000
-                taxRate: 0,
-              },
-            ],
-          },
-        },
-      } as never)
-
-      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
-
-      await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
-
-      expect(mockedBriqpay.updateSession).toHaveBeenCalled()
-    })
-
-    test('should exclude negative custom line items from session comparison', async () => {
-      const baseCart = getCart()
-      const negativeCustomLineItem = {
-        ...baseCart.customLineItems[0],
-        money: { ...baseCart.customLineItems[0].money, centAmount: -2503 },
-        totalPrice: { ...baseCart.customLineItems[0].totalPrice, centAmount: -2503 },
-      }
-      const mockCart = {
-        ...baseCart,
-        locale: 'en',
-        customLineItems: [negativeCustomLineItem],
-        custom: {
-          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { 'briqpay-session-id': 'existing-session-id' },
-        },
-      } as unknown as Cart
-
-      // Session cart holds the mapped discount line for the negative custom line item;
-      // both sides must filter it out so the comparison still matches.
-      mockedBriqpay.getSession.mockResolvedValue({
-        sessionId: 'existing-session-id',
-        htmlSnippet: '<div>Briqpay</div>',
-        data: {
-          order: {
-            amountIncVat: 119000,
-            currency: 'EUR',
-            cart: [
-              {
-                productType: 'physical',
-                reference: baseCart.lineItems[0].id,
-                name: 'lineitem-name-1',
-                quantity: 1,
-                unitPrice: 119000,
-              },
-              {
-                productType: 'discount',
-                reference: 'customLineItem-id-1',
-                name: 'customLineItem-name-1',
-                quantity: 1,
-                unitPrice: -2503,
-                taxRate: 0,
-              },
-            ],
-          },
-        },
-      } as never)
-
-      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
-
-      const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
-
-      expect(mockedBriqpay.updateSession).not.toHaveBeenCalled()
-      expect(result.sessionId).toBe('existing-session-id')
-    })
-
-    test('should trigger update when cart item name is missing in locale', async () => {
-      const baseCart = getCart()
-      const mockCart = {
-        ...baseCart,
-        locale: 'de',
-        custom: {
-          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { 'briqpay-session-id': 'existing-session-id' },
-        },
-      } as unknown as Cart
-
-      mockedBriqpay.getSession.mockResolvedValue({
-        sessionId: 'existing-session-id',
-        data: {
-          order: {
-            amountIncVat: 119000,
-            currency: 'EUR',
-            cart: [
-              {
-                productType: 'physical',
-                reference: baseCart.lineItems[0].id,
-                name: 'lineitem-name-1',
-                quantity: 1,
-              },
-            ],
-          },
-        },
-      } as never)
-
-      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
-
-      await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
-
-      expect(mockedBriqpay.updateSession).toHaveBeenCalled()
-    })
-
-    test('should handle sales_tax product type in session cart', async () => {
-      const baseCart = getCart()
-      const mockCart = {
-        ...baseCart,
-        locale: 'en',
-        custom: {
-          type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-          fields: { 'briqpay-session-id': 'existing-session-id' },
-        },
-        lineItems: [
-          {
-            ...baseCart.lineItems[0],
-            taxedPrice: {
-              totalNet: { centAmount: 100000, currencyCode: 'EUR', type: 'centPrecision' as const, fractionDigits: 2 },
-              totalGross: {
-                centAmount: 119000,
-                currencyCode: 'EUR',
-                type: 'centPrecision' as const,
-                fractionDigits: 2,
-              },
-              totalTax: { centAmount: 19000, currencyCode: 'EUR', type: 'centPrecision' as const, fractionDigits: 2 },
-              taxPortions: [],
-            },
-          },
-        ],
-      } as unknown as Cart
-
-      mockedBriqpay.getSession.mockResolvedValue({
-        sessionId: 'existing-session-id',
-        data: {
-          order: {
-            amountIncVat: 119000,
-            currency: 'EUR',
-            cart: [
-              {
-                productType: 'sales_tax',
-                reference: baseCart.lineItems[0].id,
-                name: 'lineitem-name-1',
-                totalTaxAmount: 19000,
-              },
-            ],
-          },
-        },
-      } as never)
-
-      const amountPlanned = { centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 }
-
-      const result = await sessionService.createOrUpdateBriqpaySession(mockCart, amountPlanned, 'localhost')
-
-      expect(result.sessionId).toBeDefined()
+      })
     })
   })
 })

@@ -41,8 +41,8 @@ export default [
       'no-console': ['error'],
       'no-unused-vars': 'off',
       'no-irregular-whitespace': 'warn',
-      'unused-imports/no-unused-imports': 'error',
-
+      // No unused-imports/no-unused-imports: its --fix auto-deletes imports mid-edit;
+      // @typescript-eslint/no-unused-vars below still fails lint on unused imports.
       'unused-imports/no-unused-vars': [
         'warn',
         {
@@ -117,10 +117,7 @@ export default [
     },
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
-      '@typescript-eslint/no-unused-vars': [
-        'error',
-        { argsIgnorePattern: '^_', ignoreRestSiblings: true },
-      ],
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', ignoreRestSiblings: true }],
     },
   },
 ]

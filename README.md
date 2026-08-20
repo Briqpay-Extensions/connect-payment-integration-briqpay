@@ -5,7 +5,6 @@ A comprehensive commercetools Connect payment integration connector for Briqpay,
 - [Features](#features)
 - [How to Install](#how-to-install)
 - [Overview](#overview)
-- [Prerequisites](#prerequisites)
 - [Architecture](#architecture-overview)
 - [Development Guide](#development-guide)
 - [Testing](#testing)
@@ -108,79 +107,28 @@ client_credentials&scope=manage_orders:{projectKey} view_states:{projectKey} vie
    - `BRIQPAY_FUTURE_ORDER_NUMBER_KEY` - Default: `briqpay-future-order-number` (cart custom field where the connector persists the intended order number on first Briqpay session creation, so the merchant backend can read it back on subsequent checkout entries — see [Future Order Number Persistence](#future-order-number-persistence))
    - `BRIQPAY_CHECKOUT_TRANSACTION_ITEM_ID_KEY` - Default: `briqpay-checkout-transaction-item-id` (cart custom field where the connector persists the Checkout transaction-item id at first session creation, so the session-less webhook can create a correctly-tagged payment and let Checkout auto-create the order when the buyer never returns — see [Webhook-Driven Payment & Order Recovery](#webhook-driven-payment--order-recovery))
    - `BRIQPAY_VARIANT_ID_KEY` - Default: `briqpay-variant-id` (cart custom field the **merchant** sets before checkout renders to select the Briqpay checkout variant for that cart; read per session creation and forwarded as `product.variantId` — see [Per-Cart Variant Selection](#per-cart-variant-selection))
+   - `BRIQPAY_SYNCED_PAYLOAD_HASH_KEY` - Default: `briqpay-synced-payload-hash` (cart custom field where the connector records a hash of the payload the Briqpay session already holds, letting the checkout render skip an update Briqpay would treat as a no-op; purely an optimisation — with the field absent the connector updates on every render, as before)
 
    > **Note**: The connector dynamically extends existing custom types for the `order` resource type instead of always creating separate types. If field name conflicts exist, Briqpay fields are prefixed with `briqpay-` to avoid data loss.
 
-6. **Deploy on Connect**
+6. **Optionally set CORS and the decision safeguard**:
+   - `ALLOWED_ORIGINS` - Comma-separated list of allowed CORS origins; supports wildcard patterns for subdomains (e.g. `https://your-store.com,https://*.preview.your-store.com`)
+   - `BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK` - Leave unset (recommended). Set to exactly `true` to disable the server-side check that verifies the Briqpay session amount and currency against the cart before forwarding a buyer `allow` decision. Any other value is ignored and the check stays enabled.
 
-7. Once deployment is successful, store URLs for Enabler and Processor applications as `VITE_PROCESSOR_URL` in your frontend configuration
+7. **Deploy on Connect**
 
-8. Follow [Usage Guide](#enabler-usage) to integrate the connector in your frontend
+8. Once deployment is successful, store URLs for Enabler and Processor applications as `VITE_PROCESSOR_URL` in your frontend configuration
+
+9. Follow [Usage Guide](#enabler-usage) to integrate the connector in your frontend
+
+The five steps above mirror `connect.yaml`, the connector's deployment spec.
 
 ## Overview
 
 The Briqpay integration connector contains two modules:
 
-- **Enabler**: Acts as a wrapper implementation in which frontend components from Briqpay are embedded. It gives control to the checkout product on when and how to load the connector frontend based on business configuration. The connector library can be loaded directly on the frontend instead of communicating with Briqpay platform from the frontend.
-
-- **Processor**: Acts as backend services which is middleware to integrate with Briqpay platform. It is mainly responsible for managing payment sessions initialized in Briqpay platform and updating payment entities in commercetools. The request context, commercetools checkout sessions, and other tools necessary to transact are all maintained inside this module.
-
-## Prerequisites
-
-#### 1. commercetools API Client
-
-Create an API client responsible for payment management in your commercetools project. Details of the API client are taken as input as environment variables/configuration for connect such as `CTP_PROJECT_KEY`, `CTP_CLIENT_ID`, `CTP_CLIENT_SECRET`. The API client should have the following scopes:
-
-- **Manage**:
-  - `manage_orders`
-  - `manage_sessions` (Manage Checkout sessions)
-  - `manage_types`
-  - `manage_payments`
-  - `manage_checkout_transactions`
-  - `manage_checkout_payment_intents`
-  - `manage_key_value_documents`
-- **View**:
-  - `view_key_value_documents` (View Custom Objects)
-  - `view_states`
-  - `view_types`
-  - `view_product_selections`
-  - `view_attribute_groups`
-  - `view_shopping_lists`
-  - `view_shipping_methods`
-  - `view_categories`
-  - `view_discount_codes`
-  - `view_products`
-  - `view_cart_discounts`
-  - `view_orders`
-  - `view_stores`
-  - `view_tax_categories`
-  - `view_order_edits`
-
-<img src="https://cdn.briqpay.com/static/images/api-client-ct.png" alt="commercetools API Client Scopes" style="width: 50%">
-
-#### 2. commercetools Platform URLs
-
-Various URLs from commercetools platform are required:
-
-- `CTP_API_URL` - commercetools API URL
-- `CTP_AUTH_URL` - commercetools Auth URL
-- `CTP_SESSION_URL` - Session API URL
-- `CTP_JWKS_URL` - JWKs URL for JWT validation
-- `CTP_JWT_ISSUER` - JWT Issuer URL
-
-#### 3. Briqpay API Credentials
-
-Obtain API credentials from Briqpay:
-
-- `BRIQPAY_USERNAME` - Your Briqpay API username
-- `BRIQPAY_SECRET` - Your Briqpay API secret
-- `BRIQPAY_BASE_URL` - Briqpay API URL (staging or production)
-
-#### 4. Merchant URLs
-
-Configure your merchant URLs:
-
-- `BRIQPAY_TERMS_URL` - URL to your terms and conditions page
+- **Enabler**: the frontend wrapper that embeds Briqpay's payment widget.
+- **Processor**: the backend service that manages Briqpay payment sessions and updates commercetools payment/order data.
 
 ## 🏗️ Architecture Overview
 
@@ -352,7 +300,7 @@ The connector activates the decision step (`modules.config.payment.decision.enab
    4. The `enabler` resumes the widget with the result.
 2. **`session_complete`** — fired once Briqpay is ready to finalize, either right after an approved decision or directly if no decision was needed.
    1. The `enabler` calls `/payments` on the `processor`.
-   2. The `processor` creates the payment in commercetools with the authorization transaction.
+   2. The `processor` creates the commercetools payment, deriving the authorization state from the Briqpay session.
    3. The result is returned to the frontend for order completion.
 
 ### Webhook Notification Flow
@@ -389,6 +337,8 @@ flowchart TD
 
 - If the buyer completes payment off-site and never returns to the storefront (e.g. closes the tab after a hosted-payment-page redirect), the connector still completes the order: the session-less Briqpay webhook creates a correctly-tagged Payment from the `briqpay-checkout-transaction-item-id` persisted on the cart, and any pre-order webhook data is staged on the cart so commercetools copies it onto the order at creation. This is automatic and needs no merchant integration changes. See [Webhook-Driven Payment & Order Recovery](#webhook-driven-payment--order-recovery).
 
+- The connector stamps the PSP identity on each CT **Payment**'s `paymentMethodInfo`, next to `paymentInterface` (`Briqpay`): `method` carries the Briqpay `pspIntegrationName` (e.g. `mollie_cards`) and `name` the human-readable `pspDisplayName` (e.g. "Mollie Cards", shown in the Merchant Center); when a completed session's transaction lacks these optional values, they fall back to `briqpay` / "Briqpay". This mirrors where other payment connectors (e.g. Adyen) store the concrete payment method, so per-payment data lives on the payment; the order-level `briqpay-transaction-data-psp-integration-name` custom field is still written for backward compatibility. The fields are written once, when first known (payment completion or the first webhook that carries them), and never overwritten.
+
 - Webhook notifications from Briqpay are processed asynchronously. Ensure your webhook endpoint is publicly accessible and properly configured in the Briqpay dashboard.
 
 - The connector supports the following payment operations through the `/operations/payment-intents/:id` endpoint:
@@ -419,7 +369,7 @@ On the very first `/config` call (when the Briqpay session is created), the conn
 
 Before generating a new `futureOrderNumber` for the CT Session, fetch the cart and check `cart.custom.fields["briqpay-future-order-number"]`. If it's set, reuse that value instead of minting a fresh one. Without this read-back the connector's persistence is dormant — it writes the field, but nothing reuses it.
 
-Reference implementation (matches the demo's `commerce-tools-frontend-demo/src/api/controllers/v1/checkout.ts`):
+Merchant backend implementation:
 
 ```ts
 // Fetch the cart from commercetools before creating the CT Session
@@ -624,161 +574,7 @@ npx --package jwt-mock-server -y start
 
 ### Deployment Configuration
 
-Connect deployment configuration is specified in `connect.yaml` which contains the required information for publishing the application:
-
-```yaml
-deployAs:
-  - name: enabler
-    applicationType: assets
-  - name: processor
-    applicationType: service
-    endpoint: /
-    scripts:
-      postDeploy: npm install && npm run connector:post-deploy
-      preUndeploy: npm install && npm run connector:pre-undeploy
-    configuration:
-      standardConfiguration:
-        - key: CTP_PROJECT_KEY
-          description: commercetools project key
-          required: true
-        - key: CTP_CLIENT_ID
-          description: commercetools client ID
-          required: true
-        - key: CTP_AUTH_URL
-          description: commercetools Auth URL
-          required: true
-          default: https://auth.europe-west1.gcp.commercetools.com
-        - key: CTP_API_URL
-          description: commercetools API URL
-          required: true
-          default: https://api.europe-west1.gcp.commercetools.com
-        - key: CTP_SESSION_URL
-          description: Session API URL
-          required: true
-          default: https://session.europe-west1.gcp.commercetools.com
-        - key: CTP_JWKS_URL
-          description: JWKs url (example - https://mc-api.europe-west1.gcp.commercetools.com/.well-known/jwks.json)
-          required: true
-          default: https://mc-api.europe-west1.gcp.commercetools.com/.well-known/jwks.json
-        - key: CTP_JWT_ISSUER
-          description: JWT Issuer for jwt validation (example - https://mc-api.europe-west1.gcp.commercetools.com)
-          required: true
-          default: https://mc-api.europe-west1.gcp.commercetools.com
-        - key: BRIQPAY_USERNAME
-          description: Your Briqpay API username
-          required: true
-        - key: BRIQPAY_BASE_URL
-          description: The Briqpay API url
-          required: true
-          default: https://playground-api.briqpay.com/v3
-        - key: BRIQPAY_TERMS_URL
-          description: The URL to your terms page
-          required: true
-        # IMPORTANT: Please use the default names to preserve data integrity.
-        # Changing these keys/field names after you already have data can orphan existing custom fields
-        # and break session/payment data lookups.
-        - key: BRIQPAY_SESSION_CUSTOM_TYPE_KEY
-          description: Key of CustomType to store briqpay session inside cart
-          required: false
-          default: briqpay-session-id
-        - key: BRIQPAY_PSP_META_DATA_CUSTOMER_FACING_REFERENCE_KEY
-          description: Key of CustomType field to store PSP customer facing reference
-          required: false
-          default: briqpay-psp-meta-data-customer-facing-reference
-        - key: BRIQPAY_PSP_META_DATA_DESCRIPTION_KEY
-          description: Key of CustomType field to store PSP description
-          required: false
-          default: briqpay-psp-meta-data-description
-        - key: BRIQPAY_PSP_META_DATA_TYPE_KEY
-          description: Key of CustomType field to store PSP type
-          required: false
-          default: briqpay-psp-meta-data-type
-        - key: BRIQPAY_PSP_META_DATA_PAYER_EMAIL_KEY
-          description: Key of CustomType field to store PSP payer email
-          required: false
-          default: briqpay-psp-meta-data-payer-email
-        - key: BRIQPAY_PSP_META_DATA_PAYER_FIRST_NAME_KEY
-          description: Key of CustomType field to store PSP payer first name
-          required: false
-          default: briqpay-psp-meta-data-payer-first-name
-        - key: BRIQPAY_PSP_META_DATA_PAYER_LAST_NAME_KEY
-          description: Key of CustomType field to store PSP payer last name
-          required: false
-          default: briqpay-psp-meta-data-payer-last-name
-        - key: BRIQPAY_TRANSACTION_DATA_RESERVATION_ID_KEY
-          description: Key of CustomType field to store transaction reservation ID
-          required: false
-          default: briqpay-transaction-data-reservation-id
-        - key: BRIQPAY_TRANSACTION_DATA_SECONDARY_RESERVATION_ID_KEY
-          description: Key of CustomType field to store transaction secondary reservation ID
-          required: false
-          default: briqpay-transaction-data-secondary-reservation-id
-        - key: BRIQPAY_TRANSACTION_DATA_PSP_ID_KEY
-          description: Key of CustomType field to store transaction PSP ID
-          required: false
-          default: briqpay-transaction-data-psp-id
-        - key: BRIQPAY_TRANSACTION_DATA_PSP_DISPLAY_NAME_KEY
-          description: Key of CustomType field to store transaction PSP display name
-          required: false
-          default: briqpay-transaction-data-psp-display-name
-        - key: BRIQPAY_TRANSACTION_DATA_PSP_INTEGRATION_NAME_KEY
-          description: Key of CustomType field to store transaction PSP integration name
-          required: false
-          default: briqpay-transaction-data-psp-integration-name
-        - key: BRIQPAY_AUTOCAPTURED_KEY
-          description: Key of CustomType field to store whether the order was auto-captured
-          required: false
-          default: briqpay-autocaptured
-        - key: BRIQPAY_FUTURE_ORDER_NUMBER_KEY
-          description: Key of CustomType field on the cart that persists the intended order number across checkout entries. Read back by the merchant backend on subsequent checkouts so Briqpay reference1 stays aligned with the eventual Order.orderNumber.
-          required: false
-          default: briqpay-future-order-number
-        - key: BRIQPAY_CHECKOUT_TRANSACTION_ITEM_ID_KEY
-          description: Key of CustomType field on the cart that stores the Checkout transaction-item id. Persisted at config() time so the session-less Briqpay webhook can create a correctly-tagged Payment and let Checkout auto-create the Order when the buyer never returns to the checkout.
-          required: false
-          default: briqpay-checkout-transaction-item-id
-        - key: BRIQPAY_VARIANT_ID_KEY
-          description: Key of CustomType field on the cart where the merchant sets the Briqpay checkout variant id to use for that cart. Read per session creation and forwarded as product.variantId, so each cart can resolve to a different Briqpay variant. When unset, Briqpay uses the account default variant.
-          required: false
-          default: briqpay-variant-id
-        - key: ALLOWED_ORIGINS
-          description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com).
-          required: false
-        - key: BRIQPAY_EXTERNAL_WEBHOOK_URL
-          description: Optional external webhook URL to receive order_status, capture_status, and refund_status events from Briqpay. When set, additional hooks are registered alongside the internal connector hooks. Must use HTTPS.
-          required: false
-      securedConfiguration:
-        - key: CTP_CLIENT_SECRET
-          description: commercetools client secret
-          required: true
-        - key: BRIQPAY_SECRET
-          description: Your Briqpay API secret
-          required: true
-        - key: BRIQPAY_WEBHOOK_SECRET
-          description: Briqpay webhook signing secret for HMAC verification. This is required for secure webhook processing using HMAC-SHA256 signatures.
-          required: true
-```
-
-### Configuration Variables
-
-| Variable                                   | Description                                                                                                                                                                                                                                        | Required | Default                                                                   |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------- |
-| `CTP_PROJECT_KEY`                          | commercetools project key                                                                                                                                                                                                                          | Yes      | -                                                                         |
-| `CTP_CLIENT_ID`                            | commercetools client ID                                                                                                                                                                                                                            | Yes      | -                                                                         |
-| `CTP_CLIENT_SECRET`                        | commercetools client secret                                                                                                                                                                                                                        | Yes      | -                                                                         |
-| `CTP_AUTH_URL`                             | commercetools Auth URL                                                                                                                                                                                                                             | Yes      | `https://auth.europe-west1.gcp.commercetools.com`                         |
-| `CTP_API_URL`                              | commercetools API URL                                                                                                                                                                                                                              | Yes      | `https://api.europe-west1.gcp.commercetools.com`                          |
-| `CTP_SESSION_URL`                          | Session API URL                                                                                                                                                                                                                                    | Yes      | `https://session.europe-west1.gcp.commercetools.com`                      |
-| `CTP_JWKS_URL`                             | JWKs URL for JWT validation                                                                                                                                                                                                                        | Yes      | `https://mc-api.europe-west1.gcp.commercetools.com/.well-known/jwks.json` |
-| `CTP_JWT_ISSUER`                           | JWT Issuer URL                                                                                                                                                                                                                                     | Yes      | `https://mc-api.europe-west1.gcp.commercetools.com`                       |
-| `BRIQPAY_USERNAME`                         | Briqpay API username                                                                                                                                                                                                                               | Yes      | -                                                                         |
-| `BRIQPAY_SECRET`                           | Briqpay API secret                                                                                                                                                                                                                                 | Yes      | -                                                                         |
-| `BRIQPAY_BASE_URL`                         | Briqpay API URL                                                                                                                                                                                                                                    | Yes      | `https://playground-api.briqpay.com/v3`                                   |
-| `BRIQPAY_TERMS_URL`                        | URL to terms page                                                                                                                                                                                                                                  | Yes      | -                                                                         |
-| `BRIQPAY_SESSION_CUSTOM_TYPE_KEY`          | Custom type key for session storage                                                                                                                                                                                                                | No       | `briqpay-session-id`                                                      |
-| `BRIQPAY_FUTURE_ORDER_NUMBER_KEY`          | Cart custom field name for the persisted future order number (see [Future Order Number Persistence](#future-order-number-persistence))                                                                                                             | No       | `briqpay-future-order-number`                                             |
-| `BRIQPAY_CHECKOUT_TRANSACTION_ITEM_ID_KEY` | Cart custom field name for the persisted Checkout transaction-item id, used by the webhook to recover payment/order creation when the buyer never returns (see [Webhook-Driven Payment & Order Recovery](#webhook-driven-payment--order-recovery)) | No       | `briqpay-checkout-transaction-item-id`                                    |
-| `BRIQPAY_VARIANT_ID_KEY`                   | Cart custom field name the merchant sets to select the Briqpay checkout variant per cart (see [Per-Cart Variant Selection](#per-cart-variant-selection))                                                                                           | No       | `briqpay-variant-id`                                                      |
+The full deployment spec — every configuration key, its default, and whether it's required or secured — is `connect.yaml` in the repo root. It mirrors the variable list in [How to Install](#how-to-install); this doc doesn't keep a second copy.
 
 ### Enabler Usage
 
@@ -787,8 +583,8 @@ To integrate the Briqpay payment enabler in your frontend:
 ```typescript
 import { Enabler } from "connector-enabler";
 
-// Create the enabler instance
-const enabler = await Enabler.create({
+// Create the enabler instance (never rejects - /config failures surface at createDropinBuilder)
+const enabler = new Enabler({
   processorUrl: "https://your-processor-url",
   sessionId: "commercetools-checkout-session-id",
   onComplete: (result) => {
@@ -829,16 +625,16 @@ the decision step didn't exist. Register a handler only if you want to run
 your own validation first. Briqpay decides when a decision is needed, so
 this does not necessarily fire on every submission.
 
-There is no `.build()`-time option for this: the enabler only ever *reads*
+There is no `.build()`-time option for this: the enabler only ever _reads_
 `window.briqpayConnector.onDecision`, it never calls into your code to ask
 for it. Set it directly, anywhere on the page, at any time before the buyer
 reaches the payment step:
 
 ```typescript
 window.briqpayConnector = window.briqpayConnector || {};
-window.briqpayConnector.onDecision = async (sdk, data) => {
+window.briqpayConnector.onDecision = async (sdk, _data) => {
   // Validate here, then return the answer - returning it is what sends it.
-  const isValid = await validateOrder(data);
+  const isValid = await checkCartAgainstSession(knownCtSessionId);
   return {
     decision: isValid ? "allow" : "reject",
   };
@@ -861,8 +657,8 @@ hosted commercetools Checkout (`paymentFlow`/`checkoutFlow`), which has no
 config surface of its own for a per-payment-method callback. It matters
 most for the hosted case: the enabler bundle is injected by commercetools'
 checkout application at a time you don't control, so a mechanism that
-requires calling *into* enabler code (rather than the enabler reading a
-value *you* set) would race against that load. A plain assignment has no
+requires calling _into_ enabler code (rather than the enabler reading a
+value _you_ set) would race against that load. A plain assignment has no
 such dependency.
 
 If you already import `connector-enabler` directly — e.g. because you're
@@ -873,8 +669,8 @@ type-checking on the callback:
 ```typescript
 import { BRIQPAY_DECISION, registerBriqpayDecision } from "connector-enabler";
 
-registerBriqpayDecision(async (sdk, data) => {
-  const isValid = await validateOrder(data);
+registerBriqpayDecision(async (sdk, _data) => {
+  const isValid = await checkCartAgainstSession(knownCtSessionId);
   return {
     decision: isValid ? BRIQPAY_DECISION.ALLOW : BRIQPAY_DECISION.REJECT,
   };
@@ -911,15 +707,14 @@ curl --location 'http://localhost:8080/decision' \
     "decision": "allow"
   }'
 
-# Create payment
+# Create payment (outcome derived from the Briqpay session)
 curl --location 'http://localhost:8080/payments' \
   --header 'Content-Type: application/json' \
   --header 'X-Session-Id: your-checkout-session-id' \
   --data '{
     "paymentMethod": {
       "type": "briqpay"
-    },
-    "paymentOutcome": "pending"
+    }
   }'
 
 # Health check
@@ -927,110 +722,11 @@ curl --location 'http://localhost:8080/operations/status' \
   --header 'Authorization: Bearer your-jwt-token'
 ```
 
-## 📦 Package Dependencies
-
-### Enabler Dependencies
-
-```json
-{
-  "@sinclair/typebox": "0.34.41", // Runtime type validation
-  "serve": "14.2.6" // Static file serving
-}
-```
-
-**Dev Dependencies**:
-
-- Vite ^7.3.2 - Build tool and dev server
-- TypeScript 5.9.3 - Type safety
-- Jest 30.2.0 - Testing framework
-- ESLint 9.39.1 - Code linting
-- Sass 1.94.2 - SCSS support for styling
-
-### Processor Dependencies
-
-```json
-{
-  "@commercetools/connect-payments-sdk": "0.27.2", // commercetools Connect SDK
-  "@commercetools/platform-sdk": "^8.23.0", // commercetools Platform SDK
-  "@commercetools/ts-client": "^4.8.0", // commercetools TypeScript client
-  "@commercetools-backend/loggers": "25.2.0", // Logging utilities
-  "fastify": "^5.8.5", // Web framework
-  "@sinclair/typebox": "0.34.41", // Runtime type validation
-  "dotenv": "17.2.3" // Environment variable management
-}
-```
-
-**Dev Dependencies**:
-
-- TypeScript 5.9.3 - Type safety
-- Jest 30.2.0 - Testing framework with MSW for mocking
-- Nodemon 3.1.13 - Development auto-restart
-- Prettier 3.6.2 - Code formatting
-
 ## 🔧 Configuration
 
-### commercetools Configuration
+Required API Client scopes and the full list of configuration variables are in [How to Install](#how-to-install).
 
-Required API Client Scopes:
-
-- **Manage**:
-  - `manage_orders` - Also grants permission to manage Carts
-  - `manage_sessions` (Manage Checkout sessions)
-  - `manage_types`
-  - `manage_payments`
-  - `manage_checkout_transactions`
-  - `manage_checkout_payment_intents`
-  - `manage_key_value_documents`
-- **View**:
-  - `view_key_value_documents` (View Custom Objects)
-  - `view_states`
-  - `view_types`
-  - `view_product_selections`
-  - `view_attribute_groups`
-  - `view_shopping_lists`
-  - `view_shipping_methods`
-  - `view_categories`
-  - `view_discount_codes`
-  - `view_products`
-  - `view_cart_discounts`
-  - `view_orders`
-  - `view_stores`
-  - `view_tax_categories`
-  - `view_order_edits`
-
-<img src="https://cdn.briqpay.com/static/images/api-client-ct.png" alt="commercetools API Client Scopes" style="width: 50%">
-
-### Environment Variables
-
-#### Processor (.env)
-
-```bash
-# commercetools Configuration
-CTP_PROJECT_KEY=your-project-key
-CTP_CLIENT_ID=your-client-id
-CTP_CLIENT_SECRET=your-client-secret
-CTP_AUTH_URL=https://auth.europe-west1.gcp.commercetools.com
-CTP_API_URL=https://api.europe-west1.gcp.commercetools.com
-CTP_SESSION_URL=https://session.europe-west1.gcp.commercetools.com
-CTP_JWKS_URL=https://mc-api.europe-west1.gcp.commercetools.com/.well-known/jwks.json
-CTP_JWT_ISSUER=https://mc-api.europe-west1.gcp.commercetools.com
-
-# Briqpay Configuration
-BRIQPAY_USERNAME=your-briqpay-username
-BRIQPAY_SECRET=your-briqpay-secret
-BRIQPAY_BASE_URL=https://playground-api.briqpay.com/v3
-BRIQPAY_TERMS_URL=https://your-store.com/terms
-BRIQPAY_SESSION_CUSTOM_TYPE_KEY=briqpay-session-id
-
-# Optional: forward Briqpay events to an external service
-# BRIQPAY_EXTERNAL_WEBHOOK_URL=https://your-service.com/briqpay-events
-```
-
-#### Enabler (.env)
-
-```bash
-VITE_PROCESSOR_URL=http://localhost:8080
-```
+For local development, copy `processor/.env.template` to `processor/.env` and `enabler/.env.template` to `enabler/.env`, then fill in the values from that same list.
 
 ## 🏛️ Deployment
 
@@ -1174,17 +870,10 @@ cd processor && npm run watch
 
 ## 🔒 Security Considerations
 
-### Authentication & Authorization
-
-- JWT-based authentication using commercetools Connect SDK
-- Secure API credential storage using commercetools secured configuration
-- CORS configuration for cross-origin requests
-
-### Data Protection
-
-- Environment variable encryption for sensitive data
-- Secure API communication with Briqpay
-- Session data isolation per commercetools project
+- **Session authentication**: requests to the processor authenticate via the commercetools checkout session (`X-Session-Id` header), verified by `@commercetools/connect-payments-sdk`'s session hook.
+- **Credential storage**: `CTP_CLIENT_SECRET` and `BRIQPAY_SECRET` are declared under `securedConfiguration` in `connect.yaml`, so commercetools Connect stores them encrypted.
+- **Webhook verification**: Briqpay webhook notifications are HMAC-verified when `BRIQPAY_WEBHOOK_SECRET` is set (see `isHmacVerificationEnabled` in `processor/src/libs/briqpay/webhook-verification.ts`).
+- **CORS**: allowed origins are controlled by `ALLOWED_ORIGINS`; non-localhost entries must be HTTPS (enforced at startup, see `processor/src/config/env-validation.ts`).
 
 ## 🐛 Troubleshooting
 
@@ -1249,8 +938,8 @@ npm run watch
 // Import from the built enabler
 import { Enabler } from "connector-enabler";
 
-// Create enabler instance
-const enabler = await Enabler.create({
+// Create enabler instance (never rejects - /config failures surface at createDropinBuilder)
+const enabler = new Enabler({
   processorUrl: "https://processor-url",
   sessionId: "commercetools-session-id",
   onComplete: (result) => {
@@ -1266,19 +955,6 @@ const builder = await enabler.createDropinBuilder("briqpay");
 const dropin = builder.build({ onDropinReady: async () => {} });
 dropin.mount("#payment-container");
 ```
-
-## 🚀 Performance Optimization
-
-### Build Optimizations
-
-- TypeScript compilation with strict type checking
-- Tree shaking for unused code elimination
-- Minification and compression for production builds
-
-### Runtime Optimizations
-
-- Fastify for high-performance HTTP handling
-- Efficient session management via commercetools cart custom fields
 
 ## 🏛️ Processor Deep Dive
 
@@ -1557,7 +1233,7 @@ Configure log level via `LOGGER_LEVEL` environment variable (default: `info`).
 
 ### Deployment Considerations
 
-The processor uses environment variables for all configuration. See the [Configuration Variables](#configuration-variables) section for the complete list. Key deployment notes:
+The processor uses environment variables for all configuration. See [How to Install](#how-to-install) for the complete list. Key deployment notes:
 
 - **Briqpay URL**: Use `https://playground-api.briqpay.com/v3` for testing, production URL for live
 - **Logging**: Configure `LOGGER_LEVEL` (default: `info`)

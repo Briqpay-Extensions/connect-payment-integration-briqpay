@@ -31,6 +31,13 @@ export const briqpayCheckoutTransactionItemIdFieldName =
 // never writes or caches it. Overridable for merchants who already use a differently-named field.
 export const briqpayVariantIdFieldName = process.env.BRIQPAY_VARIANT_ID_KEY || 'briqpay-variant-id'
 
+// Field name for the hash of the payload the Briqpay session is known to hold, written by the
+// connector after a successful session create/update. config() compares it against the payload
+// it would send to skip a redundant update. Purely an optimisation: when this is absent, unset
+// or not a string, the connector simply updates every time, which is the pre-existing behaviour.
+export const briqpaySyncedPayloadHashFieldName =
+  process.env.BRIQPAY_SYNCED_PAYLOAD_HASH_KEY || 'briqpay-synced-payload-hash'
+
 export const briqpaySessionIdCustomType = {
   name: briqpaySessionIdFieldName,
 }
@@ -77,6 +84,15 @@ export const briqpayFieldDefinitions: BriqpayFieldDefinition[] = [
   {
     name: briqpayVariantIdFieldName,
     label: 'Briqpay Variant ID',
+    type: 'String',
+    required: false,
+  },
+
+  // Synced payload hash — written by the connector after a successful session create/update so
+  // config() can skip an update Briqpay would treat as a no-op. Optimisation only.
+  {
+    name: briqpaySyncedPayloadHashFieldName,
+    label: 'Briqpay Synced Payload Hash',
     type: 'String',
     required: false,
   },

@@ -27,6 +27,8 @@
  *          paymentElement.mount('#invoice-component')
  *      })
  */
+import { BriqpayProcessorError } from "../errors";
+
 export interface PaymentEnabler {
   /**
    * Creates a payment component builder of the specified type.
@@ -144,12 +146,20 @@ export type EnablerOptions = {
 
   /**
    * A callback function that is called when an error occurs during the payment process.
+   *
+   * Failures of the connector's own processor calls arrive as
+   * `BriqpayProcessorError`, which carries `statusCode`, the processor's error
+   * `code` and the `request` that failed. That is what makes an expired
+   * commercetools session recoverable: `statusCode === 401` with
+   * `code === "invalid_token"` means the session died, and the storefront should
+   * create a new one for the same cart (see the README's session expiry section).
+   * Anything else - Briqpay widget errors, network failures - arrives as a plain
+   * `Error`, hence the union rather than a single type.
+   *
    * @param error - The error that occurred.
-   * @param paymentReference - The payment reference.
    */
   onError?: (
-    _error: unknown,
-    _context?: { paymentReference?: string },
+    _error: BriqpayProcessorError | Error | unknown,
   ) => void | Promise<void>;
 };
 

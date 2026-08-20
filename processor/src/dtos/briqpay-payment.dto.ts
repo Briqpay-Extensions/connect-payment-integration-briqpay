@@ -60,8 +60,9 @@ export const PaymentRequestSchema = Type.Object({
   paymentMethod: Type.Object({
     type: Type.Enum(PaymentMethodType),
   }),
-  briqpaySessionId: Type.Optional(Type.String()),
-  paymentOutcome: PaymentOutcomeSchema,
+  // Deprecated. The processor derives the outcome from the Briqpay session; accepted only for
+  // compatibility with older enabler bundles.
+  paymentOutcome: Type.Optional(PaymentOutcomeSchema),
 })
 
 // SECURITY: Strict input validation for session IDs to prevent injection attacks
@@ -169,6 +170,15 @@ const NotificationRefundSchema = Type.Object({
   transaction: Type.Optional(NotificationTransactionSchema),
 })
 
+const NotificationPspMetadataSchema = Type.Object({
+  customerFacingReference: Type.Optional(Type.String()),
+  description: Type.Optional(Type.String()),
+  type: Type.Optional(Type.String()),
+  payerEmail: Type.Optional(Type.String()),
+  payerFirstName: Type.Optional(Type.String()),
+  payerLastName: Type.Optional(Type.String()),
+})
+
 export const NotificationRequestSchema = Type.Object({
   event: Type.Enum(BRIQPAY_WEBHOOK_EVENT),
   status: Type.Enum(BRIQPAY_WEBHOOK_STATUS),
@@ -200,11 +210,10 @@ export const NotificationRequestSchema = Type.Object({
   transaction: Type.Optional(NotificationTransactionSchema),
   capture: Type.Optional(NotificationCaptureSchema),
   refund: Type.Optional(NotificationRefundSchema),
+  pspMetadata: Type.Optional(NotificationPspMetadataSchema),
 })
 
 export type PaymentRequestSchemaDTO = Static<typeof PaymentRequestSchema>
 export type PaymentResponseSchemaDTO = Static<typeof PaymentResponseSchema>
 export type DecisionRequestSchemaDTO = Static<typeof DecisionRequestSchema>
 export type NotificationRequestSchemaDTO = Static<typeof NotificationRequestSchema>
-
-export const ConfigResponseSchema = Type.Any()

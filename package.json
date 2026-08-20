@@ -22,9 +22,6 @@
     ]
   },
   "overrides": {
-    "@commercetools/connect-payments-sdk": {
-      "@commercetools/platform-sdk": "^8.23.0"
-    },
     "lodash": "4.18.1",
     "minimatch": "10.2.3",
     "glob": "11.1.0",

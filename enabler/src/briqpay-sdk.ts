@@ -1,7 +1,6 @@
-export type BriqpaySdkParams = {
-  processorUrl: string;
-  sessionId: string;
-};
+import { toBriqpayProcessorError } from "./errors";
+import { PaymentRequestSchemaDTO } from "./dtos/mock-payment.dto";
+import { PaymentResult } from "./payment-enabler/payment-enabler";
 
 export enum BRIQPAY_DECISION {
   ALLOW = "allow",
@@ -37,20 +36,6 @@ export const DECISION_TIMEOUT_MS = 20000;
  * Represents a Briqpay SDK.
  */
 export class BriqpaySdk {
-  private params: BriqpaySdkParams;
-
-  /**
-   * Creates an instance of BriqpaySdk.
-   */
-  constructor(params: BriqpaySdkParams) {
-    this.params = params;
-  }
-
-  /**
-   * Initializes the SDK.
-   */
-  init() {}
-
   /**
    * Adds and overlay over the payment methods during cart updates for example
    */
@@ -63,20 +48,6 @@ export class BriqpaySdk {
    */
   resume() {
     window._briqpay.v3.resume();
-  }
-
-  /**
-   * Disable automatic rehydration to control the flow separately
-   * @param autoRehydrate
-   */
-  async rehydrate(autoRehydrate = true) {
-    await fetch(this.params.processorUrl + "/config", {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Session-ID": this.params.sessionId as string,
-      },
-    }).finally(() => autoRehydrate && this.resume());
   }
 }
 
@@ -135,6 +106,23 @@ declare global {
        */
       onDecision?: OnDecision;
     };
+
+    /**
+     * Briqpay's widget script global (briq.min.js), shared page-wide; call into
+     * it, never assign onto it. subscribe appends; unsubscribe clears an event.
+     */
+    _briqpay: {
+      subscribe: (
+        _event: string,
+        _callback: (_data: Record<string, unknown>) => void,
+      ) => void;
+      unsubscribe: (_event: string) => void;
+      v3: {
+        suspend: () => void;
+        resume: () => void;
+        resumeDecision: () => void;
+      };
+    };
   }
 }
 
@@ -159,4 +147,154 @@ export function getRegisteredOnDecision(): OnDecision | undefined {
   return typeof window !== "undefined"
     ? window.briqpayConnector?.onDecision
     : undefined;
+}
+
+/** Everything the decision flow needs from whichever component mounted it. */
+export type BriqpayDecisionContext = {
+  sdk: BriqpaySdk;
+  processorUrl: string;
+  sessionId: string;
+  briqpaySessionId: string;
+  onError: (
+    _error: unknown,
+    _context?: { paymentReference?: string },
+  ) => void | Promise<void>;
+};
+
+async function resolveDecisionAnswer(
+  ctx: BriqpayDecisionContext,
+  data: unknown,
+): Promise<DecisionAnswer | undefined> {
+  const onDecision = getRegisteredOnDecision();
+  if (!onDecision) {
+    // Nobody opted into registerBriqpayDecision(), so there is no merchant
+    // check to run - let the purchase proceed. This is different from a
+    // registered handler that times out or throws below: that merchant
+    // asked for validation, so a broken/slow check must not silently turn
+    // into an approval it never made.
+    return { decision: BRIQPAY_DECISION.ALLOW };
+  }
+
+  // A late answer loses the race and is never sent, so a verdict Briqpay has
+  // already timed out on cannot land. A throw is not an answer either.
+  return Promise.race([
+    onDecision(ctx.sdk, data),
+    new Promise<undefined>((resolve) =>
+      setTimeout(() => resolve(undefined), DECISION_TIMEOUT_MS),
+    ),
+  ]).catch(() => undefined);
+}
+
+function isValidDecisionAnswer(
+  decisionAnswer: unknown,
+): decisionAnswer is DecisionAnswer {
+  return (
+    typeof decisionAnswer === "object" &&
+    decisionAnswer !== null &&
+    "decision" in decisionAnswer &&
+    ((decisionAnswer as { decision: unknown }).decision ===
+      BRIQPAY_DECISION.ALLOW ||
+      (decisionAnswer as { decision: unknown }).decision ===
+        BRIQPAY_DECISION.REJECT)
+  );
+}
+
+async function sendDecision(
+  ctx: BriqpayDecisionContext,
+  decisionAnswer: DecisionAnswer,
+): Promise<void> {
+  const response = await fetch(ctx.processorUrl + "/decision", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Session-Id": ctx.sessionId,
+    },
+    body: JSON.stringify({
+      sessionId: ctx.briqpaySessionId,
+      ...decisionAnswer,
+    }),
+  });
+
+  if (!response.ok) {
+    throw toBriqpayProcessorError(
+      "/decision",
+      response.status,
+      await response.text(),
+    );
+  }
+}
+
+export async function handleBriqpayDecision(
+  ctx: BriqpayDecisionContext,
+  data: unknown,
+): Promise<void> {
+  // Briqpay blocks its own pay-button flow while awaiting the decision, so
+  // nothing needs suspending here. resumeDecision() releases that block.
+  // suspend()/resume() are a separate mechanism for cart updates and are not
+  // cleared by resumeDecision().
+  const decisionAnswer = await resolveDecisionAnswer(ctx, data);
+
+  // Nothing usable. Briqpay gates on the decision it recorded, so unlocking
+  // without one fails the purchase and shows the buyer an error.
+  if (!isValidDecisionAnswer(decisionAnswer)) {
+    window._briqpay.v3.resumeDecision();
+    return;
+  }
+
+  try {
+    await sendDecision(ctx, decisionAnswer);
+  } catch (error) {
+    // The decision never reached Briqpay. Surface it: on an expired CT session
+    // (401 invalid_token) the integrator can mint a fresh session and remount,
+    // instead of every retry failing until a full page reload.
+    try {
+      await ctx.onError(error);
+    } catch {
+      // onError must not prevent the resume below.
+    }
+  } finally {
+    window._briqpay.v3.resumeDecision();
+  }
+}
+
+/** Everything the payment submission needs from whichever component mounted it. */
+export type BriqpaySubmitContext = {
+  processorUrl: string;
+  sessionId: string;
+  paymentMethodType: string;
+  onComplete: (_result: PaymentResult) => void | Promise<void>;
+};
+
+// Creates the commercetools-side payment record once the buyer has paid at
+// Briqpay. onComplete fires only on a 2xx; failures reject, so whoever called
+// submit() handles them where they have the context to react. Failures with no
+// caller to reject to (the session_complete subscriber) go to onError instead.
+export async function submitBriqpayPayment(
+  ctx: BriqpaySubmitContext,
+): Promise<void> {
+  const request: PaymentRequestSchemaDTO = {
+    paymentMethod: { type: ctx.paymentMethodType },
+  };
+  const response = await fetch(ctx.processorUrl + "/payments", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Session-Id": ctx.sessionId,
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    throw toBriqpayProcessorError(
+      "/payments",
+      response.status,
+      await response.text(),
+    );
+  }
+
+  const data = (await response.json()) as { paymentReference: string };
+  await ctx.onComplete({
+    isSuccess: true,
+    paymentReference: data.paymentReference,
+  });
 }

@@ -1,7 +1,7 @@
 {
-  "name": "payment-integration-template",
-  "version": "4.1.0",
-  "description": "Payment provider integration template",
+  "name": "briqpay-commercetools-connector",
+  "version": "2.0.0-beta.0",
+  "description": "Briqpay payment connector for commercetools Connect",
   "main": "dist/server.js",
   "scripts": {
     "start": "node dist/main.js",
@@ -21,10 +21,10 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@commercetools-backend/loggers": "25.2.0",
-    "@commercetools/connect-payments-sdk": "0.27.2",
-    "@commercetools/platform-sdk": "^8.23.0",
-    "@commercetools/ts-client": "^4.8.0",
+    "@commercetools-backend/loggers": "27.8.0",
+    "@commercetools/connect-payments-sdk": "1.2.1",
+    "@commercetools/platform-sdk": "9.2.0",
+    "@commercetools/ts-client": "5.0.0",
     "@fastify/autoload": "6.3.1",
     "@fastify/cors": "11.1.0",
     "@fastify/formbody": "8.0.2",

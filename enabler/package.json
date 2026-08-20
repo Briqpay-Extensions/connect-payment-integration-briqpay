@@ -4,7 +4,7 @@
   "version": "4.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port 3000",
+    "dev": "npm run build && vite --port 3000",
     "start": "serve public -l 8080 --cors",
     "lint": "eslint src test --ext .ts,.js",
     "test": "jest --detectOpenHandles",

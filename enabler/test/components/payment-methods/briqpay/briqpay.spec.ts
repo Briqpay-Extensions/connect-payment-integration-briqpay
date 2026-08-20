@@ -11,7 +11,6 @@ import {
   BriqpaySdk,
   registerBriqpayDecision,
 } from "../../../../src/briqpay-sdk";
-import { PaymentOutcome } from "../../../../src/dtos/mock-payment.dto";
 import { PaymentComponent } from "../../../../src/payment-enabler/payment-enabler";
 
 // Don't mock the Briqpay class - we want to test the actual implementation
@@ -24,7 +23,6 @@ describe("Briqpay", () => {
     sdk: {} as BriqpaySdk,
     processorUrl: "https://mock-processor.com",
     sessionId: "sess-123",
-    environment: "test",
     snippet: '<div id="briqpay"></div>',
     briqpaySessionId: "briq-sess-123",
     onComplete: jest.fn() as jest.MockedFunction<BaseOptions["onComplete"]>,
@@ -54,6 +52,7 @@ describe("Briqpay", () => {
         resumeDecision: jest.fn(),
       },
       subscribe: jest.fn(),
+      unsubscribe: jest.fn(),
     };
 
     // Create the component instance. No decision handler is registered by
@@ -80,6 +79,88 @@ describe("Briqpay", () => {
     component.mount("#container");
 
     await (component as any).handleDecision({ allow: true });
+  });
+
+  // A /payments 401 (expired CT session) must NOT be reported as a successful
+  // payment - today the component reports isSuccess: true on any failure.
+  test("submit() does not call onComplete when /payments responds 401", async () => {
+    const onComplete = jest.fn<() => void>();
+    const onError = jest.fn<(_error: unknown) => void>();
+    const builder = new BriqpayBuilder({ ...baseOptions, onComplete, onError });
+    const failingComponent = builder.build({});
+
+    (global.fetch as jest.Mock).mockImplementationOnce(() =>
+      Promise.resolve({
+        ok: false,
+        status: 401,
+        json: () =>
+          Promise.resolve({
+            message: "Session is not active",
+            statusCode: 401,
+            errors: [
+              { code: "invalid_token", message: "Session is not active" },
+            ],
+          }),
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              message: "Session is not active",
+              statusCode: 401,
+              errors: [
+                { code: "invalid_token", message: "Session is not active" },
+              ],
+            }),
+          ),
+      } as unknown as Response),
+    );
+
+    // Awaited by the caller, so it rejects rather than firing the global callback.
+    await expect((failingComponent as any).submit()).rejects.toMatchObject({
+      name: "BriqpayProcessorError",
+      statusCode: 401,
+      code: "invalid_token",
+      request: "/payments",
+    });
+
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  // Same contract as the dropin: a /decision 401 (expired CT session) must reach
+  // onError as a structured error instead of being swallowed.
+  test("handleDecision routes a /decision 401 to onError as a structured error", async () => {
+    const onError = jest.fn<(_error: unknown) => void>();
+    const builder = new BriqpayBuilder({ ...baseOptions, onError });
+    const failingComponent = builder.build({});
+
+    (global.fetch as jest.Mock).mockImplementationOnce(() =>
+      Promise.resolve({
+        ok: false,
+        status: 401,
+        // eslint-disable-next-line @typescript-eslint/require-await
+        text: async () =>
+          JSON.stringify({
+            message: "Session is not active",
+            statusCode: 401,
+            errors: [
+              { code: "invalid_token", message: "Session is not active" },
+            ],
+            error: "invalid_token",
+            error_description: "Session is not active",
+          }),
+      } as unknown as Response),
+    );
+
+    await (failingComponent as any).handleDecision({});
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "BriqpayProcessorError",
+        statusCode: 401,
+        code: "invalid_token",
+      }),
+    );
+    expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
   });
 
   test("should execute session_complete and make_decision callbacks", () => {
@@ -279,9 +360,12 @@ describe("Briqpay", () => {
       ?.lastChild as HTMLScriptElement;
     scriptElement.onload?.({} as Event);
 
+    // The failure goes to onError, never an unhandled rejection - and the
+    // resume must still have run so the widget is not stuck.
     await expect(
       Promise.resolve(subscribeCallbacks["make_decision"]({})),
-    ).rejects.toThrow("network down");
+    ).resolves.not.toThrow();
+    expect(baseOptions.onError).toHaveBeenCalledWith(new Error("network down"));
     expect(window._briqpay.v3.resumeDecision).toHaveBeenCalled();
   });
 
@@ -408,7 +492,6 @@ describe("Briqpay", () => {
           paymentMethod: {
             type: "briqpay",
           },
-          paymentOutcome: PaymentOutcome._PENDING,
         }),
       }),
     );
@@ -420,15 +503,15 @@ describe("Briqpay", () => {
     });
   });
 
-  test("submit() calls onError on failure", async () => {
+  test("submit() rejects on failure instead of firing onError", async () => {
     // Override fetch to simulate an error
     global.fetch = jest.fn(() =>
       Promise.reject(new Error("Network error")),
     ) as unknown as typeof fetch;
 
-    await component.submit();
+    await expect(component.submit()).rejects.toThrow("Network error");
 
-    expect(baseOptions.onError).toHaveBeenCalledWith(expect.any(Error));
+    expect(baseOptions.onError).not.toHaveBeenCalled();
   });
 
   test("submit() awaits an async onComplete before resolving", async () => {

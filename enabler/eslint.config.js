@@ -53,7 +53,8 @@ export default defineConfig([
       radix: 0,
       "max-len": "off",
       "no-undefined": 0,
-      "unused-imports/no-unused-imports": "error",
+      // No unused-imports/no-unused-imports: its --fix auto-deletes imports mid-edit;
+      // @typescript-eslint/no-unused-vars below still fails lint on unused imports.
       "unused-imports/no-unused-vars": [
         "warn",
         {

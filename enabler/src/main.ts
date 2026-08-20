@@ -25,11 +25,13 @@ export class Enabler {
   }
 }
 
-// Also export the factory methods for new code
-export const createEnabler = BriqpayPaymentEnabler.create;
-export const createEnablerSync = BriqpayPaymentEnabler.createSync;
 export { BriqpayPaymentEnabler };
 export type { EnablerOptions };
+
+// Thrown to onError when a processor call fails. Exported so integrators can
+// narrow with `instanceof` and read statusCode/code/request - notably to detect
+// an expired commercetools session (401 invalid_token) and mint a new one.
+export { BriqpayProcessorError } from "./errors";
 
 export {
   BRIQPAY_DECISION,

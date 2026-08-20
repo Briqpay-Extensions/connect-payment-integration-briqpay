@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, jest } from '@jest/globa
 import Fastify, { type FastifyInstance, FastifyError } from 'fastify'
 import { errorHandler } from '../../../src/libs/fastify/error-handler'
 import { ErrorAuthErrorResponse, Errorx, ErrorxAdditionalOpts, MultiErrorx } from '@commercetools/connect-payments-sdk'
+import { ValidationError } from '../../../src/libs/errors/briqpay-errors'
 import { requestContextPlugin } from '../../../src/libs/fastify/context/context'
 import { FastifySchemaValidationError } from 'fastify/types/schema'
 
@@ -105,6 +106,32 @@ describe('error-handler', () => {
           code: 'ErrorCode',
           message: 'someMessage',
           test: 'field1',
+        },
+      ],
+    })
+  })
+
+  // Regression: BriqpayError once extended plain Error, so every connector error
+  // fell through to the generic branch and reached clients as 500 "Internal server
+  // error." with its real status, code and message discarded.
+  test('connector errors serialize with their real status and code', async () => {
+    fastify.get('/', () => {
+      throw new ValidationError('Cart is missing a shipping address. Taxes cannot be calculated.')
+    })
+
+    const response = await fastify.inject({
+      method: 'GET',
+      url: '/',
+    })
+
+    expect(response.statusCode).toBe(400)
+    expect(response.json()).toStrictEqual({
+      message: 'Cart is missing a shipping address. Taxes cannot be calculated.',
+      statusCode: 400,
+      errors: [
+        {
+          code: 'VALIDATION_ERROR',
+          message: 'Cart is missing a shipping address. Taxes cannot be calculated.',
         },
       ],
     })

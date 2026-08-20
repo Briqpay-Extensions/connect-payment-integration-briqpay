@@ -16,7 +16,7 @@ import {
   RefundPaymentRequest,
   ReversePaymentRequest,
 } from '../types/operation.type'
-import { CreatePaymentRequest } from '../types/briqpay-payment.type'
+import { CreatePaymentRequest, MediumBriqpayResponse } from '../types/briqpay-payment.type'
 import { PaymentOutcome, PaymentResponseSchemaDTO } from '../../dtos/briqpay-payment.dto'
 import { TransactionDraftDTO, TransactionResponseDTO } from '../../dtos/operations/transaction.dto'
 import {
@@ -28,15 +28,17 @@ import {
 import { appLogger } from '../../payment-sdk'
 import Briqpay from '../../libs/briqpay/BriqpayService'
 import {
-  convertNotificationStatus,
+  buildPaymentMethodInfoFromSession,
   convertPaymentModificationStatusCode,
   convertPaymentResultCode,
+  deriveTransactionStateFromSession,
   getActualOrderStatus,
-  orderStatusToWebhookStatus,
 } from './utils'
-import { SessionError, ValidationError } from '../../libs/errors/briqpay-errors'
+import { BriqpayError, SessionError, UpstreamError, ValidationError } from '../../libs/errors/briqpay-errors'
+import { logAmountMismatch, readBriqpaySessionAmounts } from '../../libs/briqpay/session-amounts'
 import { briqpayCheckoutTransactionItemIdFieldName, briqpaySessionIdFieldName } from '../../custom-types/custom-types'
 import { apiRoot } from '../../libs/commercetools/api-root'
+import { getBriqpaySessionDataService } from './session-data.service'
 
 const PAYMENT_KEY_PREFIX = 'briqpay-'
 
@@ -88,7 +90,16 @@ export class BriqpayOperationService {
       paymentId: request.payment.id,
     })
 
-    if (request.amount?.centAmount !== (ctCart.taxedPrice?.totalGross?.centAmount ?? ctCart.totalPrice.centAmount)) {
+    const captureExpectedAmount = ctCart.taxedPrice?.totalGross?.centAmount ?? ctCart.totalPrice.centAmount
+
+    if (request.amount?.centAmount !== captureExpectedAmount) {
+      logAmountMismatch({
+        context: 'capturePayment',
+        cartId: ctCart.id,
+        expected: { centAmount: captureExpectedAmount },
+        actual: { centAmount: request.amount?.centAmount },
+      })
+
       throw new ValidationError('Commerce Tools does not support partial captures towards all payment providers')
     }
 
@@ -199,7 +210,14 @@ export class BriqpayOperationService {
     appLogger.info({ requestedAmount: request.amount?.centAmount, expectedAmount }, 'Checking refund amount')
 
     if (request.amount?.centAmount !== expectedAmount) {
-      appLogger.error({ requestedAmount: request.amount?.centAmount, expectedAmount }, 'Amount mismatch')
+      logAmountMismatch({
+        context: 'refundPayment',
+        cartId: ctCart.id,
+        sessionId: briqpaySessionId,
+        expected: { centAmount: expectedAmount },
+        actual: { centAmount: request.amount?.centAmount },
+      })
+
       throw new ErrorInvalidOperation('Commerce Tools does not support partial refunds towards all payment providers')
     }
 
@@ -296,34 +314,61 @@ export class BriqpayOperationService {
       id: cartId,
     })
 
-    const briqpaySessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName] as string | undefined
+    const briqpaySessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName]
+
+    // The outcome comes from the Briqpay session, whose id /config stamped on the cart at checkout
+    // start; require it before proceeding.
+    if (typeof briqpaySessionId !== 'string' || !briqpaySessionId) {
+      appLogger.error({ cartId: ctCart.id }, 'createPayment: cart has no Briqpay session id')
+
+      throw new SessionError('No Briqpay session found for this cart', 400)
+    }
+
+    const { transactionState, briqpaySession } = await this.deriveAuthorizationState(
+      briqpaySessionId,
+      ctCart,
+      request.data.paymentOutcome,
+    )
+
+    // Reuse the session we just fetched to stage its custom-field data on the cart: fire-and-forget
+    // and best-effort, so it never delays or fails this buyer-facing response.
+    void this.stageSessionDataOnCart(briqpaySession, ctCart.id)
+
+    // The PSP that actually processed the payment (e.g. "mollie_cards"), not the generic
+    // connector name - paymentInterface already identifies the connector. The SDK only writes
+    // method/name when they are still empty, so webhook retries cannot flip them.
+    const paymentMethodInfo = buildPaymentMethodInfoFromSession(briqpaySession)
 
     // Dedupe: a CT Cart with multiple Payments blocks Checkout's automatic Order creation.
     // Reuse the existing Payment for this Briqpay session instead of creating a duplicate
     // when the connector is invoked more than once for the same session (retries, double-submit,
     // out-of-order webhooks, browser back-and-forth in Checkout).
-    if (briqpaySessionId) {
-      const existing = await this.findOrAttachExistingPaymentForSession(ctCart, briqpaySessionId)
-      if (existing) {
-        const updatedPayment = await this.ctPaymentService.updatePayment({
-          id: existing.id,
-          pspReference: briqpaySessionId,
-          paymentMethod: request.data.paymentMethod.type,
-          transaction: {
-            type: 'Authorization',
-            amount: existing.amountPlanned,
-            interactionId: briqpaySessionId,
-            state: convertPaymentResultCode(request.data.paymentOutcome),
-          },
-        })
-        await this.detachStaleBriqpayPayments(
-          ctCart.id,
-          updatedPayment.id,
-          existing.paymentMethodInfo?.paymentInterface ?? 'Briqpay',
-        )
-        return {
-          paymentReference: updatedPayment.id,
-        }
+    const existing = await this.findOrAttachExistingPaymentForSession(ctCart, briqpaySessionId)
+    if (existing) {
+      const updatedPayment = await this.ctPaymentService.updatePayment({
+        id: existing.id,
+        pspReference: briqpaySessionId,
+        ...(paymentMethodInfo && { paymentMethodInfo }),
+        transaction: {
+          type: 'Authorization',
+          amount: existing.amountPlanned,
+          interactionId: briqpaySessionId,
+          state: transactionState,
+        },
+      })
+      await this.detachStaleBriqpayPayments(
+        ctCart.id,
+        updatedPayment.id,
+        existing.paymentMethodInfo?.paymentInterface ?? 'Briqpay',
+      )
+
+      appLogger.info(
+        { paymentId: updatedPayment.id, briqpaySessionId, transactionState },
+        'createPayment: authorization recorded',
+      )
+
+      return {
+        paymentReference: updatedPayment.id,
       }
     }
 
@@ -336,16 +381,15 @@ export class BriqpayOperationService {
     // open during truly concurrent invocations of this endpoint.
     const ctPayment = await this.createOrRecoverPaymentForCheckout(ctCart, briqpaySessionId)
 
-    const pspReference = briqpaySessionId ?? ctCart.custom?.fields?.[briqpaySessionIdFieldName]
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: ctPayment.id,
-      pspReference,
-      paymentMethod: request.data.paymentMethod.type,
+      pspReference: briqpaySessionId,
+      ...(paymentMethodInfo && { paymentMethodInfo }),
       transaction: {
         type: 'Authorization',
         amount: ctPayment.amountPlanned,
-        interactionId: pspReference,
-        state: convertPaymentResultCode(request.data.paymentOutcome),
+        interactionId: briqpaySessionId,
+        state: transactionState,
       },
     })
 
@@ -355,9 +399,88 @@ export class BriqpayOperationService {
       ctPayment.paymentMethodInfo?.paymentInterface ?? 'Briqpay',
     )
 
+    appLogger.info(
+      { paymentId: updatedPayment.id, briqpaySessionId, transactionState },
+      'createPayment: authorization recorded',
+    )
+
     return {
       paymentReference: updatedPayment.id,
     }
+  }
+
+  /**
+   * Best-effort staging of the Briqpay session's custom-field data onto the cart during
+   * /payments. commercetools copies a cart's custom fields onto the order at creation, so the
+   * order is born with the data in the common flow instead of waiting for the order_status
+   * webhook. Idempotent with that webhook (setIfPresent, only-changed writes, conflict-retry,
+   * benign cart-already-ordered handling), so it races both order creation and the webhook
+   * safely. Fire-and-forget: it never delays or fails the payment response.
+   */
+  private async stageSessionDataOnCart(briqpaySession: MediumBriqpayResponse, cartId: string): Promise<void> {
+    try {
+      await getBriqpaySessionDataService().ingestSessionDataToCart(briqpaySession, cartId)
+    } catch (error) {
+      appLogger.error(
+        { cartId, sessionId: briqpaySession.sessionId, error: error instanceof Error ? error.message : error },
+        'createPayment: best-effort session data staging failed (non-fatal)',
+      )
+    }
+  }
+
+  /**
+   * Fetches the Briqpay session and derives the authorization state from it. A fetch failure throws
+   * a typed error before any CT write. declaredOutcome is logged when it disagrees - a signal only.
+   */
+  private async deriveAuthorizationState(
+    briqpaySessionId: string,
+    ctCart: Cart,
+    declaredOutcome: PaymentOutcome | undefined,
+  ): Promise<{ transactionState: TransactionState; briqpaySession: MediumBriqpayResponse }> {
+    let briqpaySession: MediumBriqpayResponse
+    try {
+      briqpaySession = await Briqpay.getSession(briqpaySessionId)
+    } catch (error) {
+      if (error instanceof BriqpayError) {
+        throw error
+      }
+
+      appLogger.error({ briqpaySessionId, cartId: ctCart.id, error }, 'createPayment: Briqpay session fetch failed')
+
+      throw new UpstreamError('Failed to fetch Briqpay session', error)
+    }
+
+    const transactionState = deriveTransactionStateFromSession(briqpaySession)
+
+    // A client value that differs from the session is stale or forged; log it as a signal.
+    if (declaredOutcome && convertPaymentResultCode(declaredOutcome) !== transactionState) {
+      appLogger.error(
+        { briqpaySessionId, cartId: ctCart.id, declaredOutcome, derivedState: transactionState },
+        'createPayment: client-declared paymentOutcome disagrees with Briqpay session status - ignoring client value',
+      )
+    }
+
+    const cartAmountIncVat = ctCart.taxedPrice?.totalGross?.centAmount ?? ctCart.totalPrice.centAmount
+    const cartCurrency = ctCart.taxedPrice?.totalGross?.currencyCode ?? ctCart.totalPrice.currencyCode
+
+    const sessionAmounts = readBriqpaySessionAmounts(briqpaySession)
+
+    if (sessionAmounts.amountIncVat !== cartAmountIncVat || sessionAmounts.currency !== cartCurrency) {
+      logAmountMismatch({
+        context: 'createPayment',
+        cartId: ctCart.id,
+        sessionId: briqpaySessionId,
+        expected: { amountIncVat: cartAmountIncVat, currency: cartCurrency },
+        actual: sessionAmounts,
+      })
+    }
+
+    appLogger.info(
+      { briqpaySessionId, cartId: ctCart.id, transactionState },
+      'createPayment: derived authorization state from Briqpay session',
+    )
+
+    return { transactionState, briqpaySession }
   }
 
   public async handleTransaction(transactionDraft: TransactionDraftDTO): Promise<TransactionResponseDTO> {
@@ -405,10 +528,23 @@ export class BriqpayOperationService {
       'handleTransaction: fetched Briqpay session status',
     )
 
-    // Map Briqpay order status → CT transaction state
-    const transactionState: TransactionState = orderStatus
-      ? convertNotificationStatus(orderStatusToWebhookStatus(orderStatus))
-      : 'Pending'
+    // Map Briqpay order status → CT transaction state (shared with createPayment).
+    const transactionState: TransactionState = deriveTransactionStateFromSession(briqpaySession)
+
+    const sessionAmounts = readBriqpaySessionAmounts(briqpaySession)
+
+    if (
+      sessionAmounts.amountIncVat !== amountPlanned.centAmount ||
+      sessionAmounts.currency !== amountPlanned.currencyCode
+    ) {
+      logAmountMismatch({
+        context: 'handleTransaction',
+        cartId: ctCart.id,
+        sessionId: briqpaySessionId,
+        expected: { amountIncVat: amountPlanned.centAmount, currency: amountPlanned.currencyCode },
+        actual: sessionAmounts,
+      })
+    }
 
     // Dedupe: a CT Cart with multiple Payments blocks Checkout's automatic Order creation.
     // Reuse the existing Payment for this Briqpay session instead of creating a duplicate.
@@ -430,9 +566,14 @@ export class BriqpayOperationService {
       )
     }
 
+    // The PSP that actually processed the payment - written only while method/name are still
+    // empty (SDK semantics), same as createPayment.
+    const paymentMethodInfo = buildPaymentMethodInfoFromSession(briqpaySession)
+
     await this.ctPaymentService.updatePayment({
       id: paymentForTransaction.id,
       pspReference: briqpaySessionId,
+      ...(paymentMethodInfo && { paymentMethodInfo }),
       transaction: {
         amount: amountPlanned,
         type: TRANSACTION_AUTHORIZATION_TYPE,

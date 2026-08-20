@@ -1,5 +1,4 @@
 import { Cart, healthCheckCommercetoolsPermissions, statusHandler } from '@commercetools/connect-payments-sdk'
-import type { Cart as PlatformCart } from '@commercetools/platform-sdk'
 import {
   CancelPaymentRequest,
   CapturePaymentRequest,
@@ -35,13 +34,11 @@ import BriqpayService from '../libs/briqpay/BriqpayService'
 import { BriqpaySessionService } from './briqpay/session.service'
 import { BriqpayOperationService } from './briqpay/operation.service'
 import { BriqpayNotificationService } from './briqpay/notification.service'
+import { briqpaySessionAmountsEqual, readBriqpaySessionAmounts } from '../libs/briqpay/session-amounts'
 import { SessionError, UpstreamError, ValidationError } from '../libs/errors/briqpay-errors'
 import { briqpaySessionIdFieldName } from '../custom-types/custom-types'
 
 const isDecisionAmountCheckDisabled = (): boolean => process.env.BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK === 'true'
-
-// Briqpay and commercetools can round VAT differently; drift within this is not a mismatch
-const DECISION_AMOUNT_TOLERANCE_MINOR_UNITS = 5
 
 export class BriqpayPaymentService extends AbstractPaymentService {
   private sessionService: BriqpaySessionService
@@ -57,7 +54,6 @@ export class BriqpayPaymentService extends AbstractPaymentService {
 
   public async config(hostname: string): Promise<ConfigResponse> {
     try {
-      const config = getConfig()
       const cartId = getCartIdFromContext()
       const futureOrderNumber = getFutureOrderNumberFromContext()
       const checkoutTransactionItemId = getCheckoutTransactionItemIdFromContext()
@@ -79,11 +75,13 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       if (!ctCart.shippingAddress) {
         throw new ValidationError('Cart is missing a shipping address. Taxes cannot be calculated.')
       }
+
       if (!ctCart.billingAddress) {
         throw new ValidationError('Cart is missing a billing address. Taxes cannot be calculated.')
       }
 
       const amountPlanned = await this.ctCartService.getPlannedPaymentAmount({ cart: ctCart })
+
       appLogger.info(
         {
           totalPrice: ctCart.totalPrice,
@@ -95,9 +93,9 @@ export class BriqpayPaymentService extends AbstractPaymentService {
         'Cart amount details:',
       )
 
-      // Check if a briqpay session id exists on the cart and handle session creation/retrieval
-      appLogger.info({ futureOrderNumber }, 'Creating Briqpay session with futureOrderNumber')
-      const briqpaySession = await this.sessionService.createOrUpdateBriqpaySession(
+      // Resolve the Briqpay session for this cart: created, updated, or reused as-is
+      appLogger.info({ futureOrderNumber }, 'Resolving Briqpay session with futureOrderNumber')
+      const { session: briqpaySession, syncedPayloadHash } = await this.sessionService.resolveBriqpaySession(
         ctCart,
         amountPlanned,
         hostname,
@@ -115,19 +113,22 @@ export class BriqpayPaymentService extends AbstractPaymentService {
       // entries instead of regenerating it. This keeps Briqpay reference1 aligned
       // with the eventual Order.orderNumber even when the customer returns after the
       // original CT Session has expired.
-      await this.sessionService.updateCartWithBriqpaySession(
-        ctCart,
-        briqpaySession.sessionId,
+      // syncedPayloadHash is only set when Briqpay provably applied the payload, so a
+      // reused-untouched session leaves the previously stored marker alone.
+      await this.sessionService.updateCTCartWithBriqpaySession(ctCart, {
+        briqpaySessionId: briqpaySession.sessionId,
         futureOrderNumber,
         checkoutTransactionItemId,
-      )
+        syncedPayloadHash,
+      })
 
-      return {
-        clientKey: config.mockClientKey,
-        environment: config.mockEnvironment,
+      // Mirrored in enabler/src/payment-enabler/payment-enabler-briqpay.ts BriqpayConfigResponse
+      const configResponse: ConfigResponse = {
         snippet: briqpaySession.htmlSnippet,
         briqpaySessionId: briqpaySession.sessionId,
       }
+
+      return configResponse
     } catch (error) {
       appLogger.error(
         {
@@ -234,11 +235,17 @@ export class BriqpayPaymentService extends AbstractPaymentService {
   /**
    * Best-effort re-sync of the Briqpay session to the cart, so the buyer's retry can
    * succeed after the reject (the widget rehydrates on resume). Never throws.
+   *
+   * Goes through the session service so the cart's stored hash is updated too: a PATCH
+   * that left the old hash behind would let the next /config believe the session still
+   * matches the cart, and skip the update that would have fixed it.
    */
   private async repairSessionFromCart(ctCart: Cart, sessionId: string): Promise<void> {
     try {
       const amountPlanned = await this.ctCartService.getPlannedPaymentAmount({ cart: ctCart })
-      await BriqpayService.updateSession(sessionId, ctCart as PlatformCart, amountPlanned)
+
+      await this.sessionService.syncCTCartToBriqpaySession(ctCart, sessionId, amountPlanned)
+
       appLogger.info({ cartId: ctCart.id, sessionId }, 'Re-synced Briqpay session to cart after amount mismatch')
     } catch (error) {
       appLogger.error(
@@ -256,24 +263,17 @@ export class BriqpayPaymentService extends AbstractPaymentService {
   private async verifySessionAmountMatchesCart(ctCart: Cart, sessionId: string): Promise<boolean> {
     try {
       const briqpaySession = await BriqpayService.getSession(sessionId)
-      const sessionAmount = briqpaySession.data?.order?.amountIncVat
-      const sessionCurrency = briqpaySession.data?.order?.currency
-      // Same amount basis the session was created and updated with
+      // Same builder the sync paths use, so the expectation is exactly what a sync would send
       const cartAmount = await this.ctCartService.getPlannedPaymentAmount({ cart: ctCart })
+      const update = await BriqpayService.buildSessionUpdateRequest(ctCart, cartAmount)
 
-      if (
-        typeof sessionAmount !== 'number' ||
-        Math.abs(sessionAmount - cartAmount.centAmount) > DECISION_AMOUNT_TOLERANCE_MINOR_UNITS ||
-        sessionCurrency !== cartAmount.currencyCode
-      ) {
+      if (!briqpaySessionAmountsEqual(briqpaySession, update.amounts)) {
         appLogger.error(
           {
             cartId: ctCart.id,
             sessionId,
-            sessionAmount,
-            sessionCurrency,
-            cartAmount: cartAmount.centAmount,
-            cartCurrency: cartAmount.currencyCode,
+            expected: update.amounts,
+            actual: readBriqpaySessionAmounts(briqpaySession),
           },
           'Amount mismatch between Briqpay session and cart - potential security violation',
         )

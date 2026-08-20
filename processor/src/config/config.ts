@@ -15,10 +15,6 @@ export const config = {
   // Required by logger
   loggerLevel: process.env.LOGGER_LEVEL || 'info',
 
-  // Update with specific payment providers config
-  mockClientKey: process.env.MOCK_CLIENT_KEY,
-  mockEnvironment: process.env.MOCK_ENVIRONMENT,
-
   // Payment Providers config
   returnUrl: process.env.RETURN_URL,
 }

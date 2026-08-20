@@ -109,6 +109,10 @@ deployAs:
           description: Key of CustomType field on the cart where the merchant sets the Briqpay checkout variant id to use for that cart. Read per session creation and forwarded as product.variantId, so each cart can resolve to a different Briqpay variant. When unset, Briqpay uses the account default variant.
           required: false
           default: briqpay-variant-id
+        - key: BRIQPAY_SYNCED_PAYLOAD_HASH_KEY
+          description: Key of CustomType field on the cart where the connector records a hash of the payload the Briqpay session already holds. Lets checkout skip an update Briqpay would treat as a no-op. Purely an optimisation - when the field is missing the connector updates on every checkout render, as before.
+          required: false
+          default: briqpay-synced-payload-hash
         - key: ALLOWED_ORIGINS
           description: Comma-separated list of allowed CORS origins. Supports wildcard patterns for subdomains (e.g., https://your-store.com,https://*.preview.your-store.com).
           required: false

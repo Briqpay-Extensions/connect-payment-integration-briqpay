@@ -28,13 +28,9 @@ describe("BaseComponent", () => {
   let component: MockComponent;
 
   const baseOptions: BaseOptions = {
-    sdk: new BriqpaySdk({
-      processorUrl: "https://mock-processor.com",
-      sessionId: "sess-123",
-    }),
+    sdk: new BriqpaySdk(),
     processorUrl: "https://mock-processor.com",
     sessionId: "sess-123",
-    environment: "test",
     snippet: '<div id="briqpay"></div>',
     briqpaySessionId: "sess-123",
     onComplete: jest.fn() as jest.MockedFunction<BaseOptions["onComplete"]>,

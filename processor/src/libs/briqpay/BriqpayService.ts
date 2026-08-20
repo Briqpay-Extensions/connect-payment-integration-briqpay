@@ -21,6 +21,46 @@ import { Money } from '@commercetools/connect-payments-sdk'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
 import { appLogger } from '../../payment-sdk'
 import { briqpayVariantIdFieldName } from '../../custom-types/custom-types'
+import { mapBriqpaySessionError } from './session-error-mapping'
+import { BriqpayOrderAmounts } from './session-amounts'
+import { sha256Hex } from '../utils/content-hash'
+import { BRIQPAY_USER_AGENT } from './user-agent'
+
+/** The `data` subtree shared by the create and update payloads. */
+export type BriqpaySessionData = {
+  order: { currency: string; amountIncVat: number; amountExVat: number; cart: CartItem[] }
+  billing?: IAddressSchema
+  shipping?: IAddressSchema
+}
+
+export type BriqpaySessionUpdateRequest = {
+  readonly body: string
+  readonly hash: string
+  readonly amounts: BriqpayOrderAmounts
+}
+
+export type CreatedBriqpaySession = {
+  session: MediumBriqpayResponse
+  syncedPayloadHash: string
+}
+
+/**
+ * Briqpay returns the HTML snippet as `snippet` on some responses and `htmlSnippet`
+ * on others. Normalize both the GET and PATCH bodies through here so callers only
+ * ever read `htmlSnippet`.
+ */
+const normalizeSessionResponse = (json: MediumBriqpayResponse, sessionId: string): MediumBriqpayResponse => {
+  const raw = json as MediumBriqpayResponse & { snippet?: string }
+  if (!raw.htmlSnippet && raw.snippet) {
+    raw.htmlSnippet = raw.snippet
+  }
+
+  if (!raw?.sessionId) {
+    throw new Error(`Invalid Briqpay session response for ${sessionId}: missing sessionId`)
+  }
+
+  return raw
+}
 
 const mapBriqpayProductType = (item: LineItem) => {
   // Check if the product has a digital-related attribute
@@ -55,7 +95,7 @@ const createDiscountLineItem = (item: LineItem, localeName: string, taxRate: num
     ? Math.round(item.taxedPrice.totalNet.centAmount / quantity)
     : Math.round(grossUnit / (1 + (item.taxRate?.amount ?? 0)))
 
-  return {
+  const discountLineItem: RegularCartItem = {
     productType: ITEM_PRODUCT_TYPE.DISCOUNT,
     reference: item.key ?? localeName,
     name: localeName,
@@ -69,6 +109,8 @@ const createDiscountLineItem = (item: LineItem, localeName: string, taxRate: num
     totalVatAmount: item.taxedPrice?.totalTax?.centAmount ?? 0,
     imageUrl: item.variant?.images?.[0]?.url,
   }
+
+  return discountLineItem
 }
 
 /**
@@ -85,7 +127,7 @@ const createRegularLineItem = (item: LineItem, localeName: string, taxRate: numb
   const originalNetTotal = Math.round(originalGrossTotal / (1 + taxRateAmount))
   const originalVatTotal = originalGrossTotal - originalNetTotal
 
-  return {
+  const regularLineItem: RegularCartItem = {
     productType: mapBriqpayProductType(item),
     reference: item.variant?.sku ?? localeName,
     name: localeName,
@@ -99,6 +141,8 @@ const createRegularLineItem = (item: LineItem, localeName: string, taxRate: numb
     totalVatAmount: originalVatTotal,
     imageUrl: item.variant?.images?.[0]?.url,
   }
+
+  return regularLineItem
 }
 
 /**
@@ -194,7 +238,7 @@ const createItemDiscountLineItem = (
   const discountNames = discountIds.map((id) => discountNameMap.get(id)).filter((name): name is string => !!name)
   const discountName = discountNames.length > 0 ? discountNames.join(' + ') : `Discount: ${localeName}`
 
-  return {
+  const itemDiscountLineItem: RegularCartItem = {
     productType: ITEM_PRODUCT_TYPE.DISCOUNT,
     reference: discountReference,
     name: discountName,
@@ -208,6 +252,8 @@ const createItemDiscountLineItem = (
     totalVatAmount: -discountVatAmount, // Negative for discount
     imageUrl: undefined,
   }
+
+  return itemDiscountLineItem
 }
 
 /**
@@ -277,10 +323,8 @@ const mapSingleLineItem = (
  * Uses the ACTUAL taxed amounts (not original-price + discount-line like regular
  * items) since custom line items carry their own price and CT already bakes any
  * discounts into taxedPrice/totalPrice.
- *
- * Exported so the session comparison can reuse the exact same mapping.
  */
-export const mapCustomLineItem = (item: CustomLineItem, locale: string | undefined): RegularCartItem => {
+const mapCustomLineItem = (item: CustomLineItem, locale: string | undefined): RegularCartItem => {
   const fallbackLocale = locale || 'en-GB'
   const localeName = getLocalizedName(item, fallbackLocale)
   const quantity = item.quantity
@@ -294,7 +338,7 @@ export const mapCustomLineItem = (item: CustomLineItem, locale: string | undefin
   // those must be sent as discount lines, not negative-priced products.
   const productType = grossTotal < 0 ? ITEM_PRODUCT_TYPE.DISCOUNT : ITEM_PRODUCT_TYPE.PHYSICAL
 
-  return {
+  const customCartItem: RegularCartItem = {
     productType,
     reference: item.key || item.slug || item.id,
     name: localeName,
@@ -310,22 +354,17 @@ export const mapCustomLineItem = (item: CustomLineItem, locale: string | undefin
     totalVatAmount: vatTotal,
     imageUrl: undefined,
   }
+
+  return customCartItem
 }
 
-const mapBriqpayCartItem = async (
+const mapBriqpayCartItem = (
   lineItems: LineItem[],
   customLineItems: CustomLineItem[],
   locale: string | undefined,
-): Promise<CartItem[]> => {
+  discountNameMap: Map<string, string>,
+): CartItem[] => {
   const fallbackLocale = locale || 'en-GB'
-
-  const allDiscountIds = collectDiscountIds(lineItems)
-  const discountNameMap = await fetchCartDiscountNames(allDiscountIds, fallbackLocale)
-
-  appLogger.info(
-    { discountIds: allDiscountIds, discountNameMap: Object.fromEntries(discountNameMap) },
-    'Fetched cart discount names:',
-  )
 
   const mappedItems = lineItems.flatMap((item) => mapSingleLineItem(item, fallbackLocale, discountNameMap))
   const mappedCustomItems = customLineItems.map((item) => mapCustomLineItem(item, locale))
@@ -333,6 +372,24 @@ const mapBriqpayCartItem = async (
 
   appLogger.info(allItems, 'Final mapped items:')
   return allItems
+}
+
+/** Discount ids referenced by the cart total, distinct from the per-line-item ones. */
+const collectTotalDiscountIds = (cart: Cart): string[] =>
+  cart.discountOnTotalPrice?.includedDiscounts?.map((d) => d.discount.id).filter((id) => !!id) ?? []
+
+/**
+ * Resolves display names for every discount the cart references, per-item and total,
+ * in ONE lookup. Two separate fetches gave two independent chances to degrade
+ * differently, since fetchCartDiscountNames swallows its own errors.
+ */
+const fetchDiscountNamesForCart = async (cart: Cart): Promise<Map<string, string>> => {
+  const discountIds = [...new Set([...collectDiscountIds(cart.lineItems), ...collectTotalDiscountIds(cart)])]
+  const discountNameMap = await fetchCartDiscountNames(discountIds, cart.locale || 'en-GB')
+
+  appLogger.info({ discountIds, discountNameMap: Object.fromEntries(discountNameMap) }, 'Fetched cart discount names:')
+
+  return discountNameMap
 }
 
 const mapBriqpayAddress = (address: Address): IAddressSchema => ({
@@ -361,7 +418,9 @@ class BriqpayService {
   }
 
   async healthCheck() {
-    const response = await fetch('https://api.briqpay.com/')
+    const response = await fetch('https://api.briqpay.com/', {
+      headers: { 'User-Agent': BRIQPAY_USER_AGENT },
+    })
     if (!response.ok) {
       throw new Error(`Health check failed with status ${response.status}`)
     }
@@ -449,23 +508,19 @@ class BriqpayService {
     throw new Error(errorMessage)
   }
 
-  private async generateSessionRequestBody(
+  private generateSessionRequestBody(
     ctCart: Cart,
-    amountPlanned: PaymentAmount,
+    sessionData: BriqpaySessionData,
     hookUrl: string,
     futureOrderNumber?: string,
-  ): Promise<CreateSessionRequestBody> {
-    const effectiveTaxRate = await this.getEffectiveTaxRate(ctCart)
-    const taxMultiplier = 1 + effectiveTaxRate
-    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.customLineItems, ctCart.locale)
-
+  ): CreateSessionRequestBody {
     // Read per session creation (never cached) so each cart resolves to its own Briqpay variant.
     // The merchant stamps this on the cart before the checkout renders; absent it, Briqpay uses
     // the account default variant.
     const configuredVariantId = ctCart.custom?.fields?.[briqpayVariantIdFieldName]
     const variantId = typeof configuredVariantId === 'string' && configuredVariantId ? configuredVariantId : undefined
 
-    return {
+    const requestBody: CreateSessionRequestBody = {
       product: {
         type: PAYMENT_TOOLS_PRODUCT.PAYMENT,
         intent: SESSION_INTENT.PAYMENT_ONE_TIME,
@@ -532,18 +587,7 @@ class BriqpayService {
         cartId: ctCart.id,
         ...(futureOrderNumber && { reference1: futureOrderNumber }),
       },
-      data: {
-        ...(ctCart.billingAddress && { billing: mapBriqpayAddress(ctCart.billingAddress) }),
-        ...((ctCart.billingAddress || ctCart.shippingAddress) && {
-          shipping: mapBriqpayAddress(ctCart.shippingAddress! || ctCart.billingAddress!),
-        }),
-        order: {
-          currency: ctCart.totalPrice.currencyCode,
-          amountIncVat: amountPlanned.centAmount,
-          amountExVat: ctCart.taxedPrice?.totalNet?.centAmount ?? Math.round(amountPlanned.centAmount / taxMultiplier),
-          cart: cartItems,
-        },
-      },
+      data: sessionData,
       modules: {
         loadModules: [MODULE_TYPE.PAYMENT],
         config: {
@@ -553,14 +597,19 @@ class BriqpayService {
         },
       },
     }
+
+    return requestBody
   }
 
-  private async addDiscountItem(briqpayCreateSession: CreateSessionRequestBody, ctCart: Cart): Promise<void> {
-    if (!ctCart.discountOnTotalPrice?.discountedNetAmount || !briqpayCreateSession.data?.order?.cart) {
-      return
+  /**
+   * The cart-total discount line, or undefined when the cart has none.
+   * CT amounts are negative; we negate them so Briqpay sees a positive discount.
+   */
+  private buildTotalDiscountItem(ctCart: Cart, discountNameMap: Map<string, string>): RegularCartItem | undefined {
+    if (!ctCart.discountOnTotalPrice?.discountedNetAmount) {
+      return undefined
     }
 
-    // CT amounts are negative, we negate them to make Briqpay see a positive discount
     const net = -ctCart.discountOnTotalPrice.discountedNetAmount.centAmount
     const gross = -(
       ctCart.discountOnTotalPrice.discountedGrossAmount?.centAmount ??
@@ -569,15 +618,7 @@ class BriqpayService {
     const vat = gross - net
     const taxRate = net !== 0 ? Math.round(((gross - net) / net) * 10000) : 0
 
-    // Get discount IDs from discountOnTotalPrice.includedDiscounts
-    const discountIds =
-      ctCart.discountOnTotalPrice.includedDiscounts?.map((d) => d.discount.id).filter((id) => !!id) ?? []
-
-    // Fetch Cart Discount names
-    const locale = ctCart.locale || 'en-GB'
-    const discountNameMap = await fetchCartDiscountNames(discountIds, locale)
-
-    // Build discount name and reference from Cart Discount names
+    const discountIds = collectTotalDiscountIds(ctCart)
     const discountNames = discountIds.map((id) => discountNameMap.get(id)).filter((name): name is string => !!name)
     const discountName = discountNames.length > 0 ? discountNames.join(' + ') : 'Discount'
     const discountReference = discountIds.length > 0 ? `discount-${discountIds.join('-')}` : 'total-discount'
@@ -598,34 +639,29 @@ class BriqpayService {
     }
 
     appLogger.info(
-      {
-        ...discountItem,
-        grossAmount: gross,
-        netAmount: net,
-        discountIds,
-      },
+      { ...discountItem, grossAmount: gross, netAmount: net, discountIds },
       'Adding total discount line item:',
     )
 
-    briqpayCreateSession.data.order.cart.push(discountItem)
+    return discountItem
   }
 
-  private async addShippingItem(briqpayCreateSession: CreateSessionRequestBody, ctCart: Cart): Promise<void> {
-    if (!briqpayCreateSession.data?.order?.cart || !ctCart.shippingInfo?.price) {
-      return
+  /**
+   * The shipping fee line plus, when shipping is discounted, a separate discount line.
+   * Always priced from the ORIGINAL shipping price; discounts are their own lines.
+   */
+  private buildShippingItems(ctCart: Cart, effectiveTaxRate: number): RegularCartItem[] {
+    if (!ctCart.shippingInfo?.price) {
+      return []
     }
 
-    const shippingPrice = ctCart.shippingInfo.price
-    const effectiveTaxRate = await this.getEffectiveTaxRate(ctCart)
     const shippingTaxRateAmount = ctCart.shippingInfo.taxRate?.amount ?? effectiveTaxRate
     const taxMultiplier = 1 + shippingTaxRateAmount
     const shippingTaxRate = Math.round(shippingTaxRateAmount * 10000)
 
-    // Always use ORIGINAL shipping price (before discounts)
-    const originalShippingGross = shippingPrice.centAmount
+    const originalShippingGross = ctCart.shippingInfo.price.centAmount
     const originalShippingNet = Math.round(originalShippingGross / taxMultiplier)
 
-    // Add shipping item at original price
     const shippingItem: RegularCartItem = {
       productType: ITEM_PRODUCT_TYPE.SHIPPING_FEE,
       reference: 'shippingfee',
@@ -640,42 +676,101 @@ class BriqpayService {
       totalVatAmount: originalShippingGross - originalShippingNet,
     }
 
-    briqpayCreateSession.data.order.cart.push(shippingItem)
     appLogger.info({ shippingItem }, 'Added shipping fee item:')
 
-    // If shipping has a discount, add a separate discount line item
     const discountedPrice = ctCart.shippingInfo.discountedPrice?.value.centAmount
-    if (discountedPrice !== undefined && discountedPrice < originalShippingGross) {
-      const shippingDiscountGross = originalShippingGross - discountedPrice
-      const shippingDiscountNet = Math.round(shippingDiscountGross / taxMultiplier)
-      const shippingDiscountVat = shippingDiscountGross - shippingDiscountNet
-
-      const shippingDiscountItem: RegularCartItem = {
-        productType: ITEM_PRODUCT_TYPE.DISCOUNT,
-        reference: 'shipping-discount',
-        name: 'Shipping Discount',
-        quantity: 1,
-        quantityUnit: 'pc',
-        unitPrice: -shippingDiscountNet, // Negative for discount
-        unitPriceIncVat: -shippingDiscountGross, // Negative for discount
-        taxRate: shippingTaxRate,
-        discountPercentage: 0,
-        totalAmount: -shippingDiscountGross, // Negative for discount
-        totalVatAmount: -shippingDiscountVat, // Negative for discount
-        imageUrl: undefined,
-      }
-
-      briqpayCreateSession.data.order.cart.push(shippingDiscountItem)
-      appLogger.info(
-        {
-          shippingDiscountItem,
-          originalShippingGross,
-          discountedPrice,
-          discountAmount: shippingDiscountGross,
-        },
-        'Added shipping discount line item:',
-      )
+    if (discountedPrice === undefined || discountedPrice >= originalShippingGross) {
+      return [shippingItem]
     }
+
+    const shippingDiscountGross = originalShippingGross - discountedPrice
+    const shippingDiscountNet = Math.round(shippingDiscountGross / taxMultiplier)
+    const shippingDiscountVat = shippingDiscountGross - shippingDiscountNet
+
+    const shippingDiscountItem: RegularCartItem = {
+      productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+      reference: 'shipping-discount',
+      name: 'Shipping Discount',
+      quantity: 1,
+      quantityUnit: 'pc',
+      unitPrice: -shippingDiscountNet, // Negative for discount
+      unitPriceIncVat: -shippingDiscountGross, // Negative for discount
+      taxRate: shippingTaxRate,
+      discountPercentage: 0,
+      totalAmount: -shippingDiscountGross, // Negative for discount
+      totalVatAmount: -shippingDiscountVat, // Negative for discount
+      imageUrl: undefined,
+    }
+
+    appLogger.info(
+      { shippingDiscountItem, originalShippingGross, discountedPrice, discountAmount: shippingDiscountGross },
+      'Added shipping discount line item:',
+    )
+
+    return [shippingItem, shippingDiscountItem]
+  }
+
+  /**
+   * The `data` subtree Briqpay receives, built identically for create and update.
+   *
+   * Both paths MUST go through here: the sync hash is a claim about these exact
+   * bytes, so a second implementation would let create and update drift and make
+   * the hash a statement about a payload that was never sent.
+   *
+   * Reads only cart pricing/address state - never custom fields - so writing the
+   * sync hash back onto the cart can never change the hash. That invariant is what
+   * stops the resolve/write cycle oscillating.
+   */
+  private async buildSessionData(ctCart: Cart, amount: PaymentAmount | Money): Promise<BriqpaySessionData> {
+    const effectiveTaxRate = await this.getEffectiveTaxRate(ctCart)
+    const discountNameMap = await fetchDiscountNamesForCart(ctCart)
+
+    const cartItems = mapBriqpayCartItem(ctCart.lineItems, ctCart.customLineItems, ctCart.locale, discountNameMap)
+
+    const totalDiscountItem = this.buildTotalDiscountItem(ctCart, discountNameMap)
+    if (totalDiscountItem) {
+      cartItems.push(totalDiscountItem)
+    }
+    cartItems.push(...this.buildShippingItems(ctCart, effectiveTaxRate))
+
+    const sessionData: BriqpaySessionData = {
+      order: {
+        currency: amount.currencyCode,
+        amountIncVat: amount.centAmount,
+        amountExVat: ctCart.taxedPrice?.totalNet?.centAmount ?? Math.round(amount.centAmount / (1 + effectiveTaxRate)),
+        cart: cartItems,
+      },
+      ...(ctCart.billingAddress && { billing: mapBriqpayAddress(ctCart.billingAddress) }),
+      ...((ctCart.billingAddress || ctCart.shippingAddress) && {
+        shipping: mapBriqpayAddress(ctCart.shippingAddress! || ctCart.billingAddress!),
+      }),
+    }
+
+    return sessionData
+  }
+
+  /**
+   * The update payload plus a hash of the exact bytes that will be sent.
+   *
+   * `updateSession` sends `body` verbatim, which is what makes
+   * `hash === sha256(bytes Briqpay accepted)` structurally true instead of a
+   * convention someone has to remember. Never mutate `body` after this returns.
+   */
+  public async buildSessionUpdateRequest(ctCart: Cart, amount: PaymentAmount): Promise<BriqpaySessionUpdateRequest> {
+    const data = await this.buildSessionData(ctCart, amount)
+    const body = JSON.stringify({ data })
+
+    const request: BriqpaySessionUpdateRequest = {
+      body,
+      hash: sha256Hex(body),
+      amounts: {
+        currency: data.order.currency,
+        amountIncVat: data.order.amountIncVat,
+        amountExVat: data.order.amountExVat,
+      },
+    }
+
+    return request
   }
 
   private logFinalAmounts(briqpayCreateSession: CreateSessionRequestBody): void {
@@ -732,17 +827,24 @@ class BriqpayService {
     )
   }
 
-  async createSession(ctCart: Cart, amountPlanned: PaymentAmount, hostname: string, futureOrderNumber?: string) {
+  /**
+   * Creates a session and reports the sync hash for the `data` it delivered, so the
+   * caller can record on the cart that Briqpay already holds this payload. The hash
+   * covers the same `data` bytes an update would send - both come from
+   * buildSessionData - so it is a true statement about what Briqpay received.
+   */
+  async createSession(
+    ctCart: Cart,
+    amountPlanned: PaymentAmount,
+    hostname: string,
+    futureOrderNumber?: string,
+  ): Promise<CreatedBriqpaySession> {
     // Always try https on the default port by default, can always fix the URL from Briqpay if necessary
     const connectorUrl = 'https://' + hostname
     const hookUrl = connectorUrl.endsWith('/') ? connectorUrl + 'notifications' : connectorUrl + '/notifications'
 
-    const briqpayCreateSession = await this.generateSessionRequestBody(
-      ctCart,
-      amountPlanned,
-      hookUrl,
-      futureOrderNumber,
-    )
+    const sessionData = await this.buildSessionData(ctCart, amountPlanned)
+    const briqpayCreateSession = this.generateSessionRequestBody(ctCart, sessionData, hookUrl, futureOrderNumber)
 
     appLogger.info(
       {
@@ -753,8 +855,6 @@ class BriqpayService {
       'Creating Briqpay session with futureOrderNumber as reference1',
     )
 
-    await this.addDiscountItem(briqpayCreateSession, ctCart)
-    await this.addShippingItem(briqpayCreateSession, ctCart)
     this.logFinalAmounts(briqpayCreateSession)
 
     appLogger.info(
@@ -769,6 +869,7 @@ class BriqpayService {
       headers: {
         Authorization: `Basic ${btoa(this.username + ':' + this.secret)}`,
         'content-type': 'application/json',
+        'User-Agent': BRIQPAY_USER_AGENT,
       },
       body: JSON.stringify(briqpayCreateSession),
     })
@@ -795,7 +896,12 @@ class BriqpayService {
       throw new Error('Invalid Briqpay session response: missing sessionId')
     }
 
-    return responseData
+    const created: CreatedBriqpaySession = {
+      session: normalizeSessionResponse(responseData, responseData.sessionId),
+      syncedPayloadHash: sha256Hex(JSON.stringify({ data: sessionData })),
+    }
+
+    return created
   }
 
   async capture(
@@ -803,7 +909,12 @@ class BriqpayService {
     amount: Omit<PaymentAmount, 'fractionDigits'>,
     sessionId: string,
   ): Promise<{ captureId: string; status: PaymentOutcome } & Record<string, unknown>> {
-    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.customLineItems, ctCart.locale)
+    const cartItems = mapBriqpayCartItem(
+      ctCart.lineItems,
+      ctCart.customLineItems,
+      ctCart.locale,
+      await fetchDiscountNamesForCart(ctCart),
+    )
     const briqpayCaptureRequest: Pick<CreateSessionRequestBody, 'data'> = {
       data: {
         order: {
@@ -832,6 +943,7 @@ class BriqpayService {
       headers: {
         Authorization: `Basic ${btoa(this.username + ':' + this.secret)}`,
         'content-type': 'application/json',
+        'User-Agent': BRIQPAY_USER_AGENT,
       },
       body: JSON.stringify(briqpayCaptureRequest),
     }).then(async (res) => {
@@ -856,7 +968,12 @@ class BriqpayService {
     sessionId: string,
     captureId?: string,
   ): Promise<{ refundId: string; status: PaymentOutcome } & Record<string, unknown>> {
-    const cartItems = await mapBriqpayCartItem(ctCart.lineItems, ctCart.customLineItems, ctCart.locale)
+    const cartItems = mapBriqpayCartItem(
+      ctCart.lineItems,
+      ctCart.customLineItems,
+      ctCart.locale,
+      await fetchDiscountNamesForCart(ctCart),
+    )
     const briqpayRefundRequest: Pick<CreateSessionRequestBody, 'data'> & { captureId?: string } = {
       ...(captureId && { captureId }),
       data: {
@@ -885,6 +1002,7 @@ class BriqpayService {
       headers: {
         Authorization: `Basic ${btoa(this.username + ':' + this.secret)}`,
         'content-type': 'application/json',
+        'User-Agent': BRIQPAY_USER_AGENT,
       },
       body: JSON.stringify(briqpayRefundRequest),
     }).then(async (res) => {
@@ -909,6 +1027,7 @@ class BriqpayService {
       headers: {
         Authorization: `Basic ${btoa(this.username + ':' + this.secret)}`,
         'content-type': 'application/json',
+        'User-Agent': BRIQPAY_USER_AGENT,
       },
       body: JSON.stringify(decisionRequest),
     })
@@ -933,6 +1052,7 @@ class BriqpayService {
         headers: {
           Authorization: `Basic ${btoa(this.username + ':' + this.secret)}`,
           'content-type': 'application/json',
+          'User-Agent': BRIQPAY_USER_AGENT,
         },
       },
     ).then(async (response) => {
@@ -945,19 +1065,11 @@ class BriqpayService {
           },
           'Briqpay API error details:',
         )
-        throw new Error(`Briqpay API error: ${errorText}`)
+        throw mapBriqpaySessionError(errorText, sessionId)
       }
       const json = await response.json()
-      // Briqpay's GET /session may return the HTML snippet as 'snippet' instead of 'htmlSnippet'.
-      // Normalize to 'htmlSnippet' to match our MediumBriqpayResponse type and createSession response.
-      if (!json.htmlSnippet && json.snippet) {
-        json.htmlSnippet = json.snippet
-      }
-      appLogger.info(
-        { sessionId, hasHtmlSnippet: !!json.htmlSnippet, hasSnippet: !!json.snippet },
-        'getSession response snippet check',
-      )
-      return json
+
+      return normalizeSessionResponse(json, sessionId)
     })
   }
 
@@ -967,6 +1079,7 @@ class BriqpayService {
       headers: {
         Authorization: `Basic ${btoa(this.username + ':' + this.secret)}`,
         'content-type': 'application/json',
+        'User-Agent': BRIQPAY_USER_AGENT,
       },
     })
 
@@ -986,202 +1099,44 @@ class BriqpayService {
     return { status: PaymentOutcome.APPROVED }
   }
 
-  private async addShippingItemToCart(cartItems: CartItem[], cart: Cart): Promise<void> {
-    if (!cart.shippingInfo || !cart.shippingInfo.price) {
-      return
-    }
-
-    const shippingPrice = cart.shippingInfo.price
-    const effectiveTaxRate = await this.getEffectiveTaxRate(cart)
-    const shippingTaxRateAmount = cart.shippingInfo.taxRate?.amount ?? effectiveTaxRate
-    const taxMultiplier = 1 + shippingTaxRateAmount
-    const shippingTaxRate = Math.round(shippingTaxRateAmount * 10000)
-
-    // Always use ORIGINAL shipping price (before discounts)
-    const originalShippingGross = shippingPrice.centAmount
-    const originalShippingNet = Math.round(originalShippingGross / taxMultiplier)
-
-    // Add shipping item at original price
-    const shippingItem: RegularCartItem = {
-      productType: ITEM_PRODUCT_TYPE.SHIPPING_FEE,
-      reference: 'shippingfee',
-      name: 'Shipping fee',
-      quantity: 1,
-      quantityUnit: 'pc',
-      unitPrice: originalShippingNet,
-      unitPriceIncVat: originalShippingGross,
-      taxRate: shippingTaxRate,
-      discountPercentage: 0, // No percentage - discounts are separate line items
-      totalAmount: originalShippingGross,
-      totalVatAmount: originalShippingGross - originalShippingNet,
-    }
-
-    cartItems.push(shippingItem)
-    appLogger.info({ shippingItem }, 'Added shipping fee item to update session:')
-
-    // If shipping has a discount, add a separate discount line item
-    const discountedPrice = cart.shippingInfo.discountedPrice?.value.centAmount
-    if (discountedPrice !== undefined && discountedPrice < originalShippingGross) {
-      const shippingDiscountGross = originalShippingGross - discountedPrice
-      const shippingDiscountNet = Math.round(shippingDiscountGross / taxMultiplier)
-      const shippingDiscountVat = shippingDiscountGross - shippingDiscountNet
-
-      const shippingDiscountItem: RegularCartItem = {
-        productType: ITEM_PRODUCT_TYPE.DISCOUNT,
-        reference: 'shipping-discount',
-        name: 'Shipping Discount',
-        quantity: 1,
-        quantityUnit: 'pc',
-        unitPrice: -shippingDiscountNet, // Negative for discount
-        unitPriceIncVat: -shippingDiscountGross, // Negative for discount
-        taxRate: shippingTaxRate,
-        discountPercentage: 0,
-        totalAmount: -shippingDiscountGross, // Negative for discount
-        totalVatAmount: -shippingDiscountVat, // Negative for discount
-        imageUrl: undefined,
-      }
-
-      cartItems.push(shippingDiscountItem)
-      appLogger.info(
-        {
-          shippingDiscountItem,
-          originalShippingGross,
-          discountedPrice,
-          discountAmount: shippingDiscountGross,
-        },
-        'Added shipping discount line item to update session:',
-      )
-    }
-  }
-
   /**
-   * Adds discount item to cart items array for session updates.
-   * CT discount amounts are negative, we negate them to make Briqpay see a positive discount.
+   * Sends a prebuilt update payload. `request.body` goes out verbatim so that
+   * `request.hash` provably describes the bytes Briqpay accepted - see
+   * buildSessionUpdateRequest.
    */
-  private async addDiscountItemToCart(cartItems: CartItem[], cart: Cart): Promise<void> {
-    if (!cart.discountOnTotalPrice?.discountedNetAmount) {
-      return
-    }
-
-    const net = -cart.discountOnTotalPrice.discountedNetAmount.centAmount
-    const gross = -(
-      cart.discountOnTotalPrice.discountedGrossAmount?.centAmount ??
-      cart.discountOnTotalPrice.discountedNetAmount.centAmount
-    )
-    const vat = gross - net
-    const taxRate = net !== 0 ? Math.round(((gross - net) / net) * 10000) : 0
-
-    // Get discount IDs from discountOnTotalPrice.includedDiscounts
-    const discountIds =
-      cart.discountOnTotalPrice.includedDiscounts?.map((d) => d.discount.id).filter((id) => !!id) ?? []
-
-    // Fetch Cart Discount names
-    const locale = cart.locale || 'en-GB'
-    const discountNameMap = await fetchCartDiscountNames(discountIds, locale)
-
-    // Build discount name and reference from Cart Discount names
-    const discountNames = discountIds.map((id) => discountNameMap.get(id)).filter((name): name is string => !!name)
-    const discountName = discountNames.length > 0 ? discountNames.join(' + ') : 'Discount'
-    const discountReference = discountIds.length > 0 ? `discount-${discountIds.join('-')}` : 'total-discount'
-
-    const discountItem: RegularCartItem = {
-      productType: ITEM_PRODUCT_TYPE.DISCOUNT,
-      reference: discountReference,
-      name: discountName,
-      quantity: 1,
-      quantityUnit: 'pc',
-      unitPrice: net, // ex VAT
-      unitPriceIncVat: gross, // incl VAT
-      taxRate,
-      discountPercentage: 0,
-      totalAmount: gross,
-      totalVatAmount: vat,
-      imageUrl: undefined,
-    }
-
-    appLogger.info(
-      {
-        ...discountItem,
-        grossAmount: gross,
-        netAmount: net,
-        discountIds,
-      },
-      'Adding total discount line item to update session:',
-    )
-
-    cartItems.push(discountItem)
-  }
-
-  public async updateSession(sessionId: string, cart: Cart, amount: Money): Promise<MediumBriqpayResponse> {
+  public async updateSession(sessionId: string, request: BriqpaySessionUpdateRequest): Promise<MediumBriqpayResponse> {
     try {
-      const cartItems = await mapBriqpayCartItem(cart.lineItems, cart.customLineItems, cart.locale)
-      await this.addDiscountItemToCart(cartItems, cart)
-      await this.addShippingItemToCart(cartItems, cart)
-
-      // Get highest possible original value fallback without assuming matching rounding
-      const fallbackAmountExVat = Math.round(amount.centAmount / (1 + (await this.getEffectiveTaxRate(cart))))
-
-      const data = {
-        data: {
-          order: {
-            currency: amount.currencyCode,
-            amountIncVat: amount.centAmount,
-            amountExVat: cart.taxedPrice?.totalNet?.centAmount ?? fallbackAmountExVat,
-            cart: cartItems,
-          },
-          ...(cart.billingAddress && { billing: mapBriqpayAddress(cart.billingAddress) }),
-          ...((cart.billingAddress || cart.shippingAddress) && {
-            shipping: mapBriqpayAddress(cart.shippingAddress! || cart.billingAddress!),
-          }),
-        },
-      }
-
-      appLogger.info({}, 'Updating Briqpay session')
+      appLogger.info({ sessionId }, 'Updating Briqpay session')
 
       const response = await fetch(`${this.baseUrl}/session/${sessionId}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Basic ${btoa(this.username + ':' + this.secret)}`,
+          'User-Agent': BRIQPAY_USER_AGENT,
         },
-        body: JSON.stringify(data),
+        body: request.body,
       })
 
       if (!response.ok) {
-        let errorMessage = 'Unknown error'
-        try {
-          const errorData = await response.json()
-          appLogger.error(
-            {
-              status: response.status,
-              data: errorData,
-            },
-            'Briqpay API error details:',
-          )
-          errorMessage = errorData?.error?.message || 'Unknown error'
-        } catch {
-          // If response is not JSON, try to get the text
-          const text = await response.text()
-          appLogger.error(
-            {
-              status: response.status,
-              text,
-            },
-            'Briqpay API error details:',
-          )
-          errorMessage = text || 'Unknown error'
-        }
-        throw new Error(`Briqpay API error: ${errorMessage}`)
+        // Read the body exactly once: consuming it twice (json() then text()) throws
+        // and loses the upstream text, which is the only way to identify some errors.
+        const errorText = await response.text()
+        appLogger.error({ status: response.status, data: errorText }, 'Briqpay API error details:')
+
+        throw mapBriqpaySessionError(errorText, sessionId)
+      }
+
+      // No `fields` is sent, so Briqpay answers 200 with the full session. A 204 means
+      // someone added `fields=none` - fail legibly rather than on a JSON parse error.
+      if (response.status === 204) {
+        throw new Error(`Briqpay returned 204 for session ${sessionId}: update requested no response body`)
       }
 
       const responseData = await response.json()
-      appLogger.info({}, 'Briqpay update session response:')
+      appLogger.info({ sessionId }, 'Briqpay update session response:')
 
-      if (!responseData || !responseData.sessionId) {
-        throw new Error('Invalid session response: missing sessionId')
-      }
-
-      return responseData
+      return normalizeSessionResponse(responseData, sessionId)
     } catch (error) {
       appLogger.error({ error }, 'Error updating Briqpay session:')
       throw error

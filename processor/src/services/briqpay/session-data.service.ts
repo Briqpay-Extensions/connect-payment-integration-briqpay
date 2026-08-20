@@ -1,7 +1,6 @@
 import { appLogger } from '../../payment-sdk'
 import { apiRoot } from '../../libs/commercetools/api-root'
 import {
-  BriqpayFullSessionResponse,
   BriqpayPspMetadata,
   CtCustomFieldTarget,
   ExtractedBriqpayCustomFields,
@@ -27,19 +26,15 @@ type SetCustomFieldAction = {
 type CtCustomFieldUpdateAction = SetCustomTypeAction | SetCustomFieldAction
 
 /**
- * Service responsible for fetching full Briqpay session data and ingesting it
- * into CommerceTools order custom fields.
+ * Service responsible for ingesting Briqpay session data (read from the verified webhook
+ * payload) into commercetools order and cart custom fields.
  *
  * Design principles:
  * - No fallback data: If a field is missing, it is simply not set
- * - Fail fast: API errors are propagated, not swallowed
+ * - Fail fast: commercetools API errors are propagated, not swallowed
  * - Idempotent: Safe to call multiple times for the same order
  */
 export class BriqpaySessionDataService {
-  private readonly baseUrl: string
-  private readonly username: string
-  private readonly secret: string
-
   constructor() {
     const baseUrl = process.env.BRIQPAY_BASE_URL
     const username = process.env.BRIQPAY_USERNAME
@@ -50,60 +45,6 @@ export class BriqpaySessionDataService {
         'Missing required Briqpay environment variables: BRIQPAY_BASE_URL, BRIQPAY_USERNAME, BRIQPAY_SECRET',
       )
     }
-
-    this.baseUrl = baseUrl
-    this.username = username
-    this.secret = secret
-  }
-
-  /**
-   * Fetches the full Briqpay session data from the API
-   * This endpoint returns all session data including pspMetadata and transactions
-   */
-  public async fetchFullSession(sessionId: string): Promise<BriqpayFullSessionResponse> {
-    const url = `${this.baseUrl}/session/${sessionId}`
-
-    appLogger.info({ sessionId, url }, 'Fetching full Briqpay session data')
-
-    // No explicit timeout: webhook ingestion runs in the background (fire-and-forget), so a
-    // slow Briqpay response delays nothing and still lands the data; undici's own transport
-    // timeouts bound a truly hung connection.
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        Authorization: `Basic ${btoa(this.username + ':' + this.secret)}`,
-        'Content-Type': 'application/json',
-      },
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text()
-      appLogger.error(
-        {
-          sessionId,
-          status: response.status,
-          statusText: response.statusText,
-          errorText,
-        },
-        'Failed to fetch full Briqpay session',
-      )
-      throw new Error(`Failed to fetch Briqpay session ${sessionId}: ${response.status} ${response.statusText}`)
-    }
-
-    const sessionData: BriqpayFullSessionResponse = await response.json()
-
-    appLogger.info(
-      {
-        sessionId,
-        hasPspMetadata: !!sessionData.data?.pspMetadata,
-        transactionCount: sessionData.data?.transactions?.length ?? 0,
-        hasData: !!sessionData.data,
-        dataKeys: sessionData.data ? Object.keys(sessionData.data) : [],
-      },
-      'Successfully fetched full Briqpay session data',
-    )
-
-    return sessionData
   }
 
   /**
@@ -113,7 +54,9 @@ export class BriqpaySessionDataService {
    * For transactions, uses the first transaction in the array (primary transaction)
    */
   public extractCustomFields(
-    sessionData: BriqpayFullSessionResponse | MediumBriqpayResponse,
+    // Only the `data` of the session is read here, so the parameter is narrowed to it: any
+    // caller holding a full MediumBriqpayResponse still satisfies this.
+    sessionData: Pick<MediumBriqpayResponse, 'data'>,
     fieldMappings?: Record<string, string>,
   ): ExtractedBriqpayCustomFields {
     const result: ExtractedBriqpayCustomFields = {}
@@ -124,8 +67,8 @@ export class BriqpaySessionDataService {
       return fieldMappings?.[defaultName] || defaultName
     }
 
-    // Extract PSP Metadata fields (only present in BriqpayFullSessionResponse)
-    const pspMetadata: BriqpayPspMetadata | undefined = (sessionData as BriqpayFullSessionResponse).data?.pspMetadata
+    // Extract PSP Metadata fields (present on order_status payloads)
+    const pspMetadata: BriqpayPspMetadata | undefined = sessionData.data?.pspMetadata
     if (pspMetadata) {
       this.setIfPresent(
         result,
@@ -178,7 +121,7 @@ export class BriqpaySessionDataService {
             'BRIQPAY_TRANSACTION_DATA_SECONDARY_RESERVATION_ID_KEY',
             'briqpay-transaction-data-secondary-reservation-id',
           ),
-          (primaryTransaction as any).secondaryReservationId,
+          primaryTransaction.secondaryReservationId,
         )
       }
       this.setIfPresent(
@@ -413,19 +356,19 @@ export class BriqpaySessionDataService {
   }
 
   /**
-   * Main entry point: Fetches Briqpay session data and updates the order's custom fields
+   * Ingests the payload-built Briqpay session into the order's custom fields.
    *
-   * @param sessionId - The Briqpay session ID
+   * @param session - The Briqpay session built from the verified webhook payload
    * @param orderId - The CommerceTools order ID
    */
-  public async ingestSessionDataToOrder(sessionId: string, orderId: string): Promise<void> {
+  public async ingestSessionDataToOrder(session: MediumBriqpayResponse, orderId: string): Promise<void> {
+    const sessionId = session.sessionId
     appLogger.info({ sessionId, orderId }, 'Starting Briqpay session data ingestion to order')
 
     try {
       const target: CtCustomFieldTarget = { resource: 'order', id: orderId }
-      const sessionData = await this.fetchFullSession(sessionId)
       const fieldContext = await this.buildFieldContextForResource(target)
-      const customFields = this.extractCustomFields(sessionData, fieldContext?.mappings)
+      const customFields = this.extractCustomFields(session, fieldContext?.mappings)
       const safeFields = this.dropFieldsNotInType(customFields, fieldContext?.validFieldNames, target)
 
       await this.updateResourceCustomFields(target, safeFields)
@@ -437,24 +380,23 @@ export class BriqpaySessionDataService {
   }
 
   /**
-   * Stages Briqpay session data on the CART custom fields when the order does not exist yet.
+   * Stages Briqpay session data on the CART custom fields for the copy-on-creation path: CT
+   * copies a cart's custom fields onto the order when it creates the order from the tagged
+   * payment, so staging here makes the order born with the data. Called before the order
+   * exists - from the /payments call and from a pre-order webhook - while later webhooks enrich
+   * the order directly once it exists.
    *
-   * The cart always exists at webhook time, and CT copies the cart's custom fields onto the
-   * order when it auto-creates the order from the tagged payment - so staging here makes the
-   * order born with the data instead of losing it to the pre-order webhook race. Later
-   * webhooks enrich the order directly once it exists.
-   *
-   * @param sessionId - The Briqpay session ID
+   * @param session - The Briqpay session (from the /payments fetch or a verified webhook payload)
    * @param cartId - The CommerceTools cart ID
    */
-  public async ingestSessionDataToCart(sessionId: string, cartId: string): Promise<void> {
+  public async ingestSessionDataToCart(session: MediumBriqpayResponse, cartId: string): Promise<void> {
+    const sessionId = session.sessionId
     appLogger.info({ sessionId, cartId }, 'Starting Briqpay session data ingestion to cart')
 
     try {
       const target: CtCustomFieldTarget = { resource: 'cart', id: cartId }
-      const sessionData = await this.fetchFullSession(sessionId)
       const fieldContext = await this.buildFieldContextForResource(target)
-      const customFields = this.extractCustomFields(sessionData, fieldContext?.mappings)
+      const customFields = this.extractCustomFields(session, fieldContext?.mappings)
       const safeFields = this.dropFieldsNotInType(customFields, fieldContext?.validFieldNames, target)
 
       await this.updateResourceCustomFields(target, safeFields)

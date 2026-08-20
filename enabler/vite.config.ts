@@ -8,12 +8,17 @@ export default defineConfig({
     cors: true,
     // Allow access from any host (needed for network IP access)
     host: true,
+    watch: {
+      // Coverage reports are test output, not served content - without this,
+      // running test:coverage full-reloads every connected checkout page.
+      ignored: ["**/coverage/**"],
+    },
   },
   plugins: [
     cssInjectedByJsPlugin({
       injectCodeFunction: function injectCodeCustomRunTimeFunction(
         cssCode: string,
-        options
+        options,
       ) {
         try {
           if (typeof document != "undefined") {
@@ -24,7 +29,7 @@ export default defineConfig({
             for (const attribute in options.attributes) {
               elementStyle.setAttribute(
                 attribute,
-                options.attributes[attribute]
+                options.attributes[attribute],
               );
             }
             elementStyle.appendChild(document.createTextNode(cssCode));

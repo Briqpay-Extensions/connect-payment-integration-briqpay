@@ -1,5 +1,6 @@
 import { describe, expect, test } from '@jest/globals'
 import {
+  buildPaymentMethodInfoFromSession,
   convertNotificationStatus,
   convertPaymentResultCode,
   convertPaymentModificationStatusCode,
@@ -182,6 +183,78 @@ describe('briqpay utils', () => {
     test('should return undefined when data is absent', () => {
       const session: MediumBriqpayResponse = { htmlSnippet: '', sessionId: 'sess-1' }
       expect(getTransaction(session)).toBeUndefined()
+    })
+  })
+
+  describe('buildPaymentMethodInfoFromSession', () => {
+    test('should build method and name from the transaction PSP fields', () => {
+      const session: MediumBriqpayResponse = {
+        htmlSnippet: '',
+        sessionId: 'sess-1',
+        data: {
+          transactions: [
+            {
+              transactionId: 'tx-1',
+              status: TRANSACTION_STATUS.APPROVED,
+              amountIncVat: 1000,
+              currency: 'EUR',
+              pspIntegrationName: 'mollie_cards',
+              pspDisplayName: 'Mollie Cards',
+            },
+          ],
+        },
+      }
+
+      expect(buildPaymentMethodInfoFromSession(session)).toEqual({
+        method: 'mollie_cards',
+        name: { en: 'Mollie Cards' },
+      })
+    })
+
+    test('should fall back to the Briqpay name when only pspIntegrationName is present', () => {
+      const session: MediumBriqpayResponse = {
+        htmlSnippet: '',
+        sessionId: 'sess-1',
+        data: {
+          transactions: [
+            {
+              transactionId: 'tx-1',
+              status: TRANSACTION_STATUS.APPROVED,
+              amountIncVat: 1000,
+              currency: 'EUR',
+              pspIntegrationName: 'mollie_cards',
+            },
+          ],
+        },
+      }
+
+      expect(buildPaymentMethodInfoFromSession(session)).toEqual({
+        method: 'mollie_cards',
+        name: { en: 'Briqpay' },
+      })
+    })
+
+    test('should fall back to the connector identity when the transaction carries no PSP fields', () => {
+      const session: MediumBriqpayResponse = {
+        htmlSnippet: '',
+        sessionId: 'sess-1',
+        data: {
+          transactions: [
+            { transactionId: 'tx-1', status: TRANSACTION_STATUS.APPROVED, amountIncVat: 1000, currency: 'EUR' },
+          ],
+        },
+      }
+
+      expect(buildPaymentMethodInfoFromSession(session)).toEqual({
+        method: 'briqpay',
+        name: { en: 'Briqpay' },
+      })
+    })
+
+    test('should return undefined when the session has no transaction', () => {
+      const session: MediumBriqpayResponse = { htmlSnippet: '', sessionId: 'sess-1' }
+
+      expect(buildPaymentMethodInfoFromSession(session)).toBeUndefined()
     })
   })
 

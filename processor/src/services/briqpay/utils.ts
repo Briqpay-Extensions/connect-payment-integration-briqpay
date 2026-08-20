@@ -1,4 +1,5 @@
 import { TransactionState } from '@commercetools/connect-payments-sdk'
+import { PaymentMethodInfoDraft } from '@commercetools/platform-sdk'
 import { BRIQPAY_WEBHOOK_STATUS, PaymentOutcome } from '../../dtos/briqpay-payment.dto'
 import { PaymentModificationStatus } from '../../dtos/operations/payment-intents.dto'
 import {
@@ -89,6 +90,23 @@ export const orderStatusToWebhookStatus = (orderStatus: ORDER_STATUS): BRIQPAY_W
 }
 
 /**
+ * Derives the CT authorization state from a Briqpay session's order status - the source of truth
+ * for both createPayment (POST /payments) and handleTransaction, so they agree whichever lands first.
+ */
+export const deriveTransactionStateFromSession = (session: MediumBriqpayResponse): TransactionState => {
+  switch (getActualOrderStatus(session)) {
+    case ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED:
+      return 'Success'
+    case ORDER_STATUS.ORDER_REJECTED:
+    case ORDER_STATUS.ORDER_CANCELLED:
+      return 'Failure'
+    default:
+      // ORDER_PENDING, or no order status yet - the order-status webhook lifts it to Success later.
+      return 'Pending'
+  }
+}
+
+/**
  * Converts TRANSACTION_STATUS enum to BRIQPAY_WEBHOOK_STATUS for compatibility with existing handlers.
  * Used for capture and refund status conversion.
  *
@@ -119,6 +137,35 @@ export const transactionStatusToWebhookStatus = (transactionStatus: TRANSACTION_
  */
 export const getTransaction = (session: MediumBriqpayResponse): BriqpayTransaction | undefined => {
   return session.data?.transactions?.[0]
+}
+
+/**
+ * Builds the paymentMethodInfo update fragment from the session's transaction: method carries
+ * the machine identifier (pspIntegrationName, e.g. "mollie_cards") and name the human-readable
+ * pspDisplayName - mirroring where the Adyen connectors store the same data. paymentInterface
+ * is deliberately not included; it identifies the connector and is set at Payment creation.
+ *
+ * A transaction whose PSP fields are missing falls back to the connector identity: once a
+ * session is completed the PSP values either exist or never will, so the fallback can no
+ * longer be shadowing a real value. Returns undefined only when there is no transaction at
+ * all (session not completed yet) - writing the fallback then would occupy the write-once
+ * fields before completion produces the real values.
+ */
+export const buildPaymentMethodInfoFromSession = (
+  session: MediumBriqpayResponse,
+): PaymentMethodInfoDraft | undefined => {
+  const transaction = getTransaction(session)
+
+  if (!transaction) {
+    return undefined
+  }
+
+  const paymentMethodInfo: PaymentMethodInfoDraft = {
+    method: transaction.pspIntegrationName || 'briqpay',
+    name: { en: transaction.pspDisplayName || 'Briqpay' },
+  }
+
+  return paymentMethodInfo
 }
 
 /**

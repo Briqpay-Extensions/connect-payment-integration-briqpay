@@ -45,6 +45,13 @@ jest.mock('../../../src/libs/briqpay/BriqpayService', () => {
   }
 })
 
+// createPayment stages the fetched session onto the cart via the session-data service; mock it
+// so the fire-and-forget staging is an assertable no-op instead of touching commercetools.
+const mockIngestSessionDataToCart = jest.fn<(session: unknown, cartId: string) => Promise<void>>()
+jest.mock('../../../src/services/briqpay/session-data.service', () => ({
+  getBriqpaySessionDataService: () => ({ ingestSessionDataToCart: mockIngestSessionDataToCart }),
+}))
+
 const mockedBriqpay = jest.mocked(Briqpay)
 
 // Pierce order 80114753: the payment was created before the shipping method landed, so the connector
@@ -111,6 +118,10 @@ describe('BriqpayOperationService amount reconciliation', () => {
 
     mockedBriqpay.capture.mockResolvedValue({ captureId: CAPTURE_ID, status: 'approved' } as never)
     mockedBriqpay.refund.mockResolvedValue({ refundId: 'briqpay-refund-1', status: 'approved' } as never)
+    // createPayment/handleTransaction derive the authorization state from the session; these amount
+    // tests don't exercise status, so any resolvable session suffices (no orderStatus -> Pending).
+    mockedBriqpay.getSession.mockResolvedValue({ sessionId: SESSION_ID } as never)
+    mockIngestSessionDataToCart.mockResolvedValue(undefined)
   })
 
   afterEach(() => {
@@ -176,6 +187,105 @@ describe('BriqpayOperationService amount reconciliation', () => {
       .mocked(mockCtPaymentService.updatePayment)
       .mock.calls.map(([call]) => call)
       .find((call) => call.transaction?.type === type)?.transaction?.amount.centAmount
+
+  describe('createPayment stages session data on the cart (best-effort)', () => {
+    const createPaymentOn = async (cart: Cart): Promise<void> => {
+      jest.mocked(mockCtCartService.getCart).mockResolvedValue(cart)
+      jest.mocked(mockCtCartService.getPaymentAmount).mockResolvedValue(paymentAmountFor(cart))
+      jest
+        .mocked(mockCtPaymentService.createPayment)
+        .mockResolvedValue({ id: 'payment-drift-1', amountPlanned: paymentAmountFor(cart), transactions: [] } as never)
+
+      await operationService.createPayment({
+        data: { paymentMethod: { type: 'briqpay' }, paymentOutcome: 'pending' },
+      } as never)
+      // Staging is fire-and-forget; drain the microtask queue before asserting.
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+
+    test('reuses the fetched session to stage the custom-field data on the cart', async () => {
+      mockedBriqpay.getSession.mockResolvedValue({
+        sessionId: SESSION_ID,
+        data: { pspMetadata: { description: 'desc' } },
+      } as never)
+
+      await createPaymentOn(cartAtTotal(POST_SHIPPING_TOTAL))
+
+      expect(mockIngestSessionDataToCart).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: SESSION_ID }),
+        'cart-drift-1',
+      )
+    })
+
+    test('a staging failure never fails the payment', async () => {
+      mockIngestSessionDataToCart.mockRejectedValue(new Error('CT down'))
+
+      const cart = cartAtTotal(POST_SHIPPING_TOTAL)
+      jest.mocked(mockCtCartService.getCart).mockResolvedValue(cart)
+      jest.mocked(mockCtCartService.getPaymentAmount).mockResolvedValue(paymentAmountFor(cart))
+      jest
+        .mocked(mockCtPaymentService.createPayment)
+        .mockResolvedValue({ id: 'payment-drift-1', amountPlanned: paymentAmountFor(cart), transactions: [] } as never)
+
+      await expect(
+        operationService.createPayment({
+          data: { paymentMethod: { type: 'briqpay' }, paymentOutcome: 'pending' },
+        } as never),
+      ).resolves.toEqual({ paymentReference: 'payment-drift-1' })
+      await new Promise((resolve) => setImmediate(resolve))
+    })
+  })
+
+  describe('createPayment writes the PSP method info on the payment', () => {
+    const createPaymentOn = async (cart: Cart): Promise<void> => {
+      jest.mocked(mockCtCartService.getCart).mockResolvedValue(cart)
+      jest.mocked(mockCtCartService.getPaymentAmount).mockResolvedValue(paymentAmountFor(cart))
+      jest
+        .mocked(mockCtPaymentService.createPayment)
+        .mockResolvedValue({ id: 'payment-drift-1', amountPlanned: paymentAmountFor(cart), transactions: [] } as never)
+
+      await operationService.createPayment({
+        data: { paymentMethod: { type: 'briqpay' }, paymentOutcome: 'pending' },
+      } as never)
+    }
+
+    test('passes pspIntegrationName as method and pspDisplayName as localized name', async () => {
+      mockedBriqpay.getSession.mockResolvedValue({
+        sessionId: SESSION_ID,
+        data: {
+          transactions: [
+            {
+              transactionId: 'tx-1',
+              status: 'approved',
+              amountIncVat: POST_SHIPPING_TOTAL,
+              currency: 'EUR',
+              pspIntegrationName: 'mollie_cards',
+              pspDisplayName: 'Mollie Cards',
+            },
+          ],
+        },
+      } as never)
+
+      await createPaymentOn(cartAtTotal(POST_SHIPPING_TOTAL))
+
+      expect(mockCtPaymentService.updatePayment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          paymentMethodInfo: { method: 'mollie_cards', name: { en: 'Mollie Cards' } },
+        }),
+      )
+    })
+
+    test('writes neither method info nor the generic briqpay constant when the session has no transaction', async () => {
+      mockedBriqpay.getSession.mockResolvedValue({ sessionId: SESSION_ID } as never)
+
+      await createPaymentOn(cartAtTotal(POST_SHIPPING_TOTAL))
+
+      const updateCall = jest.mocked(mockCtPaymentService.updatePayment).mock.calls[0][0]
+      expect(updateCall).not.toHaveProperty('paymentMethodInfo')
+      // The enabler's paymentMethod.type must no longer be copied into method.
+      expect(updateCall).not.toHaveProperty('paymentMethod')
+    })
+  })
 
   // The cart grew after the payment was created, so amountPlanned is stale.
   test('captures the amount it records in commercetools', async () => {

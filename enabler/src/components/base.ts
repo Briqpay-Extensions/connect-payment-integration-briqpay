@@ -18,7 +18,6 @@ export abstract class BaseComponent implements PaymentComponent {
   protected sdk: BriqpaySdk;
   protected processorUrl: BaseOptions["processorUrl"];
   protected sessionId: BaseOptions["sessionId"];
-  protected environment: BaseOptions["environment"];
   protected onComplete: (_result: PaymentResult) => void | Promise<void>;
   protected onError: (
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -31,7 +30,6 @@ export abstract class BaseComponent implements PaymentComponent {
     this.sdk = baseOptions.sdk;
     this.processorUrl = baseOptions.processorUrl;
     this.sessionId = baseOptions.sessionId;
-    this.environment = baseOptions.environment;
     this.onComplete = baseOptions.onComplete;
     this.onError = baseOptions.onError;
   }

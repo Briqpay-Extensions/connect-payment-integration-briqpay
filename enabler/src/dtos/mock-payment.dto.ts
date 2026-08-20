@@ -12,8 +12,8 @@ export const PaymentRequestSchema = Type.Object({
   paymentMethod: Type.Object({
     type: Type.String(),
   }),
-  briqpaySessionId: Type.Optional(Type.String()),
-  paymentOutcome: PaymentOutcomeSchema,
+  // Deprecated. The processor derives the outcome from the Briqpay session; kept optional for older bundles.
+  paymentOutcome: Type.Optional(PaymentOutcomeSchema),
 });
 
 export type PaymentRequestSchemaDTO = Static<typeof PaymentRequestSchema>;

@@ -2,23 +2,19 @@ import { describe, test, expect, afterEach, jest, beforeEach } from '@jest/globa
 import crypto from 'crypto'
 import { ConfigResponse, ModifyPayment, StatusResponse } from '../src/services/types/operation.type'
 import { paymentSDK, appLogger } from '../src/payment-sdk'
-import { DefaultPaymentService } from '@commercetools/connect-payments-sdk/dist/commercetools/services/ct-payment.service'
 import { DefaultCartService } from '@commercetools/connect-payments-sdk/dist/commercetools/services/ct-cart.service'
 import { CommercetoolsAPIError } from '@commercetools/connect-payments-sdk/dist/commercetools/errors/ct-api.error'
 import { mockGetPaymentResult, mockUpdatePaymentResult } from './utils/mock-payment-results'
 import { mockGetCartResult } from './utils/mock-cart-data'
 import * as Config from '../src/config/config'
 import {
-  CreatePaymentRequest,
   BriqpayPaymentServiceOptions,
-  ITEM_PRODUCT_TYPE,
   ORDER_STATUS,
   TRANSACTION_STATUS,
   MediumBriqpayResponse,
 } from '../src/services/types/briqpay-payment.type'
 import { AbstractPaymentService } from '../src/services/abstract-payment.service'
 import { BriqpayPaymentService } from '../src/services/briqpay-payment.service'
-import * as FastifyContext from '../src/libs/fastify/context/context'
 import * as StatusHandler from '@commercetools/connect-payments-sdk/dist/api/handlers/status.handler'
 import {
   BRIQPAY_DECISION,
@@ -31,6 +27,7 @@ import {
 } from '../src/dtos/briqpay-payment.dto'
 import { apiRoot } from '../src/libs/commercetools/api-root'
 import Briqpay from '../src/libs/briqpay/BriqpayService'
+import { SessionError, SessionNotFoundError, UpstreamError } from '../src/libs/errors/briqpay-errors'
 import { Cart, Payment, Transaction, TransactionState, TransactionType } from '@commercetools/connect-payments-sdk'
 import { TransactionDraftDTO } from '../src/dtos/operations/transaction.dto'
 import { briqpaySessionIdCustomType } from '../src/custom-types/custom-types'
@@ -220,6 +217,7 @@ describe('briqpay-payment.service', () => {
       data: {
         order: {
           amountIncVat: 119000,
+          amountExVat: 100000,
           currency: 'EUR',
           cart: [],
         },
@@ -233,8 +231,13 @@ describe('briqpay-payment.service', () => {
       captures: [],
       refunds: [],
     }
-    jest.spyOn(Briqpay, 'createSession').mockReturnValue(Promise.resolve(mockBriqpayResponse))
+    jest
+      .spyOn(Briqpay, 'createSession')
+      .mockReturnValue(Promise.resolve({ session: mockBriqpayResponse, syncedPayloadHash: 'payload-hash' }))
     jest.spyOn(Briqpay, 'getSession').mockReturnValue(Promise.resolve(mockBriqpayResponse))
+    // A cart carrying a session id now goes straight to the update (the status pre-flight
+    // that used to short-circuit it is gone - Briqpay rejects updates to completed sessions itself).
+    jest.spyOn(Briqpay, 'updateSession').mockReturnValue(Promise.resolve(mockBriqpayResponse))
     jest.spyOn(Briqpay, 'capture').mockReturnValue(
       Promise.resolve({
         captureId: '123',
@@ -279,7 +282,8 @@ describe('briqpay-payment.service', () => {
     setupMockConfig({ mockClientKey: '', mockEnvironment: 'test' })
     jest.spyOn(Briqpay, 'createSession').mockReturnValue(
       Promise.resolve({
-        sessionId: 'abc123',
+        session: { sessionId: 'abc123' },
+        syncedPayloadHash: 'payload-hash',
       }),
     )
 
@@ -304,7 +308,8 @@ describe('briqpay-payment.service', () => {
     setupMockConfig({ mockClientKey: '', mockEnvironment: 'test' })
     jest.spyOn(Briqpay, 'createSession').mockReturnValue(
       Promise.resolve({
-        sessionId: 'abc123',
+        session: { sessionId: 'abc123' },
+        syncedPayloadHash: 'payload-hash',
       }),
     )
 
@@ -323,7 +328,8 @@ describe('briqpay-payment.service', () => {
     setupMockConfig({ mockClientKey: '', mockEnvironment: 'test' })
     jest.spyOn(Briqpay, 'createSession').mockReturnValue(
       Promise.resolve({
-        sessionId: 'abc123',
+        session: { sessionId: 'abc123' },
+        syncedPayloadHash: 'payload-hash',
       }),
     )
 
@@ -341,180 +347,14 @@ describe('briqpay-payment.service', () => {
     setupMockConfig({ mockClientKey: '', mockEnvironment: 'test' })
     jest.spyOn(Briqpay, 'createSession').mockReturnValue(
       Promise.resolve({
-        sessionId: 'abc123',
+        session: { sessionId: 'abc123' },
+        syncedPayloadHash: 'payload-hash',
       }),
     )
 
     await expect(paymentService.config('localhost')).rejects.toThrow(
       'Cart is missing a shipping address. Taxes cannot be calculated.',
     )
-  })
-
-  test('getConfig with getSession error', async () => {
-    jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue({
-      ...mockGetCartResult(),
-      custom: {
-        type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-        fields: {
-          [briqpaySessionIdCustomType.name]: 'abc123',
-        },
-      },
-    })
-
-    setupMockConfig({ mockClientKey: '', mockEnvironment: 'test' })
-
-    // Simulate getSession throwing an error
-    jest.spyOn(Briqpay, 'getSession').mockRejectedValueOnce(new Error('Failed to retrieve session'))
-
-    const result = await paymentService.config('localhost')
-
-    expect(result).toStrictEqual({
-      briqpaySessionId: 'abc123',
-      clientKey: '',
-      environment: 'test',
-      snippet: '<div>Briqpay</div>',
-    })
-  })
-
-  test('getConfig with differing cart and session amounts', async () => {
-    const cartWithDifferentAmount = {
-      ...mockGetCartResult(),
-      totalPrice: { centAmount: 130000, currencyCode: 'EUR' }, // Different amount
-      custom: {
-        type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-        fields: {
-          [briqpaySessionIdCustomType.name]: 'abc123',
-        },
-      },
-    }
-
-    const briqpaySession = {
-      sessionId: 'abc123',
-      data: {
-        order: {
-          amountIncVat: 120000, // Different amount here
-        },
-      },
-    }
-
-    // Mocking the necessary methods
-    jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cartWithDifferentAmount as any)
-    jest.spyOn(Briqpay, 'getSession').mockResolvedValue(briqpaySession as any)
-
-    setupMockConfig({ mockClientKey: '', mockEnvironment: 'test' })
-
-    const result = await paymentService.config('localhost')
-
-    // Assertions
-    expect(result).toStrictEqual({
-      briqpaySessionId: 'abc123',
-      clientKey: '',
-      environment: 'test',
-      snippet: '<div>Briqpay</div>',
-    })
-  })
-
-  test('getConfig with matching cart and session amounts and one item', async () => {
-    const matchingAmountIncVat = 119000
-    const matchingAmountExVat = 100000
-    const sessionId = 'abc123'
-    const currencyCode = 'EUR'
-
-    const mockCart: Cart = {
-      ...JSON.parse(JSON.stringify(mockGetCartResult())),
-      custom: {
-        type: { typeId: 'type' as const, id: 'briqpay-session-id' },
-        fields: {
-          [briqpaySessionIdCustomType.name]: sessionId,
-        },
-      },
-    }
-    ;(mockCart as any).customLineItems = []
-    ;(mockCart as any).taxedPrice = {
-      totalNet: {
-        type: 'centPrecision',
-        currencyCode: 'EUR',
-        centAmount: 100000,
-        fractionDigits: 2,
-      },
-      totalGross: {
-        type: 'centPrecision',
-        currencyCode: 'EUR',
-        centAmount: 119000,
-        fractionDigits: 2,
-      },
-      taxPortions: [
-        {
-          name: 'de-standard',
-          amount: {
-            type: 'centPrecision',
-            currencyCode: 'EUR',
-            centAmount: 19000,
-            fractionDigits: 2,
-          },
-          rate: 0.19,
-        },
-      ],
-      totalTax: {
-        type: 'centPrecision',
-        currencyCode: 'EUR',
-        centAmount: 19000,
-        fractionDigits: 2,
-      },
-    }
-    ;(mockCart as any).taxedPricePortions = [
-      {
-        name: 'de-standard',
-        amount: {
-          type: 'centPrecision',
-          currencyCode: 'EUR',
-          centAmount: 19000,
-          fractionDigits: 2,
-        },
-        rate: 0.19,
-      },
-    ]
-
-    // Mock getCart with matching totalPrice and a line item
-    jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(mockCart)
-
-    setupMockConfig({ mockClientKey: '', mockEnvironment: 'test' })
-
-    // Mock getSession with matching amount
-    jest.spyOn(Briqpay, 'getSession').mockResolvedValue({
-      sessionId,
-      data: {
-        order: {
-          amountIncVat: matchingAmountIncVat,
-          amountExVat: matchingAmountExVat,
-          currency: currencyCode,
-          cart: [
-            {
-              productType: ITEM_PRODUCT_TYPE.PHYSICAL,
-              reference: mockCart.lineItems[0].productId,
-              name: mockCart.lineItems[0].name.en,
-              quantity: mockCart.lineItems[0].quantity,
-              quantityUnit: 'pcs',
-              unitPrice: matchingAmountExVat,
-              unitPriceIncVat: matchingAmountIncVat,
-              taxRate: 1900,
-              totalAmount: matchingAmountIncVat,
-              totalVatAmount: matchingAmountIncVat - matchingAmountExVat,
-            },
-          ],
-        },
-      },
-      htmlSnippet: '<div id="briqpay"></div>',
-    })
-
-    const result = await paymentService.config('localhost')
-
-    expect(result).toStrictEqual({
-      briqpaySessionId: sessionId,
-      clientKey: '',
-      environment: 'test',
-      snippet: '<div>Briqpay</div>',
-    })
   })
 
   test('getSupportedPaymentComponents', async () => {
@@ -1042,25 +882,25 @@ describe('briqpay-payment.service', () => {
   })
 
   test('create payment successfully', async () => {
-    const createPaymentOpts: CreatePaymentRequest = {
-      cartId: 'explicit-cart-id',
-      data: {
-        paymentMethod: {
-          type: PaymentMethodType.BRIQPAY,
-        },
-        briqpaySessionId: 'abc123',
-        paymentOutcome: PaymentOutcome.APPROVED,
+    // Cart must carry a Briqpay session id: createPayment derives the outcome from that session.
+    const cart: Cart = {
+      ...mockGetCartResult(),
+      custom: {
+        type: { typeId: 'type' as const, id: 'type-id' },
+        fields: { 'briqpay-session-id': 'abc123' },
       },
     }
-    const getCartSpy = jest
-      .spyOn(paymentSDK.ctCartService, 'getCart')
-      .mockReturnValue(Promise.resolve(mockGetCartResult()))
-    jest.spyOn(DefaultPaymentService.prototype, 'createPayment').mockReturnValue(Promise.resolve(mockGetPaymentResult))
-    jest.spyOn(DefaultCartService.prototype, 'addPayment').mockReturnValue(Promise.resolve(mockGetCartResult()))
-    jest.spyOn(FastifyContext, 'getProcessorUrlFromContext').mockReturnValue('http://127.0.0.1')
-    jest.spyOn(DefaultPaymentService.prototype, 'updatePayment').mockReturnValue(Promise.resolve(mockGetPaymentResult))
+    const getCartSpy = jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+    jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+    jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValue(mockGetPaymentResult)
+    jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+    jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue(mockGetPaymentResult)
 
-    const result = await briqpayPaymentService.createPayment(createPaymentOpts)
+    const result = await briqpayPaymentService.createPayment({
+      cartId: 'explicit-cart-id',
+      data: { paymentMethod: { type: PaymentMethodType.BRIQPAY } },
+    })
+
     expect(result?.paymentReference).toStrictEqual('123456')
     expect(getCartSpy).toHaveBeenCalledWith({ id: 'explicit-cart-id' })
   })
@@ -1413,6 +1253,175 @@ describe('briqpay-payment.service', () => {
 
       expect(result?.paymentReference).toStrictEqual(winnerPaymentId)
       expect(executeMock).toHaveBeenCalled()
+    })
+  })
+
+  describe('createPayment derives the outcome from the Briqpay session', () => {
+    const cartWithSession = (): Cart => ({
+      ...mockGetCartResult(),
+      custom: {
+        type: { typeId: 'type' as const, id: 'type-id' },
+        fields: { 'briqpay-session-id': 'briqpay-session-derive-1' },
+      },
+    })
+
+    const arrange = (orderStatus: ORDER_STATUS) => {
+      const cart = cartWithSession()
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValue(mockGetPaymentResult)
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest.spyOn(Briqpay, 'getSession').mockResolvedValue(createMockBriqpaySession({ orderStatus }))
+
+      return jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue(mockUpdatePaymentResult)
+    }
+
+    test('writes Failure when the client claims approved but Briqpay rejected the session', async () => {
+      const updateSpy = arrange(ORDER_STATUS.ORDER_REJECTED)
+
+      await briqpayPaymentService.createPayment({
+        cartId: 'cart-derive-1',
+        data: { paymentMethod: { type: PaymentMethodType.BRIQPAY }, paymentOutcome: PaymentOutcome.APPROVED },
+      })
+
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          transaction: expect.objectContaining({ type: 'Authorization', state: 'Failure' }),
+        }),
+      )
+      // The forged client value is logged, never honoured.
+      expect(appLogger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ declaredOutcome: PaymentOutcome.APPROVED, derivedState: 'Failure' }),
+        expect.stringContaining('disagrees'),
+      )
+    })
+
+    test('writes Success when the client claims rejected but Briqpay approved the session', async () => {
+      const updateSpy = arrange(ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED)
+
+      await briqpayPaymentService.createPayment({
+        cartId: 'cart-derive-1',
+        data: { paymentMethod: { type: PaymentMethodType.BRIQPAY }, paymentOutcome: PaymentOutcome.REJECTED },
+      })
+
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          transaction: expect.objectContaining({ type: 'Authorization', state: 'Success' }),
+        }),
+      )
+    })
+
+    test('throws 400 and writes nothing when the cart has no Briqpay session id', async () => {
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(mockGetCartResult())
+      const getSessionSpy = jest.spyOn(Briqpay, 'getSession')
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment')
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+
+      await expect(
+        briqpayPaymentService.createPayment({
+          cartId: 'cart-no-session',
+          data: { paymentMethod: { type: PaymentMethodType.BRIQPAY } },
+        }),
+      ).rejects.toBeInstanceOf(SessionError)
+
+      expect(getSessionSpy).not.toHaveBeenCalled()
+      expect(createSpy).not.toHaveBeenCalled()
+      expect(updateSpy).not.toHaveBeenCalled()
+    })
+
+    test('propagates a typed error and writes nothing when the Briqpay session fetch fails', async () => {
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cartWithSession())
+      jest.spyOn(Briqpay, 'getSession').mockRejectedValue(new Error('briqpay down'))
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment')
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+
+      await expect(
+        briqpayPaymentService.createPayment({
+          cartId: 'cart-derive-1',
+          data: { paymentMethod: { type: PaymentMethodType.BRIQPAY } },
+        }),
+      ).rejects.toBeInstanceOf(UpstreamError)
+
+      expect(createSpy).not.toHaveBeenCalled()
+      expect(updateSpy).not.toHaveBeenCalled()
+    })
+
+    test('records the cart amount on the transaction, not the Briqpay session amount', async () => {
+      // The session reports 119000 (createMockBriqpaySession default); the CT payment is planned at
+      // 50000. The transaction must carry the CT figure.
+      const cart = cartWithSession()
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValue({
+        ...mockGetPaymentResult,
+        amountPlanned: { type: 'centPrecision', centAmount: 50000, currencyCode: 'EUR', fractionDigits: 2 },
+      })
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(Briqpay, 'getSession')
+        .mockResolvedValue(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED }))
+      const updateSpy = jest
+        .spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+        .mockResolvedValue(mockUpdatePaymentResult)
+
+      await briqpayPaymentService.createPayment({
+        cartId: 'cart-derive-1',
+        data: { paymentMethod: { type: PaymentMethodType.BRIQPAY } },
+      })
+
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          transaction: expect.objectContaining({ amount: expect.objectContaining({ centAmount: 50000 }) }),
+        }),
+      )
+    })
+
+    test('surfaces a SessionNotFoundError as-is (404) rather than wrapping it', async () => {
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cartWithSession())
+      jest.spyOn(Briqpay, 'getSession').mockRejectedValue(new SessionNotFoundError('session gone'))
+      const createSpy = jest.spyOn(paymentSDK.ctPaymentService, 'createPayment')
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment')
+
+      await expect(
+        briqpayPaymentService.createPayment({
+          cartId: 'cart-derive-1',
+          data: { paymentMethod: { type: PaymentMethodType.BRIQPAY } },
+        }),
+      ).rejects.toBeInstanceOf(SessionNotFoundError)
+
+      expect(createSpy).not.toHaveBeenCalled()
+      expect(updateSpy).not.toHaveBeenCalled()
+    })
+
+    test('logs an amount mismatch when the Briqpay session amount differs from the cart', async () => {
+      const cart: Cart = {
+        ...cartWithSession(),
+        taxedPrice: undefined,
+        totalPrice: { type: 'centPrecision', currencyCode: 'EUR', centAmount: 50000, fractionDigits: 2 },
+      }
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValue(mockGetPaymentResult)
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      jest
+        .spyOn(Briqpay, 'getSession')
+        .mockResolvedValue(createMockBriqpaySession({ orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED }))
+      jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue(mockUpdatePaymentResult)
+
+      await briqpayPaymentService.createPayment({
+        cartId: 'cart-derive-1',
+        data: { paymentMethod: { type: PaymentMethodType.BRIQPAY } },
+      })
+
+      // createMockBriqpaySession reports 119000; the cart is 50000.
+      expect(appLogger.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: 'createPayment',
+          expected: expect.objectContaining({ amountIncVat: 50000 }),
+          actual: expect.objectContaining({ amountIncVat: 119000 }),
+        }),
+        'Amount mismatch between Briqpay and commercetools',
+      )
     })
   })
 
@@ -2473,6 +2482,46 @@ describe('briqpay-payment.service', () => {
       )
     })
 
+    test('writes pspIntegrationName/pspDisplayName as paymentMethodInfo on the payment', async () => {
+      const cart = cartWithBriqpaySession()
+      const session = createMockBriqpaySession({
+        sessionId: 'briqpay-session-123',
+        orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+      })
+      session.data = {
+        ...session.data,
+        transactions: [
+          {
+            transactionId: 'tx-1',
+            status: TRANSACTION_STATUS.APPROVED,
+            amountIncVat: 119000,
+            currency: 'EUR',
+            pspIntegrationName: 'mollie_cards',
+            pspDisplayName: 'Mollie Cards',
+          },
+        ],
+      }
+
+      jest.spyOn(paymentSDK.ctCartService, 'getCart').mockResolvedValue(cart)
+      jest.spyOn(paymentSDK.ctPaymentService, 'findPaymentsByInterfaceId').mockResolvedValue([])
+      jest.spyOn(Briqpay, 'getSession').mockResolvedValue(session)
+      jest.spyOn(paymentSDK.ctPaymentService, 'createPayment').mockResolvedValue(mockGetPaymentResult)
+      jest.spyOn(paymentSDK.ctCartService, 'addPayment').mockResolvedValue(cart)
+      const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValue(mockGetPaymentResult)
+
+      await briqpayPaymentService.handleTransaction({
+        cartId: cart.id,
+        paymentInterface: '42251cfc-0660-4ab3-80f6-c32829aa7a8b',
+        amount: { centAmount: 119000, currencyCode: 'EUR' },
+      })
+
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          paymentMethodInfo: { method: 'mollie_cards', name: { en: 'Mollie Cards' } },
+        }),
+      )
+    })
+
     test('creates a new Payment with interfaceId set when no existing Payment is found', async () => {
       const cart = cartWithBriqpaySession()
 
@@ -2879,6 +2928,8 @@ describe('briqpay-payment.service', () => {
 
     expect(updateSpy).toHaveBeenCalledWith({
       id: 'payment-id-1',
+      // The payload's transaction carries no PSP fields, so method info falls back to Briqpay.
+      paymentMethodInfo: { method: 'briqpay', name: { en: 'Briqpay' } },
       transaction: expect.objectContaining({
         type: 'Authorization',
         interactionId: 'abc123',
@@ -3115,6 +3166,8 @@ describe('briqpay-payment.service', () => {
 
     expect(updateSpy).toHaveBeenCalledWith({
       id: 'payment-id-1',
+      // The payload's transaction carries no PSP fields, so method info falls back to Briqpay.
+      paymentMethodInfo: { method: 'briqpay', name: { en: 'Briqpay' } },
       transaction: expect.objectContaining({
         type: 'Authorization',
         interactionId: 'abc123',
@@ -3201,6 +3254,8 @@ describe('briqpay-payment.service', () => {
 
     expect(updateSpy).toHaveBeenCalledWith({
       id: 'payment-id-1',
+      // The payload's transaction carries no PSP fields, so method info falls back to Briqpay.
+      paymentMethodInfo: { method: 'briqpay', name: { en: 'Briqpay' } },
       transaction: expect.objectContaining({
         type: 'Authorization',
         interactionId: 'abc123',
@@ -4849,7 +4904,7 @@ describe('briqpay-payment.service', () => {
         rejectionType: BRIQPAY_REJECT_TYPE.NOTIFY_USER,
       }
 
-      const mockSessionOrder = (order?: { amountIncVat: number; currency: string }) =>
+      const mockSessionOrder = (order?: { amountIncVat: number; amountExVat?: number; currency: string }) =>
         jest.spyOn(Briqpay, 'getSession').mockResolvedValue({
           sessionId: 'abc123',
           htmlSnippet: '<div>Briqpay</div>',
@@ -4877,8 +4932,8 @@ describe('briqpay-payment.service', () => {
           .mockResolvedValue({ sessionId: 'abc123', htmlSnippet: '<div>Briqpay</div>' })
       })
 
-      test('should forward allow when the session amount and currency match the cart', async () => {
-        const getSessionSpy = mockSessionOrder({ amountIncVat: 119000, currency: 'EUR' })
+      test('should forward allow when the session amounts and currency match the cart', async () => {
+        const getSessionSpy = mockSessionOrder({ amountIncVat: 119000, amountExVat: 100000, currency: 'EUR' })
         const updateSessionSpy = jest.spyOn(Briqpay, 'updateSession')
         const makeDecisionSpy = mockMakeDecisionOk()
 
@@ -4890,28 +4945,44 @@ describe('briqpay-payment.service', () => {
         expect(result).toEqual({ success: true, decision: BRIQPAY_DECISION.ALLOW })
       })
 
-      test('should forward allow when the amount drift is within the rounding tolerance', async () => {
-        mockSessionOrder({ amountIncVat: 119005, currency: 'EUR' })
+      // The comparison is exact: both sides are integers derived by the same builder and
+      // stored verbatim by Briqpay, so there is no rounding to tolerate.
+      test('should send a soft reject when the session amount is off by a single minor unit', async () => {
+        mockSessionOrder({ amountIncVat: 119001, amountExVat: 100000, currency: 'EUR' })
         const makeDecisionSpy = mockMakeDecisionOk()
 
         const result = await makeAllowDecision()
 
-        expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', { decision: BRIQPAY_DECISION.ALLOW })
-        expect(result).toEqual({ success: true, decision: BRIQPAY_DECISION.ALLOW })
+        expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', softRejectPayload)
+        expect(result).toEqual({ success: false, decision: BRIQPAY_DECISION.REJECT })
       })
 
-      test('should send a soft reject when the amount drift exceeds the rounding tolerance', async () => {
+      test('should send a soft reject when only the net amount differs', async () => {
+        mockSessionOrder({ amountIncVat: 119000, amountExVat: 99000, currency: 'EUR' })
+        const makeDecisionSpy = mockMakeDecisionOk()
+
+        const result = await makeAllowDecision()
+
+        expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', softRejectPayload)
+        expect(result).toEqual({ success: false, decision: BRIQPAY_DECISION.REJECT })
+      })
+
+      test('should send a soft reject when the session amount differs from the cart', async () => {
         mockSessionOrder({ amountIncVat: 119006, currency: 'EUR' })
         const updateSessionSpy = jest.spyOn(Briqpay, 'updateSession')
         const makeDecisionSpy = mockMakeDecisionOk()
 
         const result = await makeAllowDecision()
 
-        expect(updateSessionSpy).toHaveBeenCalledWith('abc123', expect.anything(), {
-          centAmount: 119000,
-          currencyCode: 'EUR',
-          fractionDigits: 2,
-        })
+        // The repair sends a prebuilt request whose amounts come from the cart, and whose
+        // hash is what gets recorded so a later /config does not skip a needed update.
+        expect(updateSessionSpy).toHaveBeenCalledWith(
+          'abc123',
+          expect.objectContaining({
+            amounts: expect.objectContaining({ currency: 'EUR', amountIncVat: 119000 }),
+            hash: expect.any(String),
+          }),
+        )
         expect(makeDecisionSpy).toHaveBeenCalledWith('abc123', softRejectPayload)
         expect(result).toEqual({ success: false, decision: BRIQPAY_DECISION.REJECT })
       })
@@ -5039,8 +5110,11 @@ describe('briqpay-payment.service', () => {
       setupMockConfig({ mockClientKey: '', mockEnvironment: 'test' })
 
       jest.spyOn(Briqpay, 'createSession').mockResolvedValue({
-        htmlSnippet: '<div>Briqpay</div>',
-        // sessionId is missing
+        session: {
+          htmlSnippet: '<div>Briqpay</div>',
+          // sessionId is missing
+        },
+        syncedPayloadHash: 'payload-hash',
       })
 
       await expect(paymentService.config('localhost')).rejects.toThrow(

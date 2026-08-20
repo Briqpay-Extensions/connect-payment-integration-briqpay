@@ -1,0 +1,42 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Enabler (vite dev :3000)",
+      "request": "launch",
+      "runtimeArgs": ["run-script", "dev"],
+      "runtimeExecutable": "npm",
+      "cwd": "${workspaceFolder}/enabler",
+      "skipFiles": ["<node_internals>/**"],
+      "sourceMaps": true,
+      "outputCapture": "std",
+      "console": "integratedTerminal",
+      "type": "node"
+    },
+    {
+      "name": "Processor (ts-node :8080)",
+      "request": "launch",
+      "runtimeArgs": ["run-script", "dev"],
+      "runtimeExecutable": "npm",
+      "cwd": "${workspaceFolder}/processor",
+      "skipFiles": ["<node_internals>/**"],
+      "sourceMaps": true,
+      "outputCapture": "std",
+      "console": "integratedTerminal",
+      "type": "node"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Launch plugin (enabler + processor)",
+      "configurations": [
+        "Enabler (vite dev :3000)",
+        "Processor (ts-node :8080)"
+      ],
+      "stopAll": true
+    }
+  ]
+}

@@ -1,86 +1,81 @@
 import { Cart, CommercetoolsCartService } from '@commercetools/connect-payments-sdk'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
-import type { Cart as PlatformCart } from '@commercetools/platform-sdk'
-import { CustomLineItem, LineItem } from '@commercetools/platform-sdk'
 import { appLogger } from '../../payment-sdk'
-import { CartItem, ITEM_PRODUCT_TYPE, MediumBriqpayResponse } from '../types/briqpay-payment.type'
-import Briqpay, { mapCustomLineItem } from '../../libs/briqpay/BriqpayService'
+
+import { MediumBriqpayResponse } from '../types/briqpay-payment.type'
+import Briqpay from '../../libs/briqpay/BriqpayService'
+import { briqpaySessionAmountsEqual, readBriqpaySessionAmounts } from '../../libs/briqpay/session-amounts'
 import { apiRoot } from '../../libs/commercetools/api-root'
-import { SessionError } from '../../libs/errors/briqpay-errors'
+import {
+  SessionAlreadyCompletedError,
+  SessionInitializationPendingError,
+  SessionNotFoundError,
+} from '../../libs/errors/briqpay-errors'
 import CtConflictRetry from '../../libs/commercetools/ct-conflict-retry'
 import { getBriqpayTypeKey } from '../../connectors/actions'
 import {
   briqpayCheckoutTransactionItemIdFieldName,
   briqpayFutureOrderNumberFieldName,
   briqpaySessionIdFieldName,
+  briqpaySyncedPayloadHashFieldName,
 } from '../../custom-types/custom-types'
 
-type SetCustomFieldAction = { action: 'setCustomField'; name: string; value: string }
+type CTSetCustomFieldAction = { action: 'setCustomField'; name: string; value: string }
 
-const CART_METADATA_WRITE_MAX_ATTEMPTS = 8
+const CT_CART_WRITE_MAX_ATTEMPTS = 8
+
+export type ResolvedBriqpaySession = {
+  session: MediumBriqpayResponse
+  /** Only set when Briqpay accepted this cart data. Undefined leaves whatever the cart already stores. */
+  syncedPayloadHash?: string
+}
+
+export type CTCartBriqpayMetadata = {
+  briqpaySessionId: string
+  futureOrderNumber?: string
+  checkoutTransactionItemId?: string
+  syncedPayloadHash?: string
+}
 
 export class BriqpaySessionService {
   constructor(private readonly ctCartService: CommercetoolsCartService) {}
 
   /**
-   * Persists Briqpay session metadata on the cart custom fields.
+   * Writes the Briqpay session metadata onto the cart's custom fields.
    *
-   * Writes:
-   *  - `briqpay-session-id`: always kept in sync with the active Briqpay session.
-   *  - `briqpay-future-order-number`: write-once at first session creation. The
-   *    merchant backend is expected to read this back on subsequent checkout
-   *    entries and reuse it when stamping CT Session metadata, so Briqpay's
-   *    `reference1` stays in sync with the eventual `Order.orderNumber`.
+   * `briqpay-future-order-number` is write-once. The merchant backend reads it back on
+   * later checkout entries, which is what keeps Briqpay's reference1 aligned with the
+   * eventual Order.orderNumber, so the value from the first entry has to survive.
    *
-   * Never overwrites an existing `briqpay-future-order-number` — the value
-   * captured on first checkout entry is the canonical one.
-   *
-   * The cart is heavily contended while Checkout loads: CT Checkout and the storefront
-   * update it concurrently with /config, and the caller's snapshot predates the slow
-   * Briqpay session calls, so its version is routinely stale by write time (observed as
-   * 409 ConcurrentModification -> 500 -> the payment widget never renders). The whole
-   * read-derive-write sequence is therefore wrapped in conflict-retry: each attempt
-   * re-fetches the cart for a fresh version AND re-derives the actions, so a concurrent
-   * writer that already persisted the same metadata turns the retry into a clean no-op.
-   *
-   * @param ctCart - The cart to attach Briqpay session metadata to
-   * @param briqpaySessionId - Briqpay session id
-   * @param futureOrderNumber - Order number the merchant intends for this cart (optional)
+   * Conflict-retried because the cart is contended: CT Checkout and the storefront write
+   * to it while /config runs, so the caller's snapshot - taken before the slow Briqpay
+   * calls - is usually stale by now (409, then 500, then no widget). Each attempt
+   * re-fetches and re-derives, so a concurrent writer that already stored these values
+   * makes the retry a no-op.
    */
-  public async updateCartWithBriqpaySession(
-    ctCart: Cart,
-    briqpaySessionId: string,
-    futureOrderNumber?: string,
-    checkoutTransactionItemId?: string,
-  ): Promise<void> {
-    // The session id on the caller's snapshot: absent on first entry, the buyer's active
-    // session on re-entry, or the id being knowingly replaced on session re-creation.
+  public async updateCTCartWithBriqpaySession(ctCart: Cart, metadata: CTCartBriqpayMetadata): Promise<void> {
+    // Read before the write, and only used to tell our own session from a replacement.
     const snapshotSessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName]
 
-    // These fields are only ever written by this flow with session-derived values, so a
-    // snapshot that already matches proves the write is a no-op (the common case on widget
-    // reload) - skip the fetch-and-write round trips entirely.
-    const alreadyInSync =
-      ctCart.custom !== undefined &&
-      this.buildSessionMetadataActions(ctCart, briqpaySessionId, futureOrderNumber, checkoutTransactionItemId)
-        .length === 0
+    // Nothing to write is the normal case on a widget reload; skip the round trips.
+    const alreadyInSync = ctCart.custom !== undefined && this.buildCTCartMetadataActions(ctCart, metadata).length === 0
 
     if (alreadyInSync) {
       return
     }
 
-    const runUpdate = async (): Promise<void> => {
+    const runUpdate = async (dropSyncedPayloadHash: boolean): Promise<void> => {
       const cart = await this.ctCartService.getCart({ id: ctCart.id })
 
       const versionForUpdate = cart.custom
         ? cart.version
-        : await this.setBriqpayCustomTypeOnCart(cart, briqpaySessionId)
+        : await this.setBriqpayCustomTypeOnCTCart(cart, metadata.briqpaySessionId)
 
-      const actions = this.buildSessionMetadataActions(
-        cart,
-        briqpaySessionId,
-        futureOrderNumber,
-        checkoutTransactionItemId,
+      // Actions are re-derived per attempt against the fresh cart. The hash is not: it was
+      // computed from the payload that was actually sent, so recomputing it here would
+      // describe a payload nobody sent.
+      const actions = this.buildCTCartMetadataActions(cart, metadata).filter(
+        (action) => !dropSyncedPayloadHash || action.name !== briqpaySyncedPayloadHashFieldName,
       )
 
       if (actions.length === 0) {
@@ -89,9 +84,9 @@ export class BriqpaySessionService {
 
       appLogger.info(
         {
-          briqpaySessionId,
+          briqpaySessionId: metadata.briqpaySessionId,
           persistedFutureOrderNumber: actions.some((a) => a.name === briqpayFutureOrderNumberFieldName)
-            ? futureOrderNumber
+            ? metadata.futureOrderNumber
             : undefined,
           actionNames: actions.map((a) => a.name),
         },
@@ -111,47 +106,78 @@ export class BriqpaySessionService {
     }
 
     try {
-      // The default 5 attempts (~1.5s of backoff) empirically exhaust under heavy checkout
-      // load (concurrent first-entry /config calls while CT Checkout churns the cart), which
-      // resurfaces the 409 -> 500 this retry exists to fix. 8 attempts buy ~7s of headroom.
-      await CtConflictRetry.withConflictRetry(runUpdate, CART_METADATA_WRITE_MAX_ATTEMPTS)
+      // The default 5 attempts (~1.5s) measurably ran out under real checkout load, which
+      // brought back the 409 -> 500 this retry exists to prevent. 8 buys ~7s.
+      await CtConflictRetry.withConflictRetry(() => runUpdate(false), CT_CART_WRITE_MAX_ATTEMPTS)
     } catch (error) {
-      // The buyer can complete payment while /config is in flight: CT then converts the
-      // cart to an Order (immutable -> 400 InvalidOperation). The metadata write is
-      // pointless then and must not block rendering the widget for the already-paid
-      // session - the Order is enriched via webhook ingestion.
-      // CT also answers 400 InvalidOperation for permanent misconfigurations (type key
-      // missing from the project, field not defined on the cart's type), so the error code
-      // alone is NOT proof the cart is unwritable - only swallow when the probe proves the
-      // cart was Ordered. Everything else stays loud: misconfigurations, Frozen/Merged
-      // carts (a silently dropped write there would block Order linking after unfreeze),
-      // and 404s (a deleted cart has no payment yet and can never link to an order, so
-      // rendering a payable widget for it would orphan the payment).
-      // The swallow also requires the write to be for the buyer's OWN session (first entry
-      // or the id already on the cart). A different id on an ordered cart is a replacement
-      // session created after checkout completed - rendering its payable widget could
-      // double-charge the buyer, so that stays loud too.
-      const wroteBuyersOwnSession = !snapshotSessionId || snapshotSessionId === briqpaySessionId
-      const cartOrderedDuringUpdate =
-        wroteBuyersOwnSession && CtConflictRetry.isInvalidOperation(error) && (await this.hasCartBeenOrdered(ctCart.id))
-
-      if (!cartOrderedDuringUpdate) {
-        throw error
-      }
-
-      appLogger.info(
-        { cartId: ctCart.id, briqpaySessionId, error: error instanceof Error ? error.message : error },
-        'Cart no longer writable (ordered), skipping Briqpay session metadata write',
-      )
+      await this.recoverFromCTCartWriteFailure(error, ctCart, metadata, snapshotSessionId, runUpdate)
     }
   }
 
   /**
-   * Assigns the Briqpay custom type to a cart that has none and returns the cart version
-   * produced by that update, which the follow-up field write must use.
+   * A buyer who pays while /config is still running turns the cart into an Order, which
+   * is immutable (400 InvalidOperation). The write is moot at that point and must not
+   * stop the widget rendering for the session they just paid - webhook ingestion
+   * enriches the Order instead.
+   *
+   * But CT answers 400 InvalidOperation for permanent misconfigurations too (missing
+   * type key, field not on the type), so the code alone proves nothing. Hence the
+   * Ordered probe, and hence Frozen/Merged carts and 404s still throw.
+   *
+   * It also has to be the buyer's own session. A different id on an ordered cart is a
+   * session minted after they finished paying, and rendering its widget could charge
+   * them twice.
    */
-  private async setBriqpayCustomTypeOnCart(cart: Cart, briqpaySessionId: string): Promise<number> {
-    // Get the actual type key (may be different from field name if we extended another type)
+  private async recoverFromCTCartWriteFailure(
+    error: unknown,
+    ctCart: Cart,
+    metadata: CTCartBriqpayMetadata,
+    snapshotSessionId: unknown,
+    runUpdate: (dropSyncedPayloadHash: boolean) => Promise<void>,
+  ): Promise<void> {
+    const wroteBuyersOwnSession = !snapshotSessionId || snapshotSessionId === metadata.briqpaySessionId
+    const invalidOperation = CtConflictRetry.isInvalidOperation(error)
+    const cartOrderedDuringUpdate =
+      wroteBuyersOwnSession && invalidOperation && (await this.hasCTCartBeenOrdered(ctCart.id))
+
+    if (cartOrderedDuringUpdate) {
+      appLogger.info(
+        {
+          cartId: ctCart.id,
+          briqpaySessionId: metadata.briqpaySessionId,
+          error: error instanceof Error ? error.message : error,
+        },
+        'Cart no longer writable (ordered), skipping Briqpay session metadata write',
+      )
+
+      return
+    }
+
+    // A new connector version serves traffic before post-deploy adds the hash field to
+    // the CT type, and writing a field the type does not define is a 400. Dropping it and
+    // retrying keeps checkout up, since the field only ever saves a redundant update.
+    if (!invalidOperation || metadata.syncedPayloadHash === undefined) {
+      throw error
+    }
+
+    appLogger.warn(
+      {
+        cartId: ctCart.id,
+        field: briqpaySyncedPayloadHashFieldName,
+        error: error instanceof Error ? error.message : error,
+      },
+      'Cart write rejected; retrying without the synced-payload-hash field. Run the connector post-deploy to add it to the cart custom type.',
+    )
+
+    await CtConflictRetry.withConflictRetry(() => runUpdate(true), CT_CART_WRITE_MAX_ATTEMPTS)
+  }
+
+  /**
+   * Attaches the Briqpay custom type to a cart that has none. Returns the version that
+   * update produced, which the field write immediately after has to use.
+   */
+  private async setBriqpayCustomTypeOnCTCart(cart: Cart, briqpaySessionId: string): Promise<number> {
+    // Not necessarily the field name - the connector may have extended an existing type.
     const typeKey = await getBriqpayTypeKey()
     appLogger.info({ briqpaySessionId, typeKey }, 'Setting custom type for cart')
     const cartResponse = await apiRoot
@@ -173,51 +199,58 @@ export class BriqpaySessionService {
       })
       .execute()
 
-    // In order to get the correct version for the next call
     return cartResponse.body.version
   }
 
   /**
-   * Derives the setCustomField actions needed to sync Briqpay session metadata onto the
-   * cart. Only changed values produce actions, so a retry against a fresh cart snapshot
-   * becomes a no-op when a concurrent writer already persisted the same metadata.
+   * Only changed values produce actions, which is what lets a retry against a fresh cart
+   * come back empty when a concurrent writer already stored the same metadata.
    */
-  private buildSessionMetadataActions(
-    cart: Cart,
-    briqpaySessionId: string,
-    futureOrderNumber?: string,
-    checkoutTransactionItemId?: string,
-  ): SetCustomFieldAction[] {
+  private buildCTCartMetadataActions(cart: Cart, metadata: CTCartBriqpayMetadata): CTSetCustomFieldAction[] {
     const existingBriqpaySessionId = cart.custom?.fields?.[briqpaySessionIdFieldName]
     const existingFutureOrderNumber = cart.custom?.fields?.[briqpayFutureOrderNumberFieldName]
     const existingCheckoutTransactionItemId = cart.custom?.fields?.[briqpayCheckoutTransactionItemIdFieldName]
+    const existingSyncedPayloadHash = cart.custom?.fields?.[briqpaySyncedPayloadHashFieldName]
 
-    const actions: SetCustomFieldAction[] = []
+    const actions: CTSetCustomFieldAction[] = []
 
-    if (existingBriqpaySessionId !== briqpaySessionId) {
+    if (existingBriqpaySessionId !== metadata.briqpaySessionId) {
       actions.push({
         action: 'setCustomField',
         name: briqpaySessionIdFieldName,
-        value: briqpaySessionId,
+        value: metadata.briqpaySessionId,
       })
     }
 
-    if (futureOrderNumber && !existingFutureOrderNumber) {
+    if (metadata.futureOrderNumber && !existingFutureOrderNumber) {
       actions.push({
         action: 'setCustomField',
         name: briqpayFutureOrderNumberFieldName,
-        value: futureOrderNumber,
+        value: metadata.futureOrderNumber,
       })
     }
 
-    // Overwrite-on-change (NOT write-once): the tag must track the ACTIVE Checkout session so the
-    // webhook fallback creates a Payment linked to the current checkout. A stale tag from an
-    // abandoned earlier entry would not link, blocking Order creation.
-    if (checkoutTransactionItemId && existingCheckoutTransactionItemId !== checkoutTransactionItemId) {
+    // Deliberately not write-once: this has to point at the live Checkout session, because
+    // it is what the webhook fallback links its Payment to. A leftover id from an abandoned
+    // entry links to nothing and blocks Order creation.
+    if (
+      metadata.checkoutTransactionItemId &&
+      existingCheckoutTransactionItemId !== metadata.checkoutTransactionItemId
+    ) {
       actions.push({
         action: 'setCustomField',
         name: briqpayCheckoutTransactionItemIdFieldName,
-        value: checkoutTransactionItemId,
+        value: metadata.checkoutTransactionItemId,
+      })
+    }
+
+    // Undefined means leave it alone, not clear it. Callers whose update never reached
+    // Briqpay pass nothing, and clearing would then claim a match that does not exist.
+    if (metadata.syncedPayloadHash !== undefined && existingSyncedPayloadHash !== metadata.syncedPayloadHash) {
+      actions.push({
+        action: 'setCustomField',
+        name: briqpaySyncedPayloadHashFieldName,
+        value: metadata.syncedPayloadHash,
       })
     }
 
@@ -225,12 +258,11 @@ export class BriqpaySessionService {
   }
 
   /**
-   * Probes whether the cart has been converted to an Order (buyer completed payment).
-   * Only that state proves the metadata write is safely skippable. Any other state or a
-   * failed probe (including the cart being gone) returns false so the caller's original
-   * error propagates loudly instead of being swallowed on guesswork.
+   * Ordered is the one cart state where dropping the metadata write is safe. Anything else,
+   * including a failed probe, returns false so the caller's error surfaces rather than
+   * being swallowed on a guess.
    */
-  private async hasCartBeenOrdered(cartId: string): Promise<boolean> {
+  private async hasCTCartBeenOrdered(cartId: string): Promise<boolean> {
     try {
       const cart = await this.ctCartService.getCart({ id: cartId })
 
@@ -240,271 +272,148 @@ export class BriqpaySessionService {
     }
   }
 
-  public async createOrUpdateBriqpaySession(
+  /**
+   * Returns the session this cart should check out with, and a snippet that can render.
+   *
+   * The cart stores a hash of what was last sent to Briqpay, so this can pick the one
+   * call each case needs instead of always doing two:
+   *
+   *   no session yet      create
+   *   hash matches        get    (the snippet has to be fetched regardless, and this
+   *                              response also refreshes the client token)
+   *   hash differs        update (its response carries a snippet too)
+   *
+   * The hash is only a hint - the fetched session always gets the final say.
+   *
+   * Recovery follows what Briqpay reports:
+   *
+   *   session is gone         create a replacement. Retention only ever deletes sessions
+   *                           that never completed, so nothing paid can be lost this way.
+   *   already completed       return it as-is. Replacing it could charge the buyer twice,
+   *                           since it may hold a live authorization.
+   *   still initializing      return it as-is so the widget renders.
+   *
+   * Everything else throws.
+   */
+  public async resolveBriqpaySession(
     ctCart: Cart,
     amountPlanned: PaymentAmount,
     hostname: string,
     futureOrderNumber?: string,
-  ): Promise<MediumBriqpayResponse> {
-    const existingSessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName] as string
-    appLogger.info({ existingSessionId }, 'Existing session ID:')
+  ): Promise<ResolvedBriqpaySession> {
+    const existingSessionId = ctCart.custom?.fields?.[briqpaySessionIdFieldName]
+
+    if (typeof existingSessionId !== 'string' || !existingSessionId) {
+      return this.createBriqpaySession(ctCart, amountPlanned, hostname, futureOrderNumber)
+    }
+
+    const update = await Briqpay.buildSessionUpdateRequest(ctCart, amountPlanned)
+    const storedHash = ctCart.custom?.fields?.[briqpaySyncedPayloadHashFieldName]
+    // Type-guarded so a merchant who declared this field as something other than a String
+    // falls back to always updating rather than throwing.
+    const inSync = typeof storedHash === 'string' && storedHash === update.hash
 
     try {
-      if (existingSessionId) {
-        const result = await this.manageExistingSession(
-          ctCart,
-          amountPlanned,
-          hostname,
-          existingSessionId,
-          futureOrderNumber,
-        )
-        return result
-      }
+      if (inSync) {
+        const session = await Briqpay.getSession(existingSessionId)
 
-      appLogger.info({}, 'Creating new session')
-      const briqpaySession = await Briqpay.createSession(
-        ctCart as PlatformCart,
-        amountPlanned,
-        hostname,
-        futureOrderNumber,
-      )
-      appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session:')
-      return briqpaySession
-    } catch (error) {
-      return this.handleSessionCreationFallback(ctCart, amountPlanned, hostname, error, futureOrderNumber)
-    }
-  }
+        // Racing /config calls can leave the stored hash wrong, so the fetched
+        // session decides - never the hash alone.
+        if (briqpaySessionAmountsEqual(session, update.amounts)) {
+          appLogger.info({ existingSessionId }, 'Briqpay session already matches the cart, reusing it')
 
-  private async manageExistingSession(
-    ctCart: Cart,
-    amountPlanned: PaymentAmount,
-    hostname: string,
-    existingSessionId: string,
-    futureOrderNumber?: string,
-  ): Promise<MediumBriqpayResponse> {
-    const briqpaySession = await Briqpay.getSession(existingSessionId)
-    appLogger.info({ existingSessionId, hasHtmlSnippet: !!briqpaySession.htmlSnippet }, 'Retrieved Briqpay session')
+          const resolved: ResolvedBriqpaySession = {
+            session,
+            syncedPayloadHash: update.hash,
+          }
 
-    // If the session has active payment activity (e.g. user completed PayPal HPP flow),
-    // return the existing session to avoid resetting the checkout after HPP redirect.
-    const paymentStatus = briqpaySession.moduleStatus?.payment
-    if (
-      paymentStatus?.orderStatus === 'order_pending' ||
-      paymentStatus?.orderStatus === 'order_approved_not_captured'
-    ) {
-      appLogger.info(
-        { orderStatus: paymentStatus.orderStatus, uiStatus: paymentStatus.uiStatus },
-        'Session has active payment in progress, reusing existing session',
-      )
-      if (!briqpaySession.htmlSnippet) {
+          return resolved
+        }
+
         appLogger.error(
+          {
+            sessionId: existingSessionId,
+            expected: update.amounts,
+            actual: readBriqpaySessionAmounts(session),
+          },
+          'Stored hash matches the cart but the session amounts do not - updating the session',
+        )
+      }
+
+      appLogger.info({ existingSessionId, inSync }, 'Updating Briqpay session with new cart data')
+      const session = await Briqpay.updateSession(existingSessionId, update)
+
+      const resolved: ResolvedBriqpaySession = {
+        session,
+        syncedPayloadHash: update.hash,
+      }
+
+      return resolved
+    } catch (error) {
+      if (error instanceof SessionNotFoundError) {
+        appLogger.warn(
+          { existingSessionId, error },
+          'Briqpay session on cart no longer exists upstream, creating a replacement',
+        )
+
+        return this.createBriqpaySession(ctCart, amountPlanned, hostname, futureOrderNumber)
+      }
+
+      if (error instanceof SessionAlreadyCompletedError) {
+        appLogger.warn(
           { existingSessionId },
-          'htmlSnippet missing from getSession despite requesting it - checkout iframe will fail to render',
+          'Briqpay session is already completed, returning it untouched without updating it',
         )
+
+        const resolved: ResolvedBriqpaySession = {
+          session: await Briqpay.getSession(existingSessionId),
+        }
+
+        return resolved
       }
-      return briqpaySession
+
+      if (error instanceof SessionInitializationPendingError) {
+        appLogger.warn({ existingSessionId }, 'Briqpay session is still initializing, returning it without updating')
+
+        const resolved: ResolvedBriqpaySession = {
+          session: await Briqpay.getSession(existingSessionId),
+        }
+
+        return resolved
+      }
+
+      throw error
     }
-
-    // Compare cart with session data
-    const isCartMatching = await this.compareCartWithSession(ctCart, briqpaySession)
-    appLogger.info({ isCartMatching }, 'Cart matching result:')
-
-    if (isCartMatching) {
-      return briqpaySession
-    }
-
-    return this.updateOrCreateSession(ctCart, amountPlanned, hostname, existingSessionId, futureOrderNumber)
   }
 
-  private async updateOrCreateSession(
+  /**
+   * Pushes the cart into an existing session, for callers repairing one outside /config.
+   *
+   * Recording the hash matters as much as the update itself: leaving the old one in place
+   * would let the next /config believe the session still matches the cart, and skip.
+   */
+  public async syncCTCartToBriqpaySession(
     ctCart: Cart,
+    sessionId: string,
     amountPlanned: PaymentAmount,
-    hostname: string,
-    existingSessionId: string,
-    futureOrderNumber?: string,
-  ): Promise<MediumBriqpayResponse> {
-    try {
-      appLogger.info({}, 'Updating session with new cart data')
-      const briqpaySession = (await Briqpay.updateSession(
-        existingSessionId,
-        ctCart as PlatformCart,
-        amountPlanned,
-      )) as unknown as MediumBriqpayResponse
-      appLogger.info({}, 'Updated session:')
-      return briqpaySession
-    } catch (updateError) {
-      appLogger.error(
-        { error: updateError instanceof Error ? updateError.message : updateError },
-        'Failed to update Briqpay session, creating new one:',
-      )
-      const briqpaySession = await Briqpay.createSession(
-        ctCart as PlatformCart,
-        amountPlanned,
-        hostname,
-        futureOrderNumber,
-      )
-      appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session after update failed:')
-      return briqpaySession
-    }
-  }
+  ): Promise<void> {
+    const update = await Briqpay.buildSessionUpdateRequest(ctCart, amountPlanned)
+    await Briqpay.updateSession(sessionId, update)
 
-  private async handleSessionCreationFallback(
-    ctCart: Cart,
-    amountPlanned: PaymentAmount,
-    hostname: string,
-    error: unknown,
-    futureOrderNumber?: string,
-  ): Promise<MediumBriqpayResponse> {
-    // If session retrieval fails or no session exists, create a new one
-    appLogger.error(
-      { error: error instanceof Error ? error.message : error },
-      'Session operation failed, creating new session:',
-    )
-    try {
-      const briqpaySession = await Briqpay.createSession(
-        ctCart as PlatformCart,
-        amountPlanned,
-        hostname,
-        futureOrderNumber,
-      )
-      appLogger.info({ briqpaySessionId: briqpaySession.sessionId }, 'Created new session after error:')
-      return briqpaySession
-    } catch (creationError) {
-      appLogger.error(
-        { error: creationError instanceof Error ? creationError.message : creationError },
-        'Failed to create Briqpay session:',
-      )
-      throw new SessionError('Failed to create Briqpay payment session')
-    }
-  }
-
-  private async compareCartWithSession(ctCart: Cart, briqpaySession: MediumBriqpayResponse): Promise<boolean> {
-    const sessionAmount = briqpaySession.data?.order?.amountIncVat
-    const cartAmount = await this.ctCartService.getPaymentAmount({ cart: ctCart })
-
-    appLogger.info(
-      {
-        sessionAmount,
-        cartAmount: cartAmount.centAmount,
-        ctCartId: ctCart.id,
-        ctCartVersion: ctCart.version,
-        ctCartLineItemCount: ctCart.lineItems.length,
-        briqpaySessionId: briqpaySession.sessionId,
-      },
-      'Comparing cart with Briqpay session',
-    )
-
-    // Compare amounts
-    if (sessionAmount !== cartAmount.centAmount) {
-      appLogger.info(
-        {
-          sessionAmount,
-          cartAmount: cartAmount.centAmount,
-        },
-        'Amounts do not match',
-      )
-      return false
-    }
-
-    // Compare order lines — filter out shipping, discount, and sales_tax items
-    // that are added by the processor (addShippingItem/addDiscountItem) and not
-    // present in ctCart.lineItems, to avoid false mismatches on HPP return.
-    const NON_PRODUCT_TYPES = new Set(['shipping_fee', 'shipping_line', 'discount', 'sales_tax'])
-    const allSessionItems = briqpaySession.data?.order?.cart || []
-    const sessionItems = allSessionItems.filter(
-      (item) => !('productType' in item && NON_PRODUCT_TYPES.has(String(item.productType))),
-    )
-    const cartItems = ctCart.lineItems
-
-    // Custom line items are sent to Briqpay as product items too. Negative ones are
-    // mapped to 'discount' which the NON_PRODUCT_TYPES filter above already excludes
-    // from sessionItems, so exclude them here as well. Reusing the real mapper keeps
-    // this comparison exactly in sync with what createSession/updateSession send.
-    const customCartItems = ctCart.customLineItems
-      .map((item) => mapCustomLineItem(item as CustomLineItem, ctCart.locale))
-      .filter((item) => item.productType !== ITEM_PRODUCT_TYPE.DISCOUNT)
-
-    if (sessionItems.length !== cartItems.length + customCartItems.length) {
-      appLogger.info(
-        {
-          briqpayCartLength: sessionItems.length,
-          allSessionCartLength: allSessionItems.length,
-          ctCartLength: cartItems.length,
-          ctCustomLineItemLength: customCartItems.length,
-        },
-        'Number of product items does not match',
-      )
-      return false
-    }
-
-    // Get the locale to use for item name comparison.
-    // Fall back to 'en' or the first available key if cart locale is not set,
-    // to avoid throwing and accidentally creating a new Briqpay session.
-    const locale = ctCart.locale || 'en'
-
-    // Compare each cart item with session items
-    for (const cartItem of cartItems) {
-      if (!this.isCartItemInSession(cartItem as LineItem, sessionItems, locale)) {
-        appLogger.info({}, 'No matching session item found for cart item')
-        return false
-      }
-    }
-
-    // Compare each custom line item with session items (mapped vs mapped, so all
-    // fields are directly comparable to what was originally sent to Briqpay)
-    for (const customItem of customCartItems) {
-      const hasMatch = sessionItems.some(
-        (sessionItem) =>
-          'unitPrice' in sessionItem &&
-          sessionItem.name === customItem.name &&
-          sessionItem.reference === customItem.reference &&
-          sessionItem.quantity === customItem.quantity &&
-          sessionItem.unitPrice === customItem.unitPrice &&
-          sessionItem.taxRate === customItem.taxRate,
-      )
-
-      if (!hasMatch) {
-        appLogger.info({}, 'No matching session item found for custom line item')
-        return false
-      }
-    }
-
-    return true
-  }
-
-  private isCartItemInSession(cartItem: LineItem, sessionItems: CartItem[], locale: string): boolean {
-    const nameRecord = cartItem.name as Record<string, string>
-    const cartItemName = nameRecord[locale] || nameRecord['en'] || Object.values(nameRecord)[0]
-    if (!cartItemName) {
-      return false
-    }
-    const cartItemId = cartItem.id
-
-    // Find matching session item based on properties
-    return !!sessionItems.find((sessionItem: CartItem) => {
-      // Check if it's a sales tax item
-      if (sessionItem.productType === 'sales_tax') {
-        const cartTaxAmount = cartItem.taxedPrice?.totalGross?.centAmount ?? 0
-        return (
-          sessionItem.name === cartItemName &&
-          sessionItem.reference === cartItemId &&
-          sessionItem.totalTaxAmount === cartTaxAmount
-        )
-      }
-
-      // Regular item comparison
-      const cartUnitPrice = Math.round(
-        (cartItem.taxedPrice?.totalNet?.centAmount ?? cartItem.price.value.centAmount) / cartItem.quantity,
-      )
-      const cartTaxRate = cartItem.taxRate?.amount
-
-      return (
-        sessionItem.name === cartItemName &&
-        sessionItem.quantity === cartItem.quantity &&
-        sessionItem.unitPrice === cartUnitPrice &&
-        sessionItem.taxRate === cartTaxRate &&
-        sessionItem.reference === cartItemId
-      )
+    await this.updateCTCartWithBriqpaySession(ctCart, {
+      briqpaySessionId: sessionId,
+      syncedPayloadHash: update.hash,
     })
+  }
+
+  private createBriqpaySession(
+    ctCart: Cart,
+    amountPlanned: PaymentAmount,
+    hostname: string,
+    futureOrderNumber?: string,
+  ): Promise<ResolvedBriqpaySession> {
+    appLogger.info({ cartId: ctCart.id }, 'Creating a new Briqpay session')
+
+    return Briqpay.createSession(ctCart, amountPlanned, hostname, futureOrderNumber)
   }
 }

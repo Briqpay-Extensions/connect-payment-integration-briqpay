@@ -1,9 +1,6 @@
 import { describe, expect, test, jest, beforeEach, afterEach } from '@jest/globals'
 import { BriqpaySessionDataService } from '../../../src/services/briqpay/session-data.service'
-import {
-  BriqpayFullSessionResponse,
-  ExtractedBriqpayCustomFields,
-} from '../../../src/services/types/briqpay-session-data.type'
+import { ExtractedBriqpayCustomFields } from '../../../src/services/types/briqpay-session-data.type'
 
 // Mock actions module to avoid paymentSDK initialization issues
 jest.mock('../../../src/connectors/actions', () => ({
@@ -84,10 +81,6 @@ jest.mock('../../../src/payment-sdk', () => ({
   },
 }))
 
-// Mock fetch globally
-const mockFetch = jest.fn() as jest.MockedFunction<typeof fetch>
-global.fetch = mockFetch
-
 describe('BriqpaySessionDataService', () => {
   let service: BriqpaySessionDataService
 
@@ -153,60 +146,9 @@ describe('BriqpaySessionDataService', () => {
     })
   })
 
-  describe('fetchFullSession', () => {
-    test('should fetch session data successfully', async () => {
-      const mockSessionData: BriqpayFullSessionResponse = {
-        sessionId: 'test-session-id',
-        status: 'completed',
-        data: {
-          pspMetadata: {
-            description: 'Test description',
-          },
-          transactions: [
-            {
-              reservationId: 'res-123',
-              pspId: 'psp-456',
-            },
-          ],
-        },
-      }
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve(mockSessionData),
-      } as Response)
-
-      const result = await service.fetchFullSession('test-session-id')
-
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://dev-api.briqpay.com/v3/session/test-session-id',
-        expect.objectContaining({
-          method: 'GET',
-          headers: expect.objectContaining({
-            'Content-Type': 'application/json',
-          }),
-        }),
-      )
-      expect(result).toEqual(mockSessionData)
-    })
-
-    test('should throw error when API returns non-ok response', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 404,
-        statusText: 'Not Found',
-        text: () => Promise.resolve('Session not found'),
-      } as Response)
-
-      await expect(service.fetchFullSession('invalid-session')).rejects.toThrow(
-        'Failed to fetch Briqpay session invalid-session: 404 Not Found',
-      )
-    })
-  })
-
   describe('extractCustomFields', () => {
     test('should extract all available PSP metadata fields', () => {
-      const sessionData: BriqpayFullSessionResponse = {
+      const sessionData = {
         sessionId: 'test-session',
         data: {
           pspMetadata: {
@@ -233,7 +175,7 @@ describe('BriqpaySessionDataService', () => {
     })
 
     test('should extract all available transaction data fields', () => {
-      const sessionData: BriqpayFullSessionResponse = {
+      const sessionData = {
         sessionId: 'test-session',
         data: {
           transactions: [
@@ -260,7 +202,7 @@ describe('BriqpaySessionDataService', () => {
     })
 
     test('should extract combined PSP metadata and transaction data', () => {
-      const sessionData: BriqpayFullSessionResponse = {
+      const sessionData = {
         sessionId: 'test-session',
         data: {
           pspMetadata: {
@@ -291,7 +233,7 @@ describe('BriqpaySessionDataService', () => {
     })
 
     test('should return empty object when no data is present', () => {
-      const sessionData: BriqpayFullSessionResponse = {
+      const sessionData = {
         sessionId: 'test-session',
       }
 
@@ -301,7 +243,7 @@ describe('BriqpaySessionDataService', () => {
     })
 
     test('should skip undefined, null, and empty string values', () => {
-      const sessionData: BriqpayFullSessionResponse = {
+      const sessionData = {
         sessionId: 'test-session',
         data: {
           pspMetadata: {
@@ -330,7 +272,7 @@ describe('BriqpaySessionDataService', () => {
     })
 
     test('should use first transaction when multiple transactions exist', () => {
-      const sessionData: BriqpayFullSessionResponse = {
+      const sessionData = {
         sessionId: 'test-session',
         data: {
           transactions: [
@@ -353,7 +295,7 @@ describe('BriqpaySessionDataService', () => {
     })
 
     test('should handle empty transactions array', () => {
-      const sessionData: BriqpayFullSessionResponse = {
+      const sessionData = {
         sessionId: 'test-session',
         data: {
           transactions: [],
@@ -363,6 +305,23 @@ describe('BriqpaySessionDataService', () => {
       const result = service.extractCustomFields(sessionData)
 
       expect(result).toEqual({})
+    })
+
+    test('ignores unknown fields Briqpay may add to pspMetadata and transactions', () => {
+      const sessionData = {
+        sessionId: 'test-session',
+        data: {
+          pspMetadata: { description: 'desc', futurePspField: 'ignored' },
+          transactions: [{ reservationId: 'res-123', futureTxField: 'ignored' }],
+        },
+      }
+
+      const result = service.extractCustomFields(sessionData)
+
+      expect(result).toEqual({
+        'briqpay-psp-meta-data-description': 'desc',
+        'briqpay-transaction-data-reservation-id': 'res-123',
+      })
     })
   })
 
@@ -545,25 +504,15 @@ describe('BriqpaySessionDataService', () => {
   })
 
   describe('ingestSessionDataToOrder', () => {
-    test('should fetch session, extract fields, and update order', async () => {
-      const mockSessionData: BriqpayFullSessionResponse = {
+    test('extracts fields from the payload session and updates the order', async () => {
+      const session = {
         sessionId: 'session-123',
+        htmlSnippet: '',
         data: {
-          pspMetadata: {
-            description: 'Test description',
-          },
-          transactions: [
-            {
-              reservationId: 'res-123',
-            },
-          ],
+          pspMetadata: { description: 'Test description' },
+          transactions: [{ reservationId: 'res-123' }],
         },
       }
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve(mockSessionData),
-      } as Response)
 
       mockOrderGet.mockResolvedValueOnce({
         body: {
@@ -577,9 +526,7 @@ describe('BriqpaySessionDataService', () => {
         body: { id: 'order-123', version: 2 },
       })
 
-      await service.ingestSessionDataToOrder('session-123', 'order-123')
-
-      expect(mockFetch).toHaveBeenCalledWith('https://dev-api.briqpay.com/v3/session/session-123', expect.any(Object))
+      await service.ingestSessionDataToOrder(session, 'order-123')
 
       expect(mockOrderPost).toHaveBeenCalledWith({
         body: {
@@ -600,24 +547,28 @@ describe('BriqpaySessionDataService', () => {
       })
     })
 
-    test('should propagate errors from fetchFullSession', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        statusText: 'Internal Server Error',
-        text: () => Promise.resolve('Server error'),
-      } as Response)
+    test('propagates errors from the commercetools order update', async () => {
+      const session = {
+        sessionId: 'session-123',
+        htmlSnippet: '',
+        data: {
+          pspMetadata: { description: 'Test description' },
+          transactions: [{ reservationId: 'res-123' }],
+        },
+      }
 
-      await expect(service.ingestSessionDataToOrder('session-123', 'order-123')).rejects.toThrow(
-        'Failed to fetch Briqpay session session-123: 500 Internal Server Error',
-      )
+      const serverError = Object.assign(new Error('Internal Server Error'), { statusCode: 500 })
+      mockOrderGet.mockRejectedValueOnce(serverError)
+
+      await expect(service.ingestSessionDataToOrder(session, 'order-123')).rejects.toBe(serverError)
     })
 
     test('drops fields not defined on the order custom type so the rest still write', async () => {
       // Session carries a field (psp-integration-name) the merchant type does NOT define -
       // the type mock only has session-id, psp-meta-data-description, reservation-id.
-      const mockSessionData: BriqpayFullSessionResponse = {
+      const session = {
         sessionId: 'session-123',
+        htmlSnippet: '',
         data: {
           transactions: [
             {
@@ -627,11 +578,6 @@ describe('BriqpaySessionDataService', () => {
           ],
         },
       }
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve(mockSessionData),
-      } as Response)
 
       mockOrderGet.mockResolvedValueOnce({
         body: {
@@ -643,7 +589,7 @@ describe('BriqpaySessionDataService', () => {
 
       mockOrderPostExecute.mockResolvedValueOnce({ body: { id: 'order-123', version: 2 } })
 
-      await service.ingestSessionDataToOrder('session-123', 'order-123')
+      await service.ingestSessionDataToOrder(session, 'order-123')
 
       // The defined field is written; the undefined one is filtered out (not sent to CT),
       // so the whole POST is not rejected.
@@ -791,21 +737,20 @@ describe('BriqpaySessionDataService', () => {
   })
 
   describe('ingestSessionDataToCart', () => {
-    test('fetches the session and stages the fields on the cart', async () => {
-      const mockSessionData: BriqpayFullSessionResponse = {
+    test('extracts fields from the payload session and stages them on the cart', async () => {
+      const session = {
         sessionId: 'session-123',
+        htmlSnippet: '',
         data: {
           pspMetadata: { description: 'Test description' },
           transactions: [{ reservationId: 'res-123' }],
         },
       }
 
-      mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(mockSessionData) } as Response)
       mockCartPostExecute.mockResolvedValueOnce({ body: { id: 'cart-123', version: 2 } })
 
-      await service.ingestSessionDataToCart('session-123', 'cart-123')
+      await service.ingestSessionDataToCart(session, 'cart-123')
 
-      expect(mockFetch).toHaveBeenCalledWith('https://dev-api.briqpay.com/v3/session/session-123', expect.any(Object))
       expect(mockCartPost).toHaveBeenCalledWith({
         body: {
           version: 1,
@@ -818,17 +763,20 @@ describe('BriqpaySessionDataService', () => {
       expect(mockOrderPost).not.toHaveBeenCalled()
     })
 
-    test('propagates errors from fetchFullSession', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        statusText: 'Internal Server Error',
-        text: () => Promise.resolve('Server error'),
-      } as Response)
+    test('propagates errors from the commercetools cart update', async () => {
+      const session = {
+        sessionId: 'session-123',
+        htmlSnippet: '',
+        data: {
+          pspMetadata: { description: 'Test description' },
+          transactions: [{ reservationId: 'res-123' }],
+        },
+      }
 
-      await expect(service.ingestSessionDataToCart('session-123', 'cart-123')).rejects.toThrow(
-        'Failed to fetch Briqpay session session-123: 500 Internal Server Error',
-      )
+      const serverError = Object.assign(new Error('Internal Server Error'), { statusCode: 500 })
+      mockCartGet.mockRejectedValueOnce(serverError)
+
+      await expect(service.ingestSessionDataToCart(session, 'cart-123')).rejects.toBe(serverError)
     })
   })
 })

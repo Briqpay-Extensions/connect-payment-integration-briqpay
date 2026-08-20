@@ -1,9 +1,21 @@
 import BriqpayService from '../src/libs/briqpay/BriqpayService'
+import { BRIQPAY_USER_AGENT } from '../src/libs/briqpay/user-agent'
 import { beforeEach, describe, expect, it, jest, afterEach } from '@jest/globals'
 import { mockGetCartResult } from './utils/mock-cart-data'
 import { BRIQPAY_DECISION } from '../src/dtos/briqpay-payment.dto'
 import { Cart } from '@commercetools/platform-sdk'
 import { apiRoot } from '../src/libs/commercetools/api-root'
+import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
+import { createHash } from 'crypto'
+
+// updateSession takes a prebuilt request so the payload it sends is the one the hash
+// describes. Tests go through the real builder to exercise that pairing.
+const updateSessionWithCart = async (
+  sessionId: string,
+  cart: Cart,
+  amount: { centAmount: number; currencyCode: string },
+) =>
+  BriqpayService.updateSession(sessionId, await BriqpayService.buildSessionUpdateRequest(cart, amount as PaymentAmount))
 
 // Mock the apiRoot for fetchCartDiscountNames
 jest.mock('../src/libs/commercetools/api-root', () => ({
@@ -115,7 +127,31 @@ describe('BriqpayService', () => {
     )
 
     expect(global.fetch).toHaveBeenCalled()
-    expect(response).toHaveProperty('sessionId', 'abc123')
+    expect(response.session).toHaveProperty('sessionId', 'abc123')
+  })
+
+  it('sends basic auth and the plugin User-Agent on Briqpay calls', async () => {
+    const mockCart = JSON.parse(JSON.stringify(mockGetCartResult()))
+
+    global.fetch = jest.fn().mockReturnValue(
+      Promise.resolve({
+        ok: true,
+        json: async () => ({ sessionId: 'abc123' }),
+      } as Response),
+    ) as typeof fetch
+
+    await BriqpayService.createSession(
+      mockCart,
+      { centAmount: 10000, currencyCode: 'SEK', fractionDigits: 2 },
+      'localhost',
+    )
+
+    const [, init] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit]
+    expect(init.headers).toEqual({
+      Authorization: expect.stringMatching(/^Basic /),
+      'content-type': 'application/json',
+      'User-Agent': BRIQPAY_USER_AGENT,
+    })
   })
 
   it('should create a session with digital items', async () => {
@@ -145,7 +181,7 @@ describe('BriqpayService', () => {
     )
 
     expect(global.fetch).toHaveBeenCalled()
-    expect(response).toHaveProperty('sessionId', 'abc123')
+    expect(response.session).toHaveProperty('sessionId', 'abc123')
   })
 
   it('should create a session with digital items #2', async () => {
@@ -170,7 +206,7 @@ describe('BriqpayService', () => {
     )
 
     expect(global.fetch).toHaveBeenCalled()
-    expect(response).toHaveProperty('sessionId', 'abc123')
+    expect(response.session).toHaveProperty('sessionId', 'abc123')
   })
 
   it('should create a session with expected payload', async () => {
@@ -194,7 +230,7 @@ describe('BriqpayService', () => {
     )
 
     expect(global.fetch).toHaveBeenCalled()
-    expect(response).toHaveProperty('sessionId', 'abc123')
+    expect(response.session).toHaveProperty('sessionId', 'abc123')
   })
 
   it('forwards the cart briqpay-variant-id custom field as product.variantId', async () => {
@@ -387,7 +423,7 @@ describe('BriqpayService', () => {
       } as Response),
     ) as typeof fetch
 
-    const response = await BriqpayService.updateSession('abc123', mockCart, {
+    const response = await updateSessionWithCart('abc123', mockCart, {
       centAmount: mockCart.totalPrice.centAmount,
       currencyCode: mockCart.totalPrice.currencyCode,
     })
@@ -399,22 +435,22 @@ describe('BriqpayService', () => {
   it('should throw an error when update session response is not ok', async () => {
     const mockCart = mockGetCartResult()
 
-    const mockErrorResponse = { error: { message: 'Invalid data' } }
-
+    // Mock text(), not json(): the body is read exactly once, since consuming it twice
+    // throws on a real Response and loses the upstream detail.
     global.fetch = jest.fn().mockReturnValue(
       Promise.resolve({
         ok: false,
         status: 400,
-        json: async () => mockErrorResponse,
-      } as Response),
+        text: async () => JSON.stringify({ error: { message: 'Invalid data' } }),
+      } as unknown as Response),
     ) as typeof fetch
 
     await expect(
-      BriqpayService.updateSession('abc123', mockCart, {
+      updateSessionWithCart('abc123', mockCart, {
         centAmount: mockCart.totalPrice.centAmount,
         currencyCode: mockCart.totalPrice.currencyCode,
       }),
-    ).rejects.toThrow('Briqpay API error: Invalid data')
+    ).rejects.toThrow('Briqpay API error: {"error":{"message":"Invalid data"}}')
   })
 
   it('should throw an error when response.text() fails', async () => {
@@ -431,7 +467,7 @@ describe('BriqpayService', () => {
     ) as typeof fetch
 
     await expect(
-      BriqpayService.updateSession('abc123', mockCart, {
+      updateSessionWithCart('abc123', mockCart, {
         centAmount: mockCart.totalPrice.centAmount,
         currencyCode: mockCart.totalPrice.currencyCode,
       }),
@@ -453,7 +489,12 @@ describe('BriqpayService', () => {
 
       const result = await BriqpayService.healthCheck()
 
-      expect(global.fetch).toHaveBeenCalledWith('https://api.briqpay.com/')
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://api.briqpay.com/',
+        expect.objectContaining({
+          headers: expect.objectContaining({ 'User-Agent': BRIQPAY_USER_AGENT }),
+        }),
+      )
       expect(result).toBe(mockResponse)
     })
 
@@ -541,7 +582,7 @@ describe('BriqpayService', () => {
       ) as typeof fetch
 
       await expect(
-        BriqpayService.updateSession('abc123', mockCart, {
+        updateSessionWithCart('abc123', mockCart, {
           centAmount: mockCart.totalPrice.centAmount,
           currencyCode: mockCart.totalPrice.currencyCode,
         }),
@@ -559,11 +600,197 @@ describe('BriqpayService', () => {
       ) as typeof fetch
 
       await expect(
-        BriqpayService.updateSession('abc123', mockCart, {
+        updateSessionWithCart('abc123', mockCart, {
           centAmount: mockCart.totalPrice.centAmount,
           currencyCode: mockCart.totalPrice.currencyCode,
         }),
-      ).rejects.toThrow('Invalid session response: missing sessionId')
+      ).rejects.toThrow('Invalid Briqpay session response for abc123: missing sessionId')
+    })
+  })
+
+  describe('session response normalization', () => {
+    const amount = { centAmount: 119000, currencyCode: 'EUR' } as PaymentAmount
+
+    it('normalizes a snippet-only GET response to htmlSnippet', async () => {
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ sessionId: 'abc123', snippet: '<div>Briqpay</div>' }),
+        } as Response),
+      ) as typeof fetch
+
+      const session = await BriqpayService.getSession('abc123')
+
+      // Briqpay names it `snippet` on some responses; callers only ever read htmlSnippet.
+      expect(session.htmlSnippet).toBe('<div>Briqpay</div>')
+    })
+
+    it('normalizes a snippet-only PATCH response to htmlSnippet', async () => {
+      const mockCart = mockGetCartResult()
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ sessionId: 'abc123', snippet: '<div>Briqpay Updated</div>' }),
+        } as Response),
+      ) as typeof fetch
+
+      const session = await updateSessionWithCart('abc123', mockCart, {
+        centAmount: mockCart.totalPrice.centAmount,
+        currencyCode: mockCart.totalPrice.currencyCode,
+      })
+
+      expect(session.htmlSnippet).toBe('<div>Briqpay Updated</div>')
+    })
+
+    it('fails legibly when an update answers 204 instead of the session', async () => {
+      const mockCart = mockGetCartResult()
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          status: 204,
+          json: async () => {
+            throw new Error('no body')
+          },
+        } as unknown as Response),
+      ) as typeof fetch
+
+      // Only reachable by sending fields=none, which this connector never does - so fail
+      // with something readable rather than a JSON parse error.
+      await expect(
+        updateSessionWithCart('abc123', mockCart, {
+          centAmount: mockCart.totalPrice.centAmount,
+          currencyCode: mockCart.totalPrice.currencyCode,
+        }),
+      ).rejects.toThrow('Briqpay returned 204 for session abc123')
+    })
+
+    it('omits shipping lines entirely for a cart with no shipping price', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      delete mockCart.shippingInfo
+
+      const request = await BriqpayService.buildSessionUpdateRequest(mockCart, amount)
+      const sent = JSON.parse(request.body) as { data: { order: { cart: { reference: string }[] } } }
+
+      expect(sent.data.order.cart.map((item) => item.reference)).not.toContain('shippingfee')
+    })
+  })
+
+  describe('buildSessionUpdateRequest', () => {
+    const amount = { centAmount: 119000, currencyCode: 'EUR' } as PaymentAmount
+
+    it('is deterministic for an unchanged cart', async () => {
+      const mockCart = mockGetCartResult()
+
+      const first = await BriqpayService.buildSessionUpdateRequest(mockCart, amount)
+      const second = await BriqpayService.buildSessionUpdateRequest(mockCart, amount)
+
+      expect(second.body).toBe(first.body)
+      expect(second.hash).toBe(first.hash)
+    })
+
+    it('hashes exactly the bytes it reports, and sends those same bytes', async () => {
+      const mockCart = mockGetCartResult()
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const request = await BriqpayService.buildSessionUpdateRequest(mockCart, amount)
+      await BriqpayService.updateSession('abc123', request)
+
+      // The hash is only a true claim about what Briqpay holds if the body is sent verbatim.
+      expect(request.hash).toBe(createHash('sha256').update(request.body).digest('hex'))
+      const [, init] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit]
+      expect(init.body).toBe(request.body)
+    })
+
+    it('reports the amounts the payload carries, for the in-sync verification', async () => {
+      const mockCart = mockGetCartResult()
+
+      const request = await BriqpayService.buildSessionUpdateRequest(mockCart, amount)
+      const sent = JSON.parse(request.body) as { data: { order: Record<string, unknown> } }
+
+      expect(request.amounts).toEqual({
+        currency: sent.data.order.currency,
+        amountIncVat: sent.data.order.amountIncVat,
+        amountExVat: sent.data.order.amountExVat,
+      })
+    })
+
+    it('produces the same data subtree as createSession, so a create can record the hash', async () => {
+      const mockCart = mockGetCartResult()
+      global.fetch = jest.fn().mockReturnValue(
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123' }),
+        } as Response),
+      ) as typeof fetch
+
+      const created = await BriqpayService.createSession(mockCart, amount, 'localhost')
+      const [, init] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit]
+      const createdData = (JSON.parse(init.body as string) as { data: unknown }).data
+
+      // Byte-identical `data`, otherwise the hash recorded after a create would describe a
+      // payload that was never sent and the next /config would always look stale.
+      expect(created.syncedPayloadHash).toBe(
+        createHash('sha256')
+          .update(JSON.stringify({ data: createdData }))
+          .digest('hex'),
+      )
+    })
+
+    it('changes the hash when discount name lookup degrades, so it never reads as in sync', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      mockCart.lineItems[0].discountedPricePerQuantity = [
+        {
+          quantity: 1,
+          discountedPrice: {
+            value: { type: 'centPrecision', centAmount: 100000, currencyCode: 'EUR', fractionDigits: 2 },
+            includedDiscounts: [
+              {
+                discount: { typeId: 'cart-discount', id: 'discount-id-1' },
+                discountedAmount: {
+                  type: 'centPrecision',
+                  centAmount: 19000,
+                  currencyCode: 'EUR',
+                  fractionDigits: 2,
+                },
+              },
+            ],
+          },
+        },
+      ]
+      mockCart.lineItems[0].taxedPrice = {
+        totalGross: { centAmount: 100000, currencyCode: 'EUR' },
+        totalNet: { centAmount: 84034, currencyCode: 'EUR' },
+        totalTax: { centAmount: 15966, currencyCode: 'EUR' },
+      }
+      ;(apiRoot.cartDiscounts as jest.Mock<any>).mockReturnValue({
+        get: jest.fn<any>().mockReturnValue({
+          execute: jest
+            .fn<any>()
+            .mockResolvedValue({ body: { results: [{ id: 'discount-id-1', name: { en: 'Summer Sale' } }] } }),
+        }),
+      })
+      const withNames = await BriqpayService.buildSessionUpdateRequest(mockCart, amount)
+      expect(withNames.body).toContain('Summer Sale')
+
+      // fetchCartDiscountNames swallows its own errors and falls back to a generic label,
+      // so the same cart can map to a different payload. That must read as stale, not in sync.
+      ;(apiRoot.cartDiscounts as jest.Mock<any>).mockReturnValue({
+        get: jest.fn<any>().mockReturnValue({
+          execute: jest.fn<any>().mockRejectedValue(new Error('CT unavailable')),
+        }),
+      })
+      const degraded = await BriqpayService.buildSessionUpdateRequest(mockCart, amount)
+
+      expect(degraded.body).not.toContain('Summer Sale')
+      expect(degraded.hash).not.toBe(withNames.hash)
     })
   })
 
@@ -596,7 +823,7 @@ describe('BriqpayService', () => {
       )
 
       expect(global.fetch).toHaveBeenCalled()
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
     })
 
     it('should create session with discounted shipping', async () => {
@@ -624,7 +851,7 @@ describe('BriqpayService', () => {
       )
 
       expect(global.fetch).toHaveBeenCalled()
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
     })
 
     it('should create session with custom shipping method (no shippingMethod reference) and correct tax rate calculation', async () => {
@@ -655,7 +882,7 @@ describe('BriqpayService', () => {
         'localhost',
       )
 
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
       expect(requestBody).toBeDefined()
       expect(requestBody.data.order.amountExVat).toBe(120965)
 
@@ -692,7 +919,7 @@ describe('BriqpayService', () => {
       )
 
       expect(global.fetch).toHaveBeenCalled()
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
     })
   })
 
@@ -708,7 +935,7 @@ describe('BriqpayService', () => {
         } as Response),
       ) as typeof fetch
 
-      const response = await BriqpayService.updateSession('abc123', mockCart, {
+      const response = await updateSessionWithCart('abc123', mockCart, {
         centAmount: 10000,
         currencyCode: 'EUR',
       })
@@ -738,7 +965,7 @@ describe('BriqpayService', () => {
         } as Response)
       }) as typeof fetch
 
-      const response = await BriqpayService.updateSession('abc123', mockCart, {
+      const response = await updateSessionWithCart('abc123', mockCart, {
         centAmount: 142998,
         currencyCode: 'RON',
       })
@@ -768,7 +995,7 @@ describe('BriqpayService', () => {
         } as Response),
       ) as typeof fetch
 
-      const response = await BriqpayService.updateSession('abc123', mockCart, {
+      const response = await updateSessionWithCart('abc123', mockCart, {
         centAmount: 10000,
         currencyCode: 'EUR',
       })
@@ -795,7 +1022,7 @@ describe('BriqpayService', () => {
         'localhost',
       )
 
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
     })
 
     it('should handle items with discountedPricePerQuantity', async () => {
@@ -828,7 +1055,7 @@ describe('BriqpayService', () => {
         'localhost',
       )
 
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
     })
 
     it('should use fallback locale when cart locale is missing', async () => {
@@ -848,7 +1075,7 @@ describe('BriqpayService', () => {
         'localhost',
       )
 
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
     })
 
     it('should use productKey as fallback name', async () => {
@@ -869,7 +1096,7 @@ describe('BriqpayService', () => {
         'localhost',
       )
 
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
     })
   })
 
@@ -892,7 +1119,7 @@ describe('BriqpayService', () => {
         'localhost',
       )
 
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
     })
 
     it('should throw error when no tax rate can be determined', async () => {
@@ -958,7 +1185,7 @@ describe('BriqpayService', () => {
         'localhost',
       )
 
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
     })
 
     it('should handle tax category lookup with state matching', async () => {
@@ -1005,7 +1232,7 @@ describe('BriqpayService', () => {
         'localhost',
       )
 
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
     })
 
     it('should handle tax category lookup error gracefully', async () => {
@@ -1033,7 +1260,7 @@ describe('BriqpayService', () => {
         'localhost',
       )
 
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
     })
 
     it('should handle tax category fetch error gracefully', async () => {
@@ -1072,7 +1299,7 @@ describe('BriqpayService', () => {
         'localhost',
       )
 
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
     })
   })
 
@@ -1137,7 +1364,7 @@ describe('BriqpayService', () => {
         'localhost',
       )
 
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
       expect(apiRoot.cartDiscounts).toHaveBeenCalled()
     })
 
@@ -1191,7 +1418,7 @@ describe('BriqpayService', () => {
         'localhost',
       )
 
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
     })
   })
 
@@ -1226,7 +1453,7 @@ describe('BriqpayService', () => {
         } as Response),
       ) as typeof fetch
 
-      const response = await BriqpayService.updateSession('abc123', mockCart, {
+      const response = await updateSessionWithCart('abc123', mockCart, {
         centAmount: 10000,
         currencyCode: 'EUR',
       })
@@ -1250,7 +1477,7 @@ describe('BriqpayService', () => {
         } as Response),
       ) as typeof fetch
 
-      const response = await BriqpayService.updateSession('abc123', mockCart, {
+      const response = await updateSessionWithCart('abc123', mockCart, {
         centAmount: 10000,
         currencyCode: 'EUR',
       })
@@ -1278,7 +1505,7 @@ describe('BriqpayService', () => {
         } as Response),
       ) as typeof fetch
 
-      const response = await BriqpayService.updateSession('abc123', mockCart, {
+      const response = await updateSessionWithCart('abc123', mockCart, {
         centAmount: 10000,
         currencyCode: 'EUR',
       })
@@ -1305,7 +1532,7 @@ describe('BriqpayService', () => {
         'localhost',
       )
 
-      expect(response).toHaveProperty('sessionId', 'abc123')
+      expect(response.session).toHaveProperty('sessionId', 'abc123')
     })
   })
 
@@ -1526,7 +1753,7 @@ describe('BriqpayService', () => {
         } as Response)
       }) as typeof fetch
 
-      await BriqpayService.updateSession('abc123', mockCart, { centAmount: 238000, currencyCode: 'EUR' })
+      await updateSessionWithCart('abc123', mockCart, { centAmount: 238000, currencyCode: 'EUR' })
 
       const customItem = requestBody.data.order.cart.find((item: any) => item.reference === 'customLineItem-id-1')
       expect(customItem).toBeDefined()

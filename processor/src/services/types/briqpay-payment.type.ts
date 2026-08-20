@@ -1,5 +1,6 @@
 import { PaymentRequestSchemaDTO } from '../../dtos/briqpay-payment.dto'
 import { CommercetoolsCartService, CommercetoolsPaymentService } from '@commercetools/connect-payments-sdk'
+import { BriqpayPspMetadata } from './briqpay-session-data.type'
 
 export type BriqpayPaymentServiceOptions = {
   ctCartService: CommercetoolsCartService
@@ -326,6 +327,7 @@ export interface BriqpayTransaction {
   currency: string
   createdAt?: string
   reservationId?: string
+  secondaryReservationId?: string
   pspId?: string
   pspDisplayName?: string
   pspIntegrationName?: string
@@ -381,6 +383,7 @@ export interface BriqpayRefund {
 
 export type MediumBriqpayResponse = MinimalBriqpayResponse & {
   data?: {
+    pspMetadata?: BriqpayPspMetadata
     order?: {
       amountIncVat: number
       amountExVat?: number

@@ -13,6 +13,7 @@ export const ErrorObject = Type.Object(
 
 /**
  * Represents https://docs.commercetools.com/api/errors#errorresponse
+ * Mirrored in enabler/src/payment-enabler/payment-enabler-briqpay.ts BriqpayConfigErrorResponse
  */
 export const ErrorResponse = Type.Object({
   statusCode: Type.Integer(),

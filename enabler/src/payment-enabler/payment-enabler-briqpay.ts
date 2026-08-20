@@ -16,19 +16,23 @@ declare global {
   }
 }
 
+// Mirrors processor/src/services/briqpay-payment.service.ts config()
+type BriqpayConfigResponse = {
+  snippet: string;
+  briqpaySessionId: string;
+};
+
+import { toBriqpayProcessorError } from "../errors";
+
 export type BaseOptions = {
   sdk: BriqpaySdk;
   processorUrl: string;
   sessionId: string;
-  environment: string;
   locale?: string;
   snippet: string;
   briqpaySessionId: string;
   onComplete: (_result: PaymentResult) => void | Promise<void>;
-  onError: (
-    _error: unknown,
-    _context?: { paymentReference?: string },
-  ) => void | Promise<void>;
+  onError: (_error: unknown) => void | Promise<void>;
 };
 
 export class BriqpayPaymentEnabler implements PaymentEnabler {
@@ -59,27 +63,32 @@ export class BriqpayPaymentEnabler implements PaymentEnabler {
       },
     });
 
-    const configJson = await configResponse.json();
+    // A non-ok /config response must not be treated as a valid config: silently
+    // proceeding sends a session-less/garbage config downstream, which surfaces
+    // much later as a misleading "snippet is missing" error instead of the real one.
+    const configBody = await configResponse.text();
 
-    const sdkOptions = {
-      // environment: configJson.environment,
-      ...configJson,
+    if (!configResponse.ok) {
+      throw toBriqpayProcessorError("/config", configResponse.status, configBody);
+    }
+
+    // An ok response is guaranteed JSON of exactly this shape by the processor's
+    // /config response schema.
+    const configJson = JSON.parse(configBody) as BriqpayConfigResponse;
+
+    const baseOptions: BaseOptions = {
+      snippet: configJson.snippet,
+      briqpaySessionId: configJson.briqpaySessionId,
+      sdk: new BriqpaySdk(),
       processorUrl: options.processorUrl,
       sessionId: options.sessionId,
+      onComplete: options.onComplete || (() => {}),
+      onError: options.onError || (() => {}),
     };
 
-    return Promise.resolve({
-      baseOptions: {
-        snippet: configJson.snippet,
-        briqpaySessionId: configJson.briqpaySessionId,
-        sdk: new BriqpaySdk(sdkOptions),
-        processorUrl: options.processorUrl,
-        sessionId: options.sessionId,
-        environment: sdkOptions.environment,
-        onComplete: options.onComplete || (() => {}),
-        onError: options.onError || (() => {}),
-      },
-    });
+    return {
+      baseOptions,
+    };
   };
 
   async createComponentBuilder(

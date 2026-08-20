@@ -7,6 +7,7 @@ import {
 import { MediumBriqpayResponse, ORDER_STATUS, TRANSACTION_STATUS } from '../types/briqpay-payment.type'
 import { appLogger } from '../../payment-sdk'
 import {
+  buildPaymentMethodInfoFromSession,
   getActualAuthorizationStatus,
   getActualCaptureStatus,
   getActualOrderStatus,
@@ -18,6 +19,7 @@ import {
   transactionStatusToWebhookStatus,
 } from './utils'
 import { BriqpaySessionDataService } from './session-data.service'
+import { logAmountMismatch, readBriqpaySessionAmounts } from '../../libs/briqpay/session-amounts'
 import { apiRoot } from '../../libs/commercetools/api-root'
 import { Order } from '@commercetools/platform-sdk'
 import {
@@ -41,10 +43,10 @@ export class BriqpayNotificationService {
    * Processes incoming webhook notifications from Briqpay.
    *
    * This service requires HMAC verification (BRIQPAY_WEBHOOK_SECRET must be configured).
-   * It trusts the webhook payload directly for status updates and transaction data; custom
-   * field values are never taken from the payload - every verified webhook triggers a
-   * best-effort background full-session fetch that ingests session data to the order (or
-   * stages it on the cart pre-order) without delaying the webhook response.
+   * It trusts the verified webhook payload directly for status updates, transaction data, and
+   * custom-field data: every verified webhook that carries transaction data triggers a
+   * best-effort background ingestion that writes the session data to the order (or stages it
+   * on the cart pre-order) without delaying the webhook response.
    */
   public async processNotification(opts: {
     data: NotificationRequestSchemaDTO
@@ -131,16 +133,15 @@ export class BriqpayNotificationService {
       event === BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS || event === BRIQPAY_WEBHOOK_EVENT.SESSION_STATUS
     const stagingCartId = sessionScopedEvent && !liveOrderStatuses.includes(status) ? undefined : cartId
 
-    // session_status has no routing handler and carries no transaction data; throwing at the
-    // gate below would make Briqpay retry a webhook that can never do more than ingest.
-    // Fire-and-forget: ingestOnWebhook never rejects and must not delay the response.
+    // session_status has no routing handler and carries no transaction data, so the payload yields
+    // nothing to ingest (order_status carries pspMetadata and drives ingestion). Return before the
+    // gate below so Briqpay is not made to retry a webhook that can never do more.
     if (event === BRIQPAY_WEBHOOK_EVENT.SESSION_STATUS) {
-      void this.ingestOnWebhook(briqpaySessionId, [], stagingCartId)
-
       return
     }
 
     let payment: Payment[] = []
+    let briqpaySession: MediumBriqpayResponse | undefined
 
     try {
       // 1. Mandatory transaction data from payload
@@ -157,13 +158,14 @@ export class BriqpayNotificationService {
         throw new Error('Webhook processing failed: Missing transaction data in payload')
       }
 
-      const briqpaySession = this.constructSessionFromPayload(
+      briqpaySession = this.constructSessionFromPayload(
         briqpaySessionId,
         transactionData,
         event,
         briqpayCaptureId,
         briqpayRefundId,
         data.autoCaptured,
+        data.pspMetadata,
       )
 
       // Convert trusted webhook status to the format expected by existing handlers
@@ -186,14 +188,43 @@ export class BriqpayNotificationService {
         briqpayRefundId,
         cartId,
       )
+
+      this.logWebhookAmountMismatch(event, payment[0], briqpaySession)
     } finally {
-      // Every verified webhook is an ingestion opportunity, regardless of handler outcome:
-      // fetch the full session and (re)write whatever data exists, so a field missed by an
-      // earlier attempt (pre-order race, transaction not yet visible at first fetch) is
-      // backfilled by the next webhook of any kind. Fire-and-forget in a finally: the
-      // webhook response is never delayed behind the Briqpay fetch, payloads that fail
-      // routing still ingest, and ingestOnWebhook never rejects.
-      void this.ingestOnWebhook(briqpaySessionId, payment, stagingCartId)
+      // Every verified webhook with a payload-built session is an ingestion opportunity: (re)write
+      // whatever custom-field data the payload carries, so a field an earlier webhook missed
+      // (pre-order race) is written by the next one. Fire-and-forget in a finally: the response is
+      // never delayed, payloads that fail routing still ingest, and ingestOnWebhook never rejects.
+      if (briqpaySession) {
+        void this.ingestOnWebhook(briqpaySession, payment, stagingCartId)
+      }
+    }
+  }
+
+  /**
+   * Mismatch check for order-status events only: their payload carries the order amount, which
+   * must equal what CT planned. Capture/refund payloads carry the capture/refund amount, so
+   * comparing those against amountPlanned would flag every partial capture or refund
+   * (e.g. initiated from the Briqpay portal) as a mismatch. Log-only, never throws.
+   */
+  private logWebhookAmountMismatch(
+    event: BRIQPAY_WEBHOOK_EVENT,
+    payment: Payment | undefined,
+    briqpaySession: MediumBriqpayResponse,
+  ): void {
+    const planned = payment?.amountPlanned
+    if (event !== BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS || !planned) {
+      return
+    }
+
+    const sessionAmounts = readBriqpaySessionAmounts(briqpaySession)
+    if (sessionAmounts.amountIncVat !== planned.centAmount || sessionAmounts.currency !== planned.currencyCode) {
+      logAmountMismatch({
+        context: `webhook:${event}`,
+        sessionId: briqpaySession.sessionId,
+        expected: { centAmount: planned.centAmount, currency: planned.currencyCode },
+        actual: sessionAmounts,
+      })
     }
   }
 
@@ -209,10 +240,11 @@ export class BriqpayNotificationService {
    * predicate query that may not have caught up yet.
    */
   private ingestOnWebhook = async (
-    briqpaySessionId: string,
+    session: MediumBriqpayResponse,
     knownPayments: Payment[],
     cartId?: string,
   ): Promise<void> => {
+    const briqpaySessionId = session.sessionId
     try {
       const payments = knownPayments.length
         ? knownPayments
@@ -221,7 +253,7 @@ export class BriqpayNotificationService {
           })
 
       if (payments.length) {
-        await this.ingestSessionDataToOrder(briqpaySessionId, payments[0].id, cartId)
+        await this.ingestSessionDataToOrder(session, payments[0].id, cartId)
 
         return
       }
@@ -382,11 +414,13 @@ export class BriqpayNotificationService {
     briqpayCaptureId?: string,
     briqpayRefundId?: string,
     autoCaptured?: boolean,
+    pspMetadata?: NotificationRequestSchemaDTO['pspMetadata'],
   ): MediumBriqpayResponse {
     const briqpaySession: MediumBriqpayResponse = {
       sessionId: briqpaySessionId,
       htmlSnippet: '', // Not needed for notifications
       data: {
+        ...(pspMetadata && { pspMetadata }),
         order: {
           amountIncVat: transactionData.amountIncVat,
           amountExVat: transactionData.amountExVat,
@@ -402,6 +436,7 @@ export class BriqpayNotificationService {
             currency: transactionData.currency,
             createdAt: transactionData.createdAt,
             reservationId: transactionData.reservationId,
+            secondaryReservationId: transactionData.secondaryReservationId,
             pspId: transactionData.pspId,
             pspDisplayName: transactionData.pspDisplayName,
             pspIntegrationName: transactionData.pspIntegrationName,
@@ -822,8 +857,14 @@ export class BriqpayNotificationService {
     const amount = transaction?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat ?? 0
     const currency = transaction?.currency ?? briqpaySession.data?.order?.currency ?? 'EUR'
 
+    // The PSP that processed the payment - written only while method/name are still empty (SDK
+    // semantics), so this fills the fields for payments the /payments call could not (e.g. the
+    // buyer-never-returns flow) without ever flipping an already-set value.
+    const paymentMethodInfo = buildPaymentMethodInfoFromSession(briqpaySession)
+
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: payments[0].id,
+      ...(paymentMethodInfo && { paymentMethodInfo }),
       transaction: {
         type: 'Authorization',
         interactionId: briqpaySessionId,
@@ -865,10 +906,15 @@ export class BriqpayNotificationService {
     const amount = transaction?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat ?? 0
     const currency = transaction?.currency ?? briqpaySession.data?.order?.currency ?? 'EUR'
 
+    // The PSP that processed the payment - written only while method/name are still empty (SDK
+    // semantics), same as the pending handler.
+    const paymentMethodInfo = buildPaymentMethodInfoFromSession(briqpaySession)
+
     // Update authorization to Success if not already done
     if (!alreadySuccessful) {
       const updatedPayment = await this.ctPaymentService.updatePayment({
         id: payments[0].id,
+        ...(paymentMethodInfo && { paymentMethodInfo }),
         transaction: {
           type: 'Authorization',
           interactionId: briqpaySessionId,
@@ -904,8 +950,13 @@ export class BriqpayNotificationService {
     const amount = transaction?.amountIncVat ?? briqpaySession.data?.order?.amountIncVat ?? 0
     const currency = transaction?.currency ?? briqpaySession.data?.order?.currency ?? 'EUR'
 
+    // Written on the failed payment too - which PSP rejected is exactly what the merchant
+    // needs to see. Still write-when-empty via the SDK.
+    const paymentMethodInfo = buildPaymentMethodInfoFromSession(briqpaySession)
+
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: payments[0].id,
+      ...(paymentMethodInfo && { paymentMethodInfo }),
       transaction: {
         type: 'Authorization',
         interactionId: briqpaySessionId,
@@ -1239,14 +1290,16 @@ export class BriqpayNotificationService {
    * Finds the order associated with a payment and ingests Briqpay session data to order custom fields.
    * This is a best-effort operation - failures are logged but do not fail the notification processing.
    *
-   * @param briqpaySessionId - The Briqpay session ID
+   * @param session - The Briqpay session built from the verified webhook payload
    * @param paymentId - The CommerceTools payment ID
+   * @param cartId - The cart to stage data on when the order does not exist yet
    */
   private ingestSessionDataToOrder = async (
-    briqpaySessionId: string,
+    session: MediumBriqpayResponse,
     paymentId: string,
     cartId?: string,
   ): Promise<void> => {
+    const briqpaySessionId = session.sessionId
     appLogger.info({ briqpaySessionId, paymentId, cartId }, 'Starting ingestSessionDataToOrder lookup')
 
     try {
@@ -1281,7 +1334,7 @@ export class BriqpayNotificationService {
           { paymentId, briqpaySessionId, cartId },
           'No order yet - staging Briqpay session data on cart for copy-on-creation',
         )
-        await this.sessionDataService.ingestSessionDataToCart(briqpaySessionId, cartId)
+        await this.sessionDataService.ingestSessionDataToCart(session, cartId)
 
         return
       }
@@ -1293,7 +1346,7 @@ export class BriqpayNotificationService {
       )
 
       // Ingest the session data to the order
-      await this.sessionDataService.ingestSessionDataToOrder(briqpaySessionId, order.id)
+      await this.sessionDataService.ingestSessionDataToOrder(session, order.id)
     } catch (error) {
       // Log the error but don't fail the notification processing
       // The session data ingestion is a best-effort operation

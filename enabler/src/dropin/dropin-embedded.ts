@@ -1,36 +1,13 @@
 import {
-  PaymentOutcome,
-  PaymentRequestSchemaDTO,
-} from "../dtos/mock-payment.dto";
-import {
   DropinComponent,
   DropinOptions,
   PaymentDropinBuilder,
   PaymentMethod,
 } from "../payment-enabler/payment-enabler";
 import { BaseOptions } from "../payment-enabler/payment-enabler-briqpay";
-import {
-  BRIQPAY_DECISION,
-  DECISION_TIMEOUT_MS,
-  DecisionAnswer,
-  getRegisteredOnDecision,
-} from "../briqpay-sdk";
+import { handleBriqpayDecision, submitBriqpayPayment } from "../briqpay-sdk";
 
-declare global {
-  interface Window {
-    _briqpay: {
-      subscribe: (
-        _event: string,
-        _callback: (_data: Record<string, unknown>) => void,
-      ) => void;
-      v3: {
-        suspend: () => void;
-        resume: () => void;
-        resumeDecision: () => void;
-      };
-    };
-  }
-}
+const BRIQPAY_SCRIPT_SRC = "https://api.briqpay.com/briq.min.js";
 
 export class DropinComponents implements DropinComponent {
   private dropinOptions: DropinOptions;
@@ -60,9 +37,24 @@ export class DropinComponents implements DropinComponent {
   }
 
   private loadBriqpayScript() {
+    // Reuse the script on remount; a second copy is inert (the SDK self-guards).
+    const existing = document.querySelector<HTMLScriptElement>(
+      `script[src="${BRIQPAY_SCRIPT_SRC}"]`,
+    );
+
+    if (existing) {
+      if (window._briqpay) {
+        this.subscribeToEvents();
+      } else {
+        existing.addEventListener("load", this.onBriqpayScriptLoad.bind(this));
+      }
+
+      return;
+    }
+
     const briqpayScript = document.createElement("script");
     briqpayScript.type = "text/javascript";
-    briqpayScript.src = "https://api.briqpay.com/briq.min.js";
+    briqpayScript.src = BRIQPAY_SCRIPT_SRC;
     briqpayScript.onload = this.onBriqpayScriptLoad.bind(this);
     document.head.appendChild(briqpayScript);
   }
@@ -71,83 +63,32 @@ export class DropinComponents implements DropinComponent {
   }
 
   private subscribeToEvents() {
+    // subscribe appends, so without clearing first every remount leaves the old
+    // instance's handlers live and one session_complete POSTs /payments per remount.
+    // The dropin owns these two events; nothing else subscribes to them.
+    window._briqpay.unsubscribe("session_complete");
+    window._briqpay.unsubscribe("make_decision");
+
+    // Briqpay fires this, so there is no caller to reject to: the failure can
+    // only be reported through onError.
     window._briqpay.subscribe("session_complete", () => {
-      this.submit().catch(() => {});
+      void this.submit().catch((error) => this.baseOptions.onError?.(error));
     });
 
     window._briqpay.subscribe("make_decision", this.handleDecision.bind(this));
   }
 
   public async handleDecision(data: unknown) {
-    // Briqpay blocks its own pay-button flow while awaiting the decision, so
-    // nothing needs suspending here. resumeDecision() releases that block.
-    // suspend()/resume() are a separate mechanism for cart updates and are not
-    // cleared by resumeDecision().
-    const decisionAnswer = await this.resolveDecisionAnswer(data);
-
-    // Nothing usable. Briqpay gates on the decision it recorded, so unlocking
-    // without one fails the purchase and shows the buyer an error.
-    if (!this.isValidDecisionAnswer(decisionAnswer)) {
-      window._briqpay.v3.resumeDecision();
-      return;
-    }
-
-    try {
-      await this.sendDecision(decisionAnswer);
-    } finally {
-      window._briqpay.v3.resumeDecision();
-    }
-  }
-
-  private async resolveDecisionAnswer(
-    data: unknown,
-  ): Promise<DecisionAnswer | undefined> {
-    const onDecision = getRegisteredOnDecision();
-    if (!onDecision) {
-      // Nobody opted into registerBriqpayDecision(), so there is no merchant
-      // check to run - let the purchase proceed. This is different from a
-      // registered handler that times out or throws below: that merchant
-      // asked for validation, so a broken/slow check must not silently turn
-      // into an approval it never made.
-      return { decision: BRIQPAY_DECISION.ALLOW };
-    }
-
-    // A late answer loses the race and is never sent, so a verdict Briqpay has
-    // already timed out on cannot land. A throw is not an answer either.
-    return Promise.race([
-      onDecision(this.baseOptions.sdk, data),
-      new Promise<undefined>((resolve) =>
-        setTimeout(() => resolve(undefined), DECISION_TIMEOUT_MS),
-      ),
-    ]).catch(() => undefined);
-  }
-
-  private isValidDecisionAnswer(
-    decisionAnswer: unknown,
-  ): decisionAnswer is DecisionAnswer {
-    return (
-      typeof decisionAnswer === "object" &&
-      decisionAnswer !== null &&
-      "decision" in decisionAnswer &&
-      ((decisionAnswer as { decision: unknown }).decision ===
-        BRIQPAY_DECISION.ALLOW ||
-        (decisionAnswer as { decision: unknown }).decision ===
-          BRIQPAY_DECISION.REJECT)
-    );
-  }
-
-  private async sendDecision(decisionAnswer: DecisionAnswer) {
-    await fetch(this.baseOptions.processorUrl + "/decision", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Session-Id": this.baseOptions.sessionId,
+    await handleBriqpayDecision(
+      {
+        sdk: this.baseOptions.sdk,
+        processorUrl: this.baseOptions.processorUrl,
+        sessionId: this.baseOptions.sessionId,
+        briqpaySessionId: this.baseOptions.briqpaySessionId,
+        onError: this.baseOptions.onError,
       },
-      body: JSON.stringify({
-        sessionId: this.baseOptions.briqpaySessionId,
-        ...decisionAnswer,
-      }),
-    });
+      data,
+    );
   }
 
   private addToDocument(selector: string) {
@@ -161,48 +102,20 @@ export class DropinComponents implements DropinComponent {
           "This typically happens after an HPP redirect when the session is reused.",
       );
     }
+
+    // Replace, never append: mounting into a container that already holds a snippet would
+    // leave the previous iframe alongside the new one.
+    container.innerHTML = "";
     container.insertAdjacentHTML("afterbegin", this.baseOptions.snippet);
   }
 
   async submit(): Promise<void> {
-    try {
-      const request: PaymentRequestSchemaDTO = {
-        paymentMethod: {
-          type: this.paymentMethod,
-        },
-        paymentOutcome: PaymentOutcome._PENDING,
-      };
-      const response = await fetch(
-        this.baseOptions.processorUrl + "/payments",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Session-Id": this.baseOptions.sessionId,
-          },
-          body: JSON.stringify(request),
-        },
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          `Payment request failed with status ${response.status}`,
-        );
-      }
-
-      const data = await response.json();
-      await this.baseOptions.onComplete?.({
-        isSuccess: true,
-        paymentReference: data.paymentReference,
-      });
-    } catch (e) {
-      try {
-        await this.baseOptions.onError?.(e);
-      } catch {
-        // Prevent async onError rejection from masking the original error
-      }
-      throw new Error("An error occurred. Please try again.");
-    }
+    await submitBriqpayPayment({
+      processorUrl: this.baseOptions.processorUrl,
+      sessionId: this.baseOptions.sessionId,
+      paymentMethodType: this.paymentMethod,
+      onComplete: this.baseOptions.onComplete,
+    });
   }
 }
 

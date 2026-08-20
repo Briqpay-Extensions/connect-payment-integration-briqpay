@@ -1,8 +1,5 @@
 /**
- * Types for Briqpay Session Data Ingestion
- *
- * These types represent the full Briqpay session response structure
- * used for extracting data into CommerceTools custom fields.
+ * Types for Briqpay session data ingestion into commercetools custom fields.
  */
 
 /**
@@ -16,56 +13,6 @@ export interface BriqpayPspMetadata {
   payerEmail?: string
   payerFirstName?: string
   payerLastName?: string
-}
-
-/**
- * Transaction data from Briqpay session
- */
-export interface BriqpayTransaction {
-  createdAt?: string
-  expiresAt?: string | null
-  transactionId?: string
-  reservationId?: string
-  secondaryReservationId?: string
-  pspId?: string
-  pspDisplayName?: string
-  pspIntegrationName?: string
-  email?: string
-  phoneNumber?: string
-  amountIncVat?: number
-  amountExVat?: number
-  currency?: string
-  status?: string
-  sessionId?: string
-  captureStatus?: string
-  refundStatus?: string
-}
-
-/**
- * Capture data from Briqpay session (subset for data ingestion)
- */
-export interface BriqpaySessionCapture {
-  captureId?: string
-  autoCaptured?: boolean
-}
-
-/**
- * Full Briqpay session response structure for data ingestion
- */
-export interface BriqpayFullSessionResponse {
-  createdAt?: string
-  sessionId: string
-  status?: string
-  data?: {
-    pspMetadata?: BriqpayPspMetadata
-    transactions?: BriqpayTransaction[]
-    captures?: BriqpaySessionCapture[]
-    order?: {
-      amountIncVat?: number
-      amountExVat?: number
-      currency?: string
-    }
-  }
 }
 
 /**

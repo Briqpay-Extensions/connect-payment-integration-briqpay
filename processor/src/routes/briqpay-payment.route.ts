@@ -2,7 +2,6 @@ import { SessionHeaderAuthenticationHook } from '@commercetools/connect-payments
 import { FastifyInstance, FastifyPluginOptions } from 'fastify'
 import {
   BRIQPAY_DECISION,
-  ConfigResponseSchema,
   DecisionRequestSchema,
   DecisionRequestSchemaDTO,
   DecisionResponseSchema,
@@ -12,6 +11,7 @@ import {
   PaymentResponseSchema,
   PaymentResponseSchemaDTO,
 } from '../dtos/briqpay-payment.dto'
+import { ConfigResponseSchema, ConfigResponseSchemaDTO } from '../dtos/operations/config.dto'
 import { BriqpayPaymentService } from '../services/briqpay-payment.service'
 import { appLogger } from '../payment-sdk'
 import { isHmacVerificationEnabled } from '../libs/briqpay/webhook-verification'
@@ -22,7 +22,7 @@ type PaymentRoutesOptions = {
 }
 
 export const paymentRoutes = (fastify: FastifyInstance, opts: FastifyPluginOptions & PaymentRoutesOptions) => {
-  fastify.get<{ Reply: any }>(
+  fastify.get<{ Reply: ConfigResponseSchemaDTO }>(
     '/config',
     {
       preHandler: [opts.sessionHeaderAuthHook.authenticate()],
