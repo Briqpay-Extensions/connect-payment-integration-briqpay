@@ -25,6 +25,7 @@ import { mapBriqpaySessionError } from './session-error-mapping'
 import { BriqpayOrderAmounts } from './session-amounts'
 import { sha256Hex } from '../utils/content-hash'
 import { BRIQPAY_USER_AGENT } from './user-agent'
+import { boundCartLineReference } from './cart-line-reference'
 
 /** The `data` subtree shared by the create and update payloads. */
 export type BriqpaySessionData = {
@@ -97,7 +98,7 @@ const createDiscountLineItem = (item: LineItem, localeName: string, taxRate: num
 
   const discountLineItem: RegularCartItem = {
     productType: ITEM_PRODUCT_TYPE.DISCOUNT,
-    reference: item.key ?? localeName,
+    reference: boundCartLineReference(item.key ?? item.id),
     name: localeName,
     quantity,
     quantityUnit: 'pc',
@@ -129,7 +130,7 @@ const createRegularLineItem = (item: LineItem, localeName: string, taxRate: numb
 
   const regularLineItem: RegularCartItem = {
     productType: mapBriqpayProductType(item),
-    reference: item.variant?.sku ?? localeName,
+    reference: boundCartLineReference(item.variant?.sku ?? item.id),
     name: localeName,
     quantity,
     quantityUnit: 'pc',
@@ -193,6 +194,7 @@ const fetchCartDiscountNames = async (discountIds: string[], locale: string): Pr
  */
 const createItemDiscountLineItem = (
   item: LineItem,
+  parentReference: string | number,
   localeName: string,
   taxRate: number,
   discountNameMap: Map<string, string>,
@@ -230,9 +232,9 @@ const createItemDiscountLineItem = (
     .map((d) => d.discount.id)
     .filter((id, index, arr) => arr.indexOf(id) === index) // unique
 
-  // Build discount reference
-  const discountReference =
-    discountIds.length > 0 ? `discount-${discountIds.join('-')}` : `discount-${item.key ?? localeName}`
+  // Named after the parent line, not the discounts on it: the old join over discount
+  // ids was unbounded, and two lines sharing a discount resolved to one reference
+  const discountReference = boundCartLineReference(`${parentReference}-discount`)
 
   // Build discount name from Cart Discount names, fallback to product name
   const discountNames = discountIds.map((id) => discountNameMap.get(id)).filter((name): name is string => !!name)
@@ -298,7 +300,7 @@ const mapSingleLineItem = (
   const result: CartItem[] = [cartItem]
 
   if (!isDiscountLine) {
-    const itemDiscountLine = createItemDiscountLineItem(item, localeName, taxRate, discountNameMap)
+    const itemDiscountLine = createItemDiscountLineItem(item, cartItem.reference, localeName, taxRate, discountNameMap)
     if (itemDiscountLine) {
       appLogger.info(
         {
@@ -340,7 +342,10 @@ const mapCustomLineItem = (item: CustomLineItem, locale: string | undefined): Re
 
   const customCartItem: RegularCartItem = {
     productType,
-    reference: item.key || item.slug || item.id,
+    // slug is merchant free text with no charset or length rule, and it is where the
+    // 95-character reference that broke Mollie came from; commercetools' own Adyen
+    // connector references a custom line item by id alone
+    reference: boundCartLineReference(item.key || item.id),
     name: localeName,
     quantity,
     quantityUnit: 'pc',
@@ -621,7 +626,7 @@ class BriqpayService {
     const discountIds = collectTotalDiscountIds(ctCart)
     const discountNames = discountIds.map((id) => discountNameMap.get(id)).filter((name): name is string => !!name)
     const discountName = discountNames.length > 0 ? discountNames.join(' + ') : 'Discount'
-    const discountReference = discountIds.length > 0 ? `discount-${discountIds.join('-')}` : 'total-discount'
+    const discountReference = 'total-discount'
 
     const discountItem: RegularCartItem = {
       productType: ITEM_PRODUCT_TYPE.DISCOUNT,

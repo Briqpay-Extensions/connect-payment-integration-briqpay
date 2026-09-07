@@ -1825,4 +1825,264 @@ describe('BriqpayService', () => {
       expect(customItem.totalVatAmount).toBe(2500)
     })
   })
+  describe('cart line reference length', () => {
+    // Some PSPs reject references of 64 characters or more; the connector caps them.
+    const MAX_REFERENCE_LENGTH = 63
+    const OVER_LENGTH_SKU =
+      'aandrijfpakket-mx-prox_PP-042980-[PP-042980]-[07.FS62093-13|07.RA62090-48|07.RC520120C]-[20958]'
+
+    const captureRequestBody = () => {
+      let requestBody: any = null
+      global.fetch = jest.fn().mockImplementation((url, init: any) => {
+        requestBody = JSON.parse(init.body)
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ sessionId: 'abc123', captureId: 'cap123', status: 'approved' }),
+        } as Response)
+      }) as typeof fetch
+
+      return () => requestBody
+    }
+
+    const stackTwoCartDiscounts = (mockCart: any) => {
+      mockCart.lineItems[0].discountedPricePerQuantity = [
+        {
+          quantity: 1,
+          discountedPrice: {
+            value: { type: 'centPrecision', centAmount: 100000, currencyCode: 'EUR', fractionDigits: 2 },
+            includedDiscounts: [
+              {
+                discount: { typeId: 'cart-discount', id: '7f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8' },
+                discountedAmount: { type: 'centPrecision', centAmount: 9000, currencyCode: 'EUR', fractionDigits: 2 },
+              },
+              {
+                discount: { typeId: 'cart-discount', id: '1b2c3d4e-5f60-7182-93a4-b5c6d7e8f901' },
+                discountedAmount: { type: 'centPrecision', centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+              },
+            ],
+          },
+        },
+      ]
+      mockCart.lineItems[0].taxedPrice = {
+        totalGross: { centAmount: 100000, currencyCode: 'EUR' },
+        totalNet: { centAmount: 84034, currencyCode: 'EUR' },
+        totalTax: { centAmount: 15966, currencyCode: 'EUR' },
+      }
+      ;(apiRoot.cartDiscounts as jest.Mock<any>).mockReturnValue({
+        get: jest.fn<any>().mockReturnValue({
+          execute: jest.fn<any>().mockResolvedValue({ body: { results: [] } }),
+        }),
+      })
+    }
+
+    it('should cap an over-length SKU and keep a recognisable head', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      mockCart.lineItems[0].variant.sku = OVER_LENGTH_SKU
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 238000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      const references = getRequestBody().data.order.cart.map((item: any) => item.reference)
+      const productReference = references.find((reference: string) => reference.startsWith('aandrijfpakket'))
+      expect(productReference).toBeDefined()
+      expect(productReference.length).toBe(MAX_REFERENCE_LENGTH)
+      expect(productReference).toBe(
+        `${OVER_LENGTH_SKU.slice(0, 52)}-${createHash('sha256').update(OVER_LENGTH_SKU).digest('hex').slice(0, 10)}`,
+      )
+    })
+
+    it('should produce the same capped reference on create, capture and refund', async () => {
+      const buildCart = () => {
+        const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+        mockCart.lineItems[0].variant.sku = OVER_LENGTH_SKU
+        return mockCart
+      }
+      const amount = { centAmount: 238000, currencyCode: 'EUR' }
+
+      const getCreateBody = captureRequestBody()
+      await BriqpayService.createSession(buildCart(), { ...amount, fractionDigits: 2 }, 'localhost')
+      const createReferences = getCreateBody().data.order.cart.map((item: any) => item.reference)
+
+      const getCaptureBody = captureRequestBody()
+      await BriqpayService.capture(buildCart(), amount, 'abc123')
+      const captureReferences = getCaptureBody().data.order.cart.map((item: any) => item.reference)
+
+      const getRefundBody = captureRequestBody()
+      await BriqpayService.refund(buildCart(), amount, 'abc123')
+      const refundReferences = getRefundBody().data.order.cart.map((item: any) => item.reference)
+
+      // Capture/refund payloads carry no shipping line, so compare on the shared items
+      expect(captureReferences).toEqual(createReferences.filter((r: string) => captureReferences.includes(r)))
+      expect(refundReferences).toEqual(captureReferences)
+      expect(captureReferences).toContain(
+        `${OVER_LENGTH_SKU.slice(0, 52)}-${createHash('sha256').update(OVER_LENGTH_SKU).digest('hex').slice(0, 10)}`,
+      )
+    })
+
+    it('should reference a custom line item by id, ignoring an over-length slug', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      // The 95-character reference that broke Mollie came from a custom line item slug
+      mockCart.customLineItems[0].slug = OVER_LENGTH_SKU
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 238000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      const references: string[] = getRequestBody().data.order.cart.map((item: any) => item.reference)
+      expect(references).toContain('customLineItem-id-1')
+      expect(references.some((reference) => reference.startsWith('aandrijfpakket'))).toBe(false)
+    })
+
+    it('should prefer a custom line item key over its id', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      mockCart.customLineItems[0].key = 'gift-wrapping'
+      mockCart.customLineItems[0].slug = OVER_LENGTH_SKU
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 238000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      const references: string[] = getRequestBody().data.order.cart.map((item: any) => item.reference)
+      expect(references).toContain('gift-wrapping')
+    })
+
+    it('should cap a non-ASCII reference by UTF-8 bytes, not characters', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      // 63 characters but 68 UTF-8 bytes; a character-based cap would still overrun
+      mockCart.lineItems[0].variant.sku =
+        'Kettingset ProX 520 \u2013 Zoek Op Motorfiets \u2013 \u00d6lfilter Gr\u00f6\u00dfe 12 XL Ausf\u00fchrung'
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 238000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      const references: string[] = getRequestBody().data.order.cart.map((item: any) => item.reference)
+      const productReference = references.find((reference) => reference.startsWith('Kettingset'))
+      expect(productReference).toBeDefined()
+      expect(Buffer.byteLength(productReference!, 'utf8')).toBeLessThanOrEqual(MAX_REFERENCE_LENGTH)
+      // No split code point survived the truncation
+      expect(productReference).not.toContain('\uFFFD')
+      expect(new Set(references).size).toBe(references.length)
+    })
+
+    it('should name a per-item discount line after its parent line', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      stackTwoCartDiscounts(mockCart)
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 219000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      const references: string[] = getRequestBody().data.order.cart.map((item: any) => item.reference)
+      // Two stacked discounts used to join into an 82-character discount-<uuid>-<uuid>
+      expect(references).toContain('variant-sku-1-discount')
+      expect(references.some((reference) => reference.startsWith('discount-'))).toBe(false)
+    })
+
+    it('should give two discounted lines sharing a cart discount distinct references', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      stackTwoCartDiscounts(mockCart)
+      const second = JSON.parse(JSON.stringify(mockCart.lineItems[0]))
+      second.id = 'lineitem-id-2'
+      second.variant.sku = 'variant-sku-2'
+      mockCart.lineItems.push(second)
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 438000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      const references: string[] = getRequestBody().data.order.cart.map((item: any) => item.reference)
+      expect(references).toContain('variant-sku-1-discount')
+      expect(references).toContain('variant-sku-2-discount')
+      expect(new Set(references).size).toBe(references.length)
+    })
+
+    it('should cap a per-item discount line whose parent reference is already at the budget', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      stackTwoCartDiscounts(mockCart)
+      mockCart.lineItems[0].variant.sku = OVER_LENGTH_SKU
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 219000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      const references: string[] = getRequestBody().data.order.cart.map((item: any) => item.reference)
+      for (const reference of references) {
+        expect(Buffer.byteLength(reference, 'utf8')).toBeLessThanOrEqual(MAX_REFERENCE_LENGTH)
+      }
+      expect(new Set(references).size).toBe(references.length)
+    })
+
+    it('should fall back to the line item id when a variant has no sku', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      delete mockCart.lineItems[0].variant.sku
+      const second = JSON.parse(JSON.stringify(mockCart.lineItems[0]))
+      second.id = 'lineitem-id-2'
+      mockCart.lineItems.push(second)
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 357000, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      const references: string[] = getRequestBody().data.order.cart.map((item: any) => item.reference)
+      // Both lines share a name, so the old localeName fallback gave them one reference
+      expect(references).toContain('lineitem-id-1')
+      expect(references).toContain('lineitem-id-2')
+      expect(references).not.toContain('lineitem-name-1')
+      expect(new Set(references).size).toBe(references.length)
+    })
+
+    it('should reference the cart total discount by a constant', async () => {
+      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
+      mockCart.discountOnTotalPrice = {
+        discountedNetAmount: { centAmount: -1000, currencyCode: 'EUR' },
+        discountedGrossAmount: { centAmount: -1190, currencyCode: 'EUR' },
+        includedDiscounts: [
+          { discount: { typeId: 'cart-discount', id: '7f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8' } },
+          { discount: { typeId: 'cart-discount', id: '1b2c3d4e-5f60-7182-93a4-b5c6d7e8f901' } },
+        ],
+      }
+      ;(apiRoot.cartDiscounts as jest.Mock<any>).mockReturnValue({
+        get: jest.fn<any>().mockReturnValue({
+          execute: jest.fn<any>().mockResolvedValue({ body: { results: [] } }),
+        }),
+      })
+      const getRequestBody = captureRequestBody()
+
+      await BriqpayService.createSession(
+        mockCart,
+        { centAmount: 236810, currencyCode: 'EUR', fractionDigits: 2 },
+        'localhost',
+      )
+
+      const references: string[] = getRequestBody().data.order.cart.map((item: any) => item.reference)
+      expect(references).toContain('total-discount')
+      expect(new Set(references).size).toBe(references.length)
+    })
+  })
 })

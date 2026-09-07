@@ -3,6 +3,64 @@
 All notable changes to the Briqpay commercetools Connect plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
+## [2.0.1] - 2026-09-07
+
+### Fixed
+
+- Cart line references are now bounded in length. Some PSPs reject a line whose reference exceeds
+  64 characters - Mollie returns `The 'sku' field should not be longer than 64 characters` and the
+  payment fails to initialise. The connector previously passed merchant-authored values through
+  unchanged and built discount references by joining commercetools discount ids, both of which
+  could exceed the limit. Every reference is now capped at 63 UTF-8 bytes: a value that fits is
+  sent unchanged, and a longer one keeps a recognisable head plus a hash of the full original, so
+  it stays stable across session create, capture and refund.
+- Two distinct cart lines can no longer resolve to the same reference. A per-item discount was
+  named after the discounts applied to it, so two lines sharing one cart discount produced a
+  single reference; lines with no SKU fell back to the localised product name, so two such lines
+  with the same name also collided.
+- A line's reference no longer depends on the cart locale, which previously meant the same line
+  could be described differently in the session and in a later capture.
+
+### Changed
+
+- Cart line references are chosen from identifiers that are bounded by construction, matching how
+  the commercetools Adyen connector references cart lines. Lines that already carry a SKU or a
+  `key` are unaffected; the value sent is byte-identical to before.
+
+  | Cart line                         | Reference                                        |
+  | --------------------------------- | ------------------------------------------------ |
+  | Product line item                 | `variant.sku`, else the line item id             |
+  | Gift card or discounted line item | `key`, else the line item id                     |
+  | Custom line item                  | `key`, else the custom line item id              |
+  | Per-item discount                 | the discounted line's reference plus `-discount` |
+  | Cart total discount               | `total-discount`                                 |
+  | Shipping, shipping discount       | `shippingfee`, `shipping-discount`               |
+
+- A custom line item is no longer referenced by its `slug`. commercetools requires `slug` on a
+  custom line item but places no length or character rule on it, which made it the one field that
+  could carry arbitrary text into a PSP.
+
+### Security
+
+- Updated `fast-uri` (3.1.7 / 4.1.4) and `fastify` (5.12.3) to clear four HIGH advisories against
+  `fast-uri` (CVE-2026-75899, CVE-2026-75931, CVE-2026-75975, CVE-2026-76172) and a moderate
+  `fastify` pair. Transitive dependencies only, no API change.
+
+### Upgrade notes
+
+- No configuration change and no commercetools change are required. Deploy the new version and the
+  new references apply to sessions created from then on.
+- References change for cart lines carrying a discount, for lines with no SKU, and for custom line
+  items with no `key`. If you reconcile Briqpay order or capture lines back to commercetools by
+  matching on the reference, review that mapping before deploying.
+- To keep a readable, stable reference on a custom line item, set its `key` in commercetools. The
+  `key` is preferred over the generated id, and only exceeds the cap past 63 bytes.
+- A session created before the deploy and captured after it shows the previous reference on the
+  order line and the new one on the capture line. The capture cart is traceability rather than a
+  matching key, so nothing fails.
+- Carts whose references change are detected as out of sync once and updated on the next render.
+  This is the payload-hash check working as intended and needs no action.
+
 ## [2.0.0] - 2026-08-21
 
 ### Added
