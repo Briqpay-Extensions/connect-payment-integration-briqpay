@@ -55,6 +55,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
   matching on the reference, review that mapping before deploying.
 - To keep a readable, stable reference on a custom line item, set its `key` in commercetools. The
   `key` is preferred over the generated id, and only exceeds the cap past 63 bytes.
+- A reference that falls back to a commercetools id is not stable between orders. commercetools
+  generates a line item id and a custom line item id per cart, so a product with no SKU, or a fee
+  with no `key`, is referenced differently in every order. Set a SKU or a `key` on anything you
+  need to identify across orders.
+- A reference longer than the cap is sent as the first 52 bytes of the original, a `-`, and 10 hex
+  characters of its sha256. If a reference ends in a 10-character hex suffix and does not match
+  anything in your catalogue, it is a capped value rather than the merchant's own identifier.
 - A session created before the deploy and captured after it shows the previous reference on the
   order line and the new one on the capture line. The capture cart is traceability rather than a
   matching key, so nothing fails.

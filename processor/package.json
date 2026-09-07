@@ -1,6 +1,6 @@
 {
   "name": "briqpay-commercetools-connector",
-  "version": "2.0.1-beta.2",
+  "version": "2.0.1",
   "description": "Briqpay payment connector for commercetools Connect",
   "main": "dist/server.js",
   "scripts": {
