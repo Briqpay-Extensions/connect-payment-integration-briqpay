@@ -3,6 +3,33 @@
 All notable changes to the Briqpay commercetools Connect plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
+## [2.0.2] - 2026-09-15
+
+### Fixed
+
+- A CT Payment now plans the amount Briqpay actually authorized instead of the cart total at the
+  moment the Payment is created. A cart stays mutable while the buyer is away at a redirect PSP,
+  and commercetools Checkout builds the Order from the live cart - so a buyer who paid for one
+  item and then added two more in a second tab got an Order for three items carrying a Payment
+  whose `amountPlanned` matched the three-item cart while only the single item was authorized.
+  The Order looked fully paid to every commercetools paid-in-full check, including the SDK's own
+  `calculateTotalPaidAmount`. The Order still reflects the drifted cart - the connector must never
+  write line items - but the Payment is now truthful, so the shortfall is visible in commercetools
+  itself and fulfilment can be gated on it.
+- The `Authorization` transaction written by `/payments` inherited the same cart-derived amount, so
+  an authorization for less than the cart total was recorded at the cart total. It now carries the
+  authorized amount too.
+
+  Applies to all three paths that create a Payment: `/payments` (buyer returns), `/transactions`,
+  and the order-status webhook fallback (buyer never returns). Amounts that agree are unaffected; a
+  divergence is still logged as `Amount mismatch between Briqpay and commercetools` with the call
+  site in `context`.
+
+  This is detection, not prevention. Nothing in the connector can stop a storefront cart from being
+  edited mid-payment; only the storefront can, by checking out against a cart the buyer cannot edit
+  (`POST /carts/replicate` when checkout opens) or by rejecting cart writes while a payment is in
+  flight (an API Extension, or `lockCart` with the `manage_locked_carts` scope).
+
 ## [2.0.1] - 2026-09-07
 
 ### Fixed

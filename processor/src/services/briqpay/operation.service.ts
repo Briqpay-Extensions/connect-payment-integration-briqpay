@@ -35,7 +35,11 @@ import {
   getActualOrderStatus,
 } from './utils'
 import { BriqpayError, SessionError, UpstreamError, ValidationError } from '../../libs/errors/briqpay-errors'
-import { logAmountMismatch, readBriqpaySessionAmounts } from '../../libs/briqpay/session-amounts'
+import {
+  logAmountMismatch,
+  readBriqpaySessionAmounts,
+  resolvePlannedAmountFromSession,
+} from '../../libs/briqpay/session-amounts'
 import { briqpayCheckoutTransactionItemIdFieldName, briqpaySessionIdFieldName } from '../../custom-types/custom-types'
 import { apiRoot } from '../../libs/commercetools/api-root'
 import { getBriqpaySessionDataService } from './session-data.service'
@@ -379,7 +383,7 @@ export class BriqpayOperationService {
     // winning Payment by key, ensuring it's attached to the cart, and returning its id.
     // This closes the race window that `findPaymentsByInterfaceId` (search-index based) leaves
     // open during truly concurrent invocations of this endpoint.
-    const ctPayment = await this.createOrRecoverPaymentForCheckout(ctCart, briqpaySessionId)
+    const ctPayment = await this.createOrRecoverPaymentForCheckout(ctCart, briqpaySessionId, briqpaySession)
 
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: ctPayment.id,
@@ -531,20 +535,12 @@ export class BriqpayOperationService {
     // Map Briqpay order status → CT transaction state (shared with createPayment).
     const transactionState: TransactionState = deriveTransactionStateFromSession(briqpaySession)
 
-    const sessionAmounts = readBriqpaySessionAmounts(briqpaySession)
-
-    if (
-      sessionAmounts.amountIncVat !== amountPlanned.centAmount ||
-      sessionAmounts.currency !== amountPlanned.currencyCode
-    ) {
-      logAmountMismatch({
-        context: 'handleTransaction',
-        cartId: ctCart.id,
-        sessionId: briqpaySessionId,
-        expected: { amountIncVat: amountPlanned.centAmount, currency: amountPlanned.currencyCode },
-        actual: sessionAmounts,
-      })
-    }
+    amountPlanned = resolvePlannedAmountFromSession({
+      context: 'handleTransaction',
+      cartId: ctCart.id,
+      session: briqpaySession,
+      cartAmount: amountPlanned,
+    })
 
     // Dedupe: a CT Cart with multiple Payments blocks Checkout's automatic Order creation.
     // Reuse the existing Payment for this Briqpay session instead of creating a duplicate.
@@ -674,12 +670,13 @@ export class BriqpayOperationService {
   private async createOrRecoverPaymentForCheckout(
     ctCart: Cart,
     briqpaySessionId: string | undefined,
+    briqpaySession: MediumBriqpayResponse,
   ): Promise<Payment> {
     const paymentKey = briqpaySessionId ? buildPaymentKey(briqpaySessionId) : undefined
     try {
       const newPayment = await this.ctPaymentService.createPayment({
         ...(paymentKey && { key: paymentKey }),
-        amountPlanned: await this.ctCartService.getPaymentAmount({ cart: ctCart }),
+        amountPlanned: await this.resolveAmountPlanned(ctCart, briqpaySession, 'createPayment'),
         paymentMethodInfo: {
           paymentInterface: getPaymentInterfaceFromContext() || 'Briqpay',
         },
@@ -746,6 +743,20 @@ export class BriqpayOperationService {
   }
 
   /**
+   * amountPlanned for a Payment being created. Delegates to the shared resolver so every
+   * creation path plans what Briqpay authorized rather than a cart that may have drifted.
+   */
+  private async resolveAmountPlanned(
+    ctCart: Cart,
+    briqpaySession: MediumBriqpayResponse,
+    context: string,
+  ): Promise<Money> {
+    const cartAmount = await this.ctCartService.getPaymentAmount({ cart: ctCart })
+
+    return resolvePlannedAmountFromSession({ context, cartId: ctCart.id, session: briqpaySession, cartAmount })
+  }
+
+  /**
    * Webhook entry point for ensuring the Briqpay session's CT Payment exists. Used by the
    * order-status webhook handlers when the cart has no Payment yet (e.g. the buyer closed the tab
    * on an HPP redirect, so the session-authenticated /payments never ran). Reuses the same dedupe
@@ -756,7 +767,11 @@ export class BriqpayOperationService {
    *
    * The caller adds the Authorization transaction (Pending/Success/Failure) to match the webhook.
    */
-  public async ensurePaymentForWebhook(cartId: string, briqpaySessionId: string): Promise<Payment | undefined> {
+  public async ensurePaymentForWebhook(
+    cartId: string,
+    briqpaySession: MediumBriqpayResponse,
+  ): Promise<Payment | undefined> {
+    const briqpaySessionId = briqpaySession.sessionId
     const ctCart = await this.ctCartService.getCart({ id: cartId })
 
     const existing = await this.findOrAttachExistingPaymentForSession(ctCart, briqpaySessionId)
@@ -777,7 +792,7 @@ export class BriqpayOperationService {
       return undefined
     }
 
-    const newPayment = await this.createTaggedPaymentForWebhook(ctCart, briqpaySessionId, checkoutTransactionItemId)
+    const newPayment = await this.createTaggedPaymentForWebhook(ctCart, briqpaySession, checkoutTransactionItemId)
     await this.detachStaleBriqpayPayments(ctCart.id, newPayment.id, 'Briqpay')
 
     return newPayment
@@ -792,14 +807,15 @@ export class BriqpayOperationService {
    */
   private async createTaggedPaymentForWebhook(
     ctCart: Cart,
-    briqpaySessionId: string,
+    briqpaySession: MediumBriqpayResponse,
     checkoutTransactionItemId: string,
   ): Promise<Payment> {
+    const briqpaySessionId = briqpaySession.sessionId
     const paymentKey = buildPaymentKey(briqpaySessionId)
     try {
       const newPayment = await this.ctPaymentService.createPayment({
         key: paymentKey,
-        amountPlanned: await this.ctCartService.getPaymentAmount({ cart: ctCart }),
+        amountPlanned: await this.resolveAmountPlanned(ctCart, briqpaySession, 'webhook'),
         paymentMethodInfo: { paymentInterface: 'Briqpay' },
         checkoutTransactionItemId,
         interfaceId: briqpaySessionId,

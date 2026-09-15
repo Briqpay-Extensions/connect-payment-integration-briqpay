@@ -56,3 +56,44 @@ export const logAmountMismatch = (fields: {
     'Amount mismatch between Briqpay and commercetools',
   )
 }
+
+/**
+ * The amount to plan on the CT Payment. The cart stays mutable while the buyer is away at a
+ * redirect PSP, and Checkout builds the Order from the live cart - so planning the cart amount
+ * makes an Order that was only partly paid look fully paid. Plan what Briqpay actually
+ * authorized instead: the Order still carries the drifted cart, but CT's own paid-in-full
+ * checks now fail on it. The divergence is logged, never thrown - refusing here would leave a
+ * paid Briqpay session with nothing in commercetools at all.
+ *
+ * Keeps the cart amount when the session carries no comparable amount or a different currency:
+ * planning in a currency the cart does not use would be worse than planning the cart total.
+ */
+export const resolvePlannedAmountFromSession = <T extends { centAmount: number; currencyCode: string }>(fields: {
+  context: string
+  cartId: string
+  session: MediumBriqpayResponse
+  cartAmount: T
+}): T => {
+  const { context, cartId, session, cartAmount } = fields
+  const sessionAmounts = readBriqpaySessionAmounts(session)
+
+  if (sessionAmounts.amountIncVat === cartAmount.centAmount && sessionAmounts.currency === cartAmount.currencyCode) {
+    return cartAmount
+  }
+
+  logAmountMismatch({
+    context,
+    cartId,
+    sessionId: session.sessionId,
+    expected: { centAmount: cartAmount.centAmount, currency: cartAmount.currencyCode },
+    actual: sessionAmounts,
+  })
+
+  if (typeof sessionAmounts.amountIncVat !== 'number' || sessionAmounts.currency !== cartAmount.currencyCode) {
+    return cartAmount
+  }
+
+  const authorized: T = { ...cartAmount, centAmount: sessionAmounts.amountIncVat }
+
+  return authorized
+}
