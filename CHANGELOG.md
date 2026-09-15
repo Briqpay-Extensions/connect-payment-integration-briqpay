@@ -5,6 +5,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 ## [2.0.2] - 2026-09-15
 
+### Added
+
+- Opt-in cart reconciliation, behind `BRIQPAY_RECONCILE_CART_ON_DRIFT=true`. When a cart has grown
+  past what Briqpay authorized, the connector lowers it back to the lines the buyer actually paid
+  for before creating the Payment, so Checkout converts a cart that matches the money. The paid
+  lines come from the Briqpay session (a webhook payload carries the amounts but no lines), and
+  they are matched back to line items by rebuilding the same bounded reference the session was
+  sent with, so the match is exact even for hashed long references - never by price, so swapping
+  one item for a different one at the same price is still recognised as the wrong item.
+
+  Drift is judged on line composition, not on the total. A buyer who swaps a paid item for an
+  equally priced one leaves the cart total untouched, and a totals-only comparison would wave that
+  through.
+
+  It refuses - leaving the cart untouched and the Payment planned at the authorized amount - on
+  anything it cannot compute exactly: discount codes, direct discounts, discounted line items,
+  custom line items, external tax modes, split shipping, tiered shipping rates, net-priced lines,
+  two line items sharing one reference, a session line with no line-item equivalent, and a paid
+  line that is no longer in the cart at all (re-adding it would need a price the session cannot
+  vouch for). commercetools has no dry run for cart updates, so the resulting gross is computed
+  first and the plan is only written when it equals the authorized amount to the cent; the cart is
+  re-read and checked again afterwards.
+
 ### Fixed
 
 - A CT Payment now plans the amount Briqpay actually authorized instead of the cart total at the

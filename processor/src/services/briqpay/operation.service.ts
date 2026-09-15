@@ -40,6 +40,8 @@ import {
   readBriqpaySessionAmounts,
   resolvePlannedAmountFromSession,
 } from '../../libs/briqpay/session-amounts'
+import { planCartReconciliation, readPaidLines, UNDRIFTED } from '../../libs/briqpay/cart-reconciliation'
+import CtConflictRetry from '../../libs/commercetools/ct-conflict-retry'
 import { briqpayCheckoutTransactionItemIdFieldName, briqpaySessionIdFieldName } from '../../custom-types/custom-types'
 import { apiRoot } from '../../libs/commercetools/api-root'
 import { getBriqpaySessionDataService } from './session-data.service'
@@ -47,6 +49,13 @@ import { getBriqpaySessionDataService } from './session-data.service'
 const PAYMENT_KEY_PREFIX = 'briqpay-'
 
 const buildPaymentKey = (briqpaySessionId: string): string => `${PAYMENT_KEY_PREFIX}${briqpaySessionId}`
+
+// Opt-in: reconciliation edits a buyer's cart, which no other connector path does. Only the
+// exact value 'true' enables it, so a typo can never start rewriting carts.
+const isCartReconciliationEnabled = (): boolean => process.env.BRIQPAY_RECONCILE_CART_ON_DRIFT === 'true'
+
+/** `applied` separates "nothing needed doing" from "the cart was rewritten" for the post-check. */
+type CartReconciliationOutcome = { cart: Cart; applied: boolean }
 
 type CtErrorShape = {
   httpErrorStatus?: number
@@ -751,9 +760,135 @@ export class BriqpayOperationService {
     briqpaySession: MediumBriqpayResponse,
     context: string,
   ): Promise<Money> {
-    const cartAmount = await this.ctCartService.getPaymentAmount({ cart: ctCart })
+    const cart = await this.reconcileCartToSession(ctCart, briqpaySession, context)
+    const cartAmount = await this.ctCartService.getPaymentAmount({ cart })
 
-    return resolvePlannedAmountFromSession({ context, cartId: ctCart.id, session: briqpaySession, cartAmount })
+    return resolvePlannedAmountFromSession({ context, cartId: cart.id, session: briqpaySession, cartAmount })
+  }
+
+  /**
+   * Brings a cart that drifted after authorization back to the lines the buyer paid for, so
+   * Checkout converts a cart that matches the money instead of one that outgrew it. Opt-in via
+   * BRIQPAY_RECONCILE_CART_ON_DRIFT.
+   *
+   * Never fatal: a refusal, a conflict or a Briqpay failure all return the cart untouched, and
+   * the caller then plans the authorized amount exactly as it does without this step.
+   */
+  private async reconcileCartToSession(
+    ctCart: Cart,
+    briqpaySession: MediumBriqpayResponse,
+    context: string,
+  ): Promise<Cart> {
+    if (!isCartReconciliationEnabled()) {
+      return ctCart
+    }
+
+    try {
+      // A webhook-built session carries the amounts but no cart lines, so the paid lines have to
+      // be read from Briqpay itself. The /payments path already holds a fetched session.
+      const paidSession = readPaidLines(briqpaySession)
+        ? briqpaySession
+        : await Briqpay.getSession(briqpaySession.sessionId)
+
+      const { cart: reconciled, applied } = await CtConflictRetry.withConflictRetry(() =>
+        this.applyCartReconciliation(ctCart.id, paidSession, context),
+      )
+
+      const sessionAmounts = readBriqpaySessionAmounts(paidSession)
+      const reconciledGross = reconciled.taxedPrice?.totalGross ?? reconciled.totalPrice
+
+      if (applied && reconciledGross.centAmount !== sessionAmounts.amountIncVat) {
+        // The plan is only written when its predicted total matches, so landing here means the
+        // cart changed again between the plan and the write.
+        appLogger.error(
+          {
+            cartId: ctCart.id,
+            briqpaySessionId: briqpaySession.sessionId,
+            context,
+            cartGross: reconciledGross.centAmount,
+            paidAmount: sessionAmounts.amountIncVat,
+          },
+          'Cart still does not match the paid amount after reconciliation',
+        )
+      }
+
+      return reconciled
+    } catch (error) {
+      appLogger.error(
+        {
+          cartId: ctCart.id,
+          briqpaySessionId: briqpaySession.sessionId,
+          context,
+          error: error instanceof Error ? error.message : error,
+        },
+        'Cart reconciliation failed (non-fatal)',
+      )
+
+      // The write may have landed before whatever failed: planning against the cart we were
+      // handed would then price a cart that no longer exists.
+      return this.rereadCart(ctCart)
+    }
+  }
+
+  /** Re-reads a cart whose state is in doubt, falling back to the one already in hand. */
+  private async rereadCart(ctCart: Cart): Promise<Cart> {
+    try {
+      return await this.ctCartService.getCart({ id: ctCart.id })
+    } catch {
+      return ctCart
+    }
+  }
+
+  /**
+   * One reconciliation attempt. Re-reads the cart and re-plans against it every time, as
+   * withConflictRetry requires: a replayed body would only earn another 409.
+   */
+  private async applyCartReconciliation(
+    cartId: string,
+    paidSession: MediumBriqpayResponse,
+    context: string,
+  ): Promise<CartReconciliationOutcome> {
+    const cart = await this.ctCartService.getCart({ id: cartId })
+    const plan = planCartReconciliation(cart, paidSession)
+
+    if (plan.status === 'refused') {
+      const untouched: CartReconciliationOutcome = { cart, applied: false }
+      const fields = { cartId, briqpaySessionId: paidSession.sessionId, context, reason: plan.reason }
+
+      // An undrifted cart is the common case and says nothing is wrong; every other refusal is
+      // a payment the connector deliberately left unreconciled.
+      if (plan.reason === UNDRIFTED) {
+        appLogger.info(fields, 'Cart matches the paid lines, nothing to reconcile')
+      } else {
+        appLogger.warn(fields, 'Not reconciling cart to the paid lines')
+      }
+
+      return untouched
+    }
+
+    appLogger.info(
+      {
+        cartId,
+        briqpaySessionId: paidSession.sessionId,
+        context,
+        actions: plan.actions,
+        predictedGross: plan.predictedGrossCentAmount,
+      },
+      'Reconciling cart to the lines the buyer paid for',
+    )
+
+    await apiRoot
+      .carts()
+      .withId({ ID: cart.id })
+      .post({ body: { version: cart.version, actions: plan.actions } })
+      .execute()
+
+    const reconciled: CartReconciliationOutcome = {
+      cart: await this.ctCartService.getCart({ id: cartId }),
+      applied: true,
+    }
+
+    return reconciled
   }
 
   /**

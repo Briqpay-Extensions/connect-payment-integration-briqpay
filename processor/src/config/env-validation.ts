@@ -122,6 +122,12 @@ const OPTIONAL_ENV_VARS: EnvVarConfig[] = [
     name: 'BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK',
     required: false,
   },
+  // Same reasoning: only the exact value 'true' turns cart reconciliation on, and a typo must
+  // never leave it half-enabled.
+  {
+    name: 'BRIQPAY_RECONCILE_CART_ON_DRIFT',
+    required: false,
+  },
 ]
 
 export class EnvValidationError extends Error {
