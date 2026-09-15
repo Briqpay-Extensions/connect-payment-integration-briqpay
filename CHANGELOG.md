@@ -7,7 +7,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 ### Added
 
-- Opt-in cart reconciliation, behind `BRIQPAY_RECONCILE_CART_ON_DRIFT=true`. When a cart has grown
+- Opt-in cart reconciliation, behind the new `BRIQPAY_RECONCILE_CART_ON_DRIFT` connector
+  configuration key (set it to exactly `true`; anything else leaves carts untouched). When a cart has grown
   past what Briqpay authorized, the connector lowers it back to the lines the buyer actually paid
   for before creating the Payment, so Checkout converts a cart that matches the money. The paid
   lines come from the Briqpay session (a webhook payload carries the amounts but no lines), and

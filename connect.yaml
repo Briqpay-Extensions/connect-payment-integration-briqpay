@@ -122,6 +122,9 @@ deployAs:
         - key: BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK
           description: Leave empty (recommended). Type exactly "true" to disable the server-side check that verifies the Briqpay session amount and currency against the cart before a buyer "allow" decision is forwarded (mismatches are soft-rejected). Any other value is ignored and the check stays enabled.
           required: false
+        - key: BRIQPAY_RECONCILE_CART_ON_DRIFT
+          description: Leave empty (default off). Type exactly "true" to let the connector lower a cart back to the lines Briqpay actually authorized before it creates the Payment, when the buyer changed the cart after paying. It only ever reduces quantities or removes lines, and only when the resulting total matches the authorized amount to the cent; anything it cannot compute exactly (discounts, tiered shipping, a paid line that is gone) is left untouched and logged. Any other value is ignored and the cart is never edited.
+          required: false
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
           description: commercetools client secret
