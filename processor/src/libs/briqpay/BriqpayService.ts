@@ -105,7 +105,6 @@ const createDiscountLineItem = (item: LineItem, localeName: string, taxRate: num
     quantityUnit: 'pc',
     unitPrice: netUnit,
     unitPriceIncVat: grossUnit,
-    discountPercentage: 0,
     taxRate,
     totalAmount: item.taxedPrice?.totalGross?.centAmount ?? grossUnit * quantity,
     totalVatAmount: item.taxedPrice?.totalTax?.centAmount ?? 0,
@@ -279,7 +278,6 @@ const createRegularLineItem = (
     unitPriceIncVat: originalUnitGross,
     taxRate,
     ...(lineDiscount ?? {
-      discountPercentage: 0, // No percentage - discounts are separate line items
       totalAmount: originalGrossTotal,
       totalVatAmount: originalVatTotal,
     }),
@@ -388,7 +386,6 @@ const createItemDiscountLineItem = (
     unitPrice: -discountNetAmount, // Negative for discount
     unitPriceIncVat: -discountGrossAmount, // Negative for discount
     taxRate,
-    discountPercentage: 0,
     totalAmount: -discountGrossAmount, // Negative for discount
     totalVatAmount: -discountVatAmount, // Negative for discount
     imageUrl: undefined,
@@ -483,7 +480,6 @@ const mapCustomLineItem = (item: CustomLineItem, locale: string | undefined): Re
     // price and is NET when taxRate.includedInPrice is false (US/B2B carts)
     unitPriceIncVat: Math.round(grossTotal / quantity),
     taxRate: Math.round(taxRateAmount * 10000),
-    discountPercentage: 0,
     totalAmount: grossTotal,
     totalVatAmount: vatTotal,
     imageUrl: undefined,
@@ -770,7 +766,6 @@ class BriqpayService {
       unitPrice: net, // ex VAT
       unitPriceIncVat: gross, // incl VAT
       taxRate,
-      discountPercentage: 0,
       totalAmount: gross,
       totalVatAmount: vat,
       imageUrl: undefined,
@@ -809,7 +804,6 @@ class BriqpayService {
       unitPrice: originalShippingNet,
       unitPriceIncVat: originalShippingGross,
       taxRate: shippingTaxRate,
-      discountPercentage: 0, // No percentage - discounts are separate line items
       totalAmount: originalShippingGross,
       totalVatAmount: originalShippingGross - originalShippingNet,
     }
@@ -834,7 +828,6 @@ class BriqpayService {
       unitPrice: -shippingDiscountNet, // Negative for discount
       unitPriceIncVat: -shippingDiscountGross, // Negative for discount
       taxRate: shippingTaxRate,
-      discountPercentage: 0,
       totalAmount: -shippingDiscountGross, // Negative for discount
       totalVatAmount: -shippingDiscountVat, // Negative for discount
       imageUrl: undefined,

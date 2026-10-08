@@ -17,6 +17,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
   prices differently, keeps the product line plus a `<sku>-discount` line, as before.
 - Capture and refund read the session's cart from Briqpay and repeat the shape each line was
   created in, with the same discount values. Sessions paid before the upgrade keep working.
+- Lines without a percentage discount (undiscounted product lines, `<sku>-discount` lines, custom
+  lines, shipping and the total discount) no longer send `discountPercentage: 0`.
 
 ### Upgrade notes
 

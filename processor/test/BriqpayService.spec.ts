@@ -2429,16 +2429,30 @@ describe('BriqpayService', () => {
         }),
       )
 
-      expect(productLine(cart)).toMatchObject({
-        discountPercentage: 0,
-        totalAmount: 27600,
-      })
+      expect(productLine(cart)).toMatchObject({ totalAmount: 27600 })
       expect(productLine(cart)).not.toHaveProperty('unitDiscountAmountIncVat')
+      expect(productLine(cart)).not.toHaveProperty('discountPercentage')
       expect(cart.find((line) => line.reference === 'variant-sku-1-discount')).toMatchObject({
         productType: 'discount',
         name: 'Discount flat-2070',
         totalAmount: -2070,
       })
+      expect(cart.find((line) => line.reference === 'variant-sku-1-discount')).not.toHaveProperty('discountPercentage')
+    })
+
+    it('sends no discountPercentage on lines without a percentage discount', async () => {
+      const cart: Cart = JSON.parse(JSON.stringify(mockGetCartResult()))
+      cart.shippingInfo!.discountedPrice = { value: money(500), includedDiscounts: [] }
+
+      const sent = await sentCart(cart)
+
+      expect(sent.map((line) => line.reference)).toEqual([
+        'variant-sku-1',
+        'customLineItem-id-1',
+        'shippingfee',
+        'shipping-discount',
+      ])
+      sent.forEach((line) => expect(line).not.toHaveProperty('discountPercentage'))
     })
 
     it('keeps a separate discount line when units on the line are priced differently', async () => {
@@ -2454,11 +2468,9 @@ describe('BriqpayService', () => {
         }),
       )
 
-      expect(productLine(cart)).toMatchObject({
-        discountPercentage: 0,
-        totalAmount: 20000,
-      })
+      expect(productLine(cart)).toMatchObject({ totalAmount: 20000 })
       expect(productLine(cart)).not.toHaveProperty('unitDiscountAmountIncVat')
+      expect(productLine(cart)).not.toHaveProperty('discountPercentage')
       expect(hasDiscountLine(cart)).toBe(true)
     })
 
@@ -2632,8 +2644,9 @@ describe('BriqpayService', () => {
 
           await send(operation, discountedCart())
 
-          expect(productLine(postedCart())).toMatchObject({ discountPercentage: 0, totalAmount: 100000 })
+          expect(productLine(postedCart())).toMatchObject({ totalAmount: 100000 })
           expect(productLine(postedCart())).not.toHaveProperty('unitDiscountAmountIncVat')
+          expect(productLine(postedCart())).not.toHaveProperty('discountPercentage')
           expect(postedCart().find((line) => line.reference === 'variant-sku-1-discount')).toMatchObject({
             productType: 'discount',
             unitPriceIncVat: -20000,
