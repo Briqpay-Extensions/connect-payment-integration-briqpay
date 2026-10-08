@@ -172,6 +172,11 @@ export interface RegularCartItem {
   discountPercentage?: number
 
   /**
+   * Discount per unit INCLUDING VAT (minor units)
+   */
+  unitDiscountAmountIncVat?: number
+
+  /**
    * NEW: Total line amount INCLUDING VAT (gross), multiplied by quantity.
    */
   totalAmount: number

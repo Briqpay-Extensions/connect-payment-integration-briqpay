@@ -26,6 +26,7 @@ import { BriqpayOrderAmounts } from './session-amounts'
 import { sha256Hex } from '../utils/content-hash'
 import { BRIQPAY_USER_AGENT } from './user-agent'
 import { boundCartLineReference } from './cart-line-reference'
+import { SessionError } from '../errors/briqpay-errors'
 
 /** The `data` subtree shared by the create and update payloads. */
 export type BriqpaySessionData = {
@@ -115,10 +116,147 @@ const createDiscountLineItem = (item: LineItem, localeName: string, taxRate: num
 }
 
 /**
- * Creates a regular line item using ORIGINAL prices (before any discounts).
- * Discounts are handled as separate discount line items to avoid percentage calculation issues.
+ * Collects all unique discount IDs from line items.
  */
-const createRegularLineItem = (item: LineItem, localeName: string, taxRate: number): RegularCartItem => {
+const collectDiscountIds = (lineItems: LineItem[]): string[] => {
+  const discountIds = lineItems.flatMap((item) =>
+    (item.discountedPricePerQuantity ?? []).flatMap((dpq) =>
+      dpq.discountedPrice.includedDiscounts.map((d) => d.discount.id),
+    ),
+  )
+  return [...new Set(discountIds)]
+}
+
+/** A cart discount as a line needs it: its name and, for a percentage discount, its rate. */
+type CartDiscountInfo = { name: string; permyriad?: number }
+
+/** An item discount carried on the product line, with the line totals commercetools charges after it. */
+type LineDiscount = {
+  unitDiscountAmountIncVat: number
+  discountPercentage?: number
+  totalAmount: number
+  totalVatAmount: number
+}
+
+/** The discount commercetools applied to the whole line, inc VAT. */
+const getLineDiscountGross = (item: LineItem): number => {
+  // Calculate original total (before discount)
+  const originalUnitGross = item.price.value.centAmount
+  const originalGrossTotal = originalUnitGross * item.quantity
+
+  // Get actual discounted total from CommerceTools (what customer actually pays)
+  const actualGrossTotal = item.taxedPrice?.totalGross?.centAmount ?? originalGrossTotal
+
+  // Calculate the discount amount (difference between original and actual)
+  const discountGrossAmount = originalGrossTotal - actualGrossTotal
+
+  return discountGrossAmount
+}
+
+/**
+ * The rate to send next to the amount: only for exactly one percentage discount, since
+ * stacked discounts compound and no single rate matches their amount. Briqpay rejects a
+ * rate more than 1 off the amount, so a line failing that check sends the amount alone.
+ */
+const getDiscountPercentage = (
+  item: LineItem,
+  unitPrice: number,
+  taxRate: number,
+  unitDiscountAmountIncVat: number,
+  discountMap: Map<string, CartDiscountInfo>,
+): number | undefined => {
+  const discountIds = collectDiscountIds([item])
+  if (discountIds.length !== 1) {
+    return undefined
+  }
+
+  const permyriad = discountMap.get(discountIds[0])?.permyriad
+  if (!permyriad) {
+    return undefined
+  }
+
+  // Briqpay's own expression and rounding for the amount a rate implies
+  const expectedAmount = Math.round(Number((unitPrice * (taxRate / 10000 + 1) * (permyriad / 10000)).toFixed(7)))
+  if (Math.abs(unitDiscountAmountIncVat - expectedAmount) > 1) {
+    appLogger.info(
+      {
+        lineItemId: item.id,
+        unitDiscountAmountIncVat,
+        permyriad,
+        expectedAmount,
+      },
+      'Discount percentage disagrees with the discount amount, sending the amount only',
+    )
+
+    return undefined
+  }
+
+  return permyriad
+}
+
+/**
+ * The item discount to carry on the product line, or undefined when the line keeps a
+ * separate discount line. One amount must hold for every unit, so a line whose units are
+ * priced differently, or whose discount does not split into whole cents per unit, keeps it.
+ *
+ * On capture and refund the stored session cart decides instead, since Briqpay matches
+ * lines exactly: a session created with the separate line keeps it, and the rate is the
+ * one the session holds, as the cart discount may have changed since.
+ */
+const getLineDiscount = (
+  item: LineItem,
+  reference: string,
+  unitPrice: number,
+  taxRate: number,
+  discountMap: Map<string, CartDiscountInfo>,
+  storedCart: CartItem[] | undefined,
+): LineDiscount | undefined => {
+  const taxedPrice = item.taxedPrice
+  const discountGross = getLineDiscountGross(item)
+  if (
+    !taxedPrice ||
+    item.discountedPricePerQuantity?.length !== 1 ||
+    discountGross <= 0 ||
+    discountGross % item.quantity !== 0
+  ) {
+    return undefined
+  }
+
+  const discountReference = boundCartLineReference(`${reference}-discount`)
+  if (storedCart?.some((line) => line.reference === discountReference)) {
+    return undefined
+  }
+
+  const unitDiscountAmountIncVat = discountGross / item.quantity
+  const storedLine = storedCart?.find((line) => line.reference === reference)
+  const storedPercentage = storedLine && 'discountPercentage' in storedLine ? storedLine.discountPercentage : undefined
+  const discountPercentage = storedCart
+    ? storedPercentage
+    : getDiscountPercentage(item, unitPrice, taxRate, unitDiscountAmountIncVat, discountMap)
+
+  const lineDiscount: LineDiscount = {
+    unitDiscountAmountIncVat,
+    // Never 0: next to an amount, a 0 rate makes Briqpay reject later refunds
+    ...(discountPercentage ? { discountPercentage } : {}),
+    totalAmount: taxedPrice.totalGross.centAmount,
+    totalVatAmount: taxedPrice.totalGross.centAmount - taxedPrice.totalNet.centAmount,
+  }
+
+  return lineDiscount
+}
+
+/**
+ * Creates a regular line item using ORIGINAL prices (before any discounts).
+ * An item discount rides on the line when getLineDiscount allows it; otherwise
+ * discounts are handled as separate discount line items.
+ */
+const createRegularLineItem = (
+  item: LineItem,
+  localeName: string,
+  taxRate: number,
+  discountMap: Map<string, CartDiscountInfo>,
+  storedCart: CartItem[] | undefined,
+): RegularCartItem => {
   const quantity = item.quantity
   const taxRateAmount = item.taxRate?.amount ?? 0
 
@@ -127,19 +265,24 @@ const createRegularLineItem = (item: LineItem, localeName: string, taxRate: numb
   const originalGrossTotal = originalUnitGross * quantity
   const originalNetTotal = Math.round(originalGrossTotal / (1 + taxRateAmount))
   const originalVatTotal = originalGrossTotal - originalNetTotal
+  const reference = boundCartLineReference(item.variant?.sku ?? item.id)
+  const unitPrice = Math.round(originalNetTotal / quantity)
+  const lineDiscount = getLineDiscount(item, reference, unitPrice, taxRate, discountMap, storedCart)
 
   const regularLineItem: RegularCartItem = {
     productType: mapBriqpayProductType(item),
-    reference: boundCartLineReference(item.variant?.sku ?? item.id),
+    reference,
     name: localeName,
     quantity,
     quantityUnit: 'pc',
-    unitPrice: Math.round(originalNetTotal / quantity),
+    unitPrice,
     unitPriceIncVat: originalUnitGross,
     taxRate,
-    discountPercentage: 0, // No percentage - discounts are separate line items
-    totalAmount: originalGrossTotal,
-    totalVatAmount: originalVatTotal,
+    ...(lineDiscount ?? {
+      discountPercentage: 0, // No percentage - discounts are separate line items
+      totalAmount: originalGrossTotal,
+      totalVatAmount: originalVatTotal,
+    }),
     imageUrl: item.variant?.images?.[0]?.url,
   }
 
@@ -147,14 +290,14 @@ const createRegularLineItem = (item: LineItem, localeName: string, taxRate: numb
 }
 
 /**
- * Fetches Cart Discount names from CommerceTools by their IDs.
- * Returns a map of discount ID to localized name.
+ * Fetches Cart Discounts from CommerceTools by their IDs.
+ * Returns a map of discount ID to localized name and, for a percentage discount, its rate.
  */
-const fetchCartDiscountNames = async (discountIds: string[], locale: string): Promise<Map<string, string>> => {
-  const nameMap = new Map<string, string>()
+const fetchCartDiscounts = async (discountIds: string[], locale: string): Promise<Map<string, CartDiscountInfo>> => {
+  const discountMap = new Map<string, CartDiscountInfo>()
 
   if (discountIds.length === 0) {
-    return nameMap
+    return discountMap
   }
 
   try {
@@ -178,13 +321,19 @@ const fetchCartDiscountNames = async (discountIds: string[], locale: string): Pr
         Object.values(cartDiscount.name)[0] ||
         cartDiscount.key ||
         'Discount'
-      nameMap.set(cartDiscount.id, name)
+      const discountInfo: CartDiscountInfo = {
+        name,
+        ...(cartDiscount.value.type === 'relative' && {
+          permyriad: cartDiscount.value.permyriad,
+        }),
+      }
+      discountMap.set(cartDiscount.id, discountInfo)
     }
   } catch (error) {
     appLogger.error({ error, discountIds }, 'Failed to fetch cart discount names, using fallback')
   }
 
-  return nameMap
+  return discountMap
 }
 
 /**
@@ -197,25 +346,15 @@ const createItemDiscountLineItem = (
   parentReference: string | number,
   localeName: string,
   taxRate: number,
-  discountNameMap: Map<string, string>,
+  discountMap: Map<string, CartDiscountInfo>,
 ): RegularCartItem | null => {
   // Check if item has per-quantity discounts
   if (!item.discountedPricePerQuantity?.length) {
     return null
   }
 
-  const quantity = item.quantity
   const taxRateAmount = item.taxRate?.amount ?? 0
-
-  // Calculate original total (before discount)
-  const originalUnitGross = item.price.value.centAmount
-  const originalGrossTotal = originalUnitGross * quantity
-
-  // Get actual discounted total from CommerceTools (what customer actually pays)
-  const actualGrossTotal = item.taxedPrice?.totalGross?.centAmount ?? originalGrossTotal
-
-  // Calculate the discount amount (difference between original and actual)
-  const discountGrossAmount = originalGrossTotal - actualGrossTotal
+  const discountGrossAmount = getLineDiscountGross(item)
 
   // No discount if amounts are equal
   if (discountGrossAmount <= 0) {
@@ -237,7 +376,7 @@ const createItemDiscountLineItem = (
   const discountReference = boundCartLineReference(`${parentReference}-discount`)
 
   // Build discount name from Cart Discount names, fallback to product name
-  const discountNames = discountIds.map((id) => discountNameMap.get(id)).filter((name): name is string => !!name)
+  const discountNames = discountIds.map((id) => discountMap.get(id)?.name).filter((name): name is string => !!name)
   const discountName = discountNames.length > 0 ? discountNames.join(' + ') : `Discount: ${localeName}`
 
   const itemDiscountLineItem: RegularCartItem = {
@@ -259,24 +398,13 @@ const createItemDiscountLineItem = (
 }
 
 /**
- * Collects all unique discount IDs from line items.
- */
-const collectDiscountIds = (lineItems: LineItem[]): string[] => {
-  const discountIds = lineItems.flatMap((item) =>
-    (item.discountedPricePerQuantity ?? []).flatMap((dpq) =>
-      dpq.discountedPrice.includedDiscounts.map((d) => d.discount.id),
-    ),
-  )
-  return [...new Set(discountIds)]
-}
-
-/**
  * Maps a single line item to cart items (main item + optional discount line).
  */
 const mapSingleLineItem = (
   item: LineItem,
   fallbackLocale: string,
-  discountNameMap: Map<string, string>,
+  discountMap: Map<string, CartDiscountInfo>,
+  storedCart: CartItem[] | undefined,
 ): CartItem[] => {
   const localeName = getLocalizedName(item, fallbackLocale)
   const taxRate = Math.round((item.taxRate?.amount ?? 0) * 10000)
@@ -284,7 +412,7 @@ const mapSingleLineItem = (
 
   const cartItem = isDiscountLine
     ? createDiscountLineItem(item, localeName, taxRate)
-    : createRegularLineItem(item, localeName, taxRate)
+    : createRegularLineItem(item, localeName, taxRate, discountMap, storedCart)
 
   appLogger.info(
     {
@@ -299,8 +427,9 @@ const mapSingleLineItem = (
 
   const result: CartItem[] = [cartItem]
 
-  if (!isDiscountLine) {
-    const itemDiscountLine = createItemDiscountLineItem(item, cartItem.reference, localeName, taxRate, discountNameMap)
+  // A discount carried on the product line needs no separate discount line
+  if (!isDiscountLine && cartItem.unitDiscountAmountIncVat === undefined) {
+    const itemDiscountLine = createItemDiscountLineItem(item, cartItem.reference, localeName, taxRate, discountMap)
     if (itemDiscountLine) {
       appLogger.info(
         {
@@ -367,11 +496,12 @@ const mapBriqpayCartItem = (
   lineItems: LineItem[],
   customLineItems: CustomLineItem[],
   locale: string | undefined,
-  discountNameMap: Map<string, string>,
+  discountMap: Map<string, CartDiscountInfo>,
+  storedCart?: CartItem[],
 ): CartItem[] => {
   const fallbackLocale = locale || 'en-GB'
 
-  const mappedItems = lineItems.flatMap((item) => mapSingleLineItem(item, fallbackLocale, discountNameMap))
+  const mappedItems = lineItems.flatMap((item) => mapSingleLineItem(item, fallbackLocale, discountMap, storedCart))
   const mappedCustomItems = customLineItems.map((item) => mapCustomLineItem(item, locale))
   const allItems = [...mappedItems, ...mappedCustomItems]
 
@@ -384,17 +514,17 @@ const collectTotalDiscountIds = (cart: Cart): string[] =>
   cart.discountOnTotalPrice?.includedDiscounts?.map((d) => d.discount.id).filter((id) => !!id) ?? []
 
 /**
- * Resolves display names for every discount the cart references, per-item and total,
+ * Resolves every discount the cart references, per-item and total,
  * in ONE lookup. Two separate fetches gave two independent chances to degrade
- * differently, since fetchCartDiscountNames swallows its own errors.
+ * differently, since fetchCartDiscounts swallows its own errors.
  */
-const fetchDiscountNamesForCart = async (cart: Cart): Promise<Map<string, string>> => {
+const fetchDiscountsForCart = async (cart: Cart): Promise<Map<string, CartDiscountInfo>> => {
   const discountIds = [...new Set([...collectDiscountIds(cart.lineItems), ...collectTotalDiscountIds(cart)])]
-  const discountNameMap = await fetchCartDiscountNames(discountIds, cart.locale || 'en-GB')
+  const discountMap = await fetchCartDiscounts(discountIds, cart.locale || 'en-GB')
 
-  appLogger.info({ discountIds, discountNameMap: Object.fromEntries(discountNameMap) }, 'Fetched cart discount names:')
+  appLogger.info({ discountIds, discountMap: Object.fromEntries(discountMap) }, 'Fetched cart discount names:')
 
-  return discountNameMap
+  return discountMap
 }
 
 const mapBriqpayAddress = (address: Address): IAddressSchema => ({
@@ -610,7 +740,10 @@ class BriqpayService {
    * The cart-total discount line, or undefined when the cart has none.
    * CT amounts are negative; we negate them so Briqpay sees a positive discount.
    */
-  private buildTotalDiscountItem(ctCart: Cart, discountNameMap: Map<string, string>): RegularCartItem | undefined {
+  private buildTotalDiscountItem(
+    ctCart: Cart,
+    discountMap: Map<string, CartDiscountInfo>,
+  ): RegularCartItem | undefined {
     if (!ctCart.discountOnTotalPrice?.discountedNetAmount) {
       return undefined
     }
@@ -624,7 +757,7 @@ class BriqpayService {
     const taxRate = net !== 0 ? Math.round(((gross - net) / net) * 10000) : 0
 
     const discountIds = collectTotalDiscountIds(ctCart)
-    const discountNames = discountIds.map((id) => discountNameMap.get(id)).filter((name): name is string => !!name)
+    const discountNames = discountIds.map((id) => discountMap.get(id)?.name).filter((name): name is string => !!name)
     const discountName = discountNames.length > 0 ? discountNames.join(' + ') : 'Discount'
     const discountReference = 'total-discount'
 
@@ -728,11 +861,11 @@ class BriqpayService {
    */
   private async buildSessionData(ctCart: Cart, amount: PaymentAmount | Money): Promise<BriqpaySessionData> {
     const effectiveTaxRate = await this.getEffectiveTaxRate(ctCart)
-    const discountNameMap = await fetchDiscountNamesForCart(ctCart)
+    const discountMap = await fetchDiscountsForCart(ctCart)
 
-    const cartItems = mapBriqpayCartItem(ctCart.lineItems, ctCart.customLineItems, ctCart.locale, discountNameMap)
+    const cartItems = mapBriqpayCartItem(ctCart.lineItems, ctCart.customLineItems, ctCart.locale, discountMap)
 
-    const totalDiscountItem = this.buildTotalDiscountItem(ctCart, discountNameMap)
+    const totalDiscountItem = this.buildTotalDiscountItem(ctCart, discountMap)
     if (totalDiscountItem) {
       cartItems.push(totalDiscountItem)
     }
@@ -909,6 +1042,21 @@ class BriqpayService {
     return created
   }
 
+  /**
+   * The cart Briqpay holds for the session. Capture and refund rebuild their lines in the
+   * shape it was created in, since Briqpay matches them exactly against it.
+   */
+  private async getStoredCart(sessionId: string): Promise<CartItem[]> {
+    const session = await this.getSession(sessionId)
+    const storedCart = session.data?.order?.cart
+    if (!storedCart) {
+      appLogger.error({ sessionId }, 'Briqpay session has no order cart')
+      throw new SessionError(`Briqpay session ${sessionId} has no order cart to rebuild lines from`)
+    }
+
+    return storedCart
+  }
+
   async capture(
     ctCart: Cart,
     amount: Omit<PaymentAmount, 'fractionDigits'>,
@@ -918,7 +1066,8 @@ class BriqpayService {
       ctCart.lineItems,
       ctCart.customLineItems,
       ctCart.locale,
-      await fetchDiscountNamesForCart(ctCart),
+      await fetchDiscountsForCart(ctCart),
+      await this.getStoredCart(sessionId),
     )
     const briqpayCaptureRequest: Pick<CreateSessionRequestBody, 'data'> = {
       data: {
@@ -977,7 +1126,8 @@ class BriqpayService {
       ctCart.lineItems,
       ctCart.customLineItems,
       ctCart.locale,
-      await fetchDiscountNamesForCart(ctCart),
+      await fetchDiscountsForCart(ctCart),
+      await this.getStoredCart(sessionId),
     )
     const briqpayRefundRequest: Pick<CreateSessionRequestBody, 'data'> & { captureId?: string } = {
       ...(captureId && { captureId }),

@@ -3,56 +3,37 @@
 All notable changes to the Briqpay commercetools Connect plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
-## [2.0.2] - 2026-09-15
+## [2.1.0] - 2026-10-08
 
-### Added
+### Changed
 
-- Opt-in cart reconciliation, behind the new `BRIQPAY_RECONCILE_CART_ON_DRIFT` connector
-  configuration key (set it to exactly `true`; anything else leaves carts untouched). When a cart has grown
-  past what Briqpay authorized, the connector lowers it back to the lines the buyer actually paid
-  for before creating the Payment, so Checkout converts a cart that matches the money. The paid
-  lines come from the Briqpay session (a webhook payload carries the amounts but no lines), and
-  they are matched back to line items by rebuilding the same bounded reference the session was
-  sent with, so the match is exact even for hashed long references - never by price, so swapping
-  one item for a different one at the same price is still recognised as the wrong item.
+- An item discount now arrives on its product line instead of a separate line. The product line
+  carries `unitDiscountAmountIncVat` (the discount per unit, including VAT) and its totals after
+  the discount, so the merchant portal shows the discount on the product row. A line with exactly
+  one percentage cart discount also carries `discountPercentage`. A flat discount, or several
+  discounts stacked on one line, sends the amount only: stacked discounts compound, so no single
+  percentage matches their amount.
+- A line whose discount does not split into whole cents per unit, or whose units commercetools
+  prices differently, keeps the product line plus a `<sku>-discount` line, as before.
+- Capture and refund read the session's cart from Briqpay and repeat the shape each line was
+  created in, with the same discount values. Sessions paid before the upgrade keep working.
 
-  Drift is judged on line composition, not on the total. A buyer who swaps a paid item for an
-  equally priced one leaves the cart total untouched, and a totals-only comparison would wave that
-  through.
+### Upgrade notes
 
-  It refuses - leaving the cart untouched and the Payment planned at the authorized amount - on
-  anything it cannot compute exactly: discount codes, direct discounts, discounted line items,
-  custom line items, external tax modes, split shipping, tiered shipping rates, net-priced lines,
-  two line items sharing one reference, a session line with no line-item equivalent, and a paid
-  line that is no longer in the cart at all (re-adding it would need a price the session cannot
-  vouch for). commercetools has no dry run for cart updates, so the resulting gross is computed
-  first and the plan is only written when it equals the authorized amount to the cent; the cart is
-  re-read and checked again afterwards.
-
-### Fixed
-
-- A CT Payment now plans the amount Briqpay actually authorized instead of the cart total at the
-  moment the Payment is created. A cart stays mutable while the buyer is away at a redirect PSP,
-  and commercetools Checkout builds the Order from the live cart - so a buyer who paid for one
-  item and then added two more in a second tab got an Order for three items carrying a Payment
-  whose `amountPlanned` matched the three-item cart while only the single item was authorized.
-  The Order looked fully paid to every commercetools paid-in-full check, including the SDK's own
-  `calculateTotalPaidAmount`. The Order still reflects the drifted cart - the connector must never
-  write line items - but the Payment is now truthful, so the shortfall is visible in commercetools
-  itself and fulfilment can be gated on it.
-- The `Authorization` transaction written by `/payments` inherited the same cart-derived amount, so
-  an authorization for less than the cart total was recorded at the cart total. It now carries the
-  authorized amount too.
-
-  Applies to all three paths that create a Payment: `/payments` (buyer returns), `/transactions`,
-  and the order-status webhook fallback (buyer never returns). Amounts that agree are unaffected; a
-  divergence is still logged as `Amount mismatch between Briqpay and commercetools` with the call
-  site in `context`.
-
-  This is detection, not prevention. Nothing in the connector can stop a storefront cart from being
-  edited mid-payment; only the storefront can, by checking out against a cart the buyer cannot edit
-  (`POST /carts/replicate` when checkout opens) or by rejecting cart writes while a payment is in
-  flight (an API Extension, or `lockCart` with the `manage_locked_carts` scope).
+- If you capture or refund with product lines through the Briqpay merchant API:
+  - Item discounts now arrive on the product line (`unitDiscountAmountIncVat`, plus
+    `discountPercentage` for a single percentage discount) instead of a separate
+    `<sku>-discount` line.
+  - For sessions paid after the upgrade, manual captures and refunds must send the lines in
+    that shape, with the same discount values, or they are rejected with 400
+    `CART_ITEM_NOT_FOUND`.
+  - Sessions paid before the upgrade keep the old two-line shape. When unsure, read the
+    session's cart (`GET /session/{sessionId}`) and repeat its lines.
+  - Auto-captures and amount-only (`adjustment`) refunds are not affected.
+- Do not roll back to 2.0.x after deploying 2.1.0: the connector's own captures and refunds of
+  discounted orders from sessions synced by 2.1.0 would send the old two-line shape and be
+  rejected with 400 `CART_ITEM_NOT_FOUND`.
+- No configuration change and no commercetools change are required.
 
 ## [2.0.1] - 2026-09-07
 

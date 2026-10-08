@@ -782,14 +782,12 @@ export class BriqpayNotificationService {
    */
   private resolvePaymentForWebhook = async (
     payment: Payment[],
-    briqpaySession: MediumBriqpayResponse,
+    briqpaySessionId: string,
     cartId?: string,
   ): Promise<Payment[]> => {
     if (payment.length) {
       return payment
     }
-
-    const briqpaySessionId = briqpaySession.sessionId
 
     if (!cartId) {
       appLogger.warn(
@@ -800,7 +798,7 @@ export class BriqpayNotificationService {
       return payment
     }
 
-    const ensured = await this.operationService.ensurePaymentForWebhook(cartId, briqpaySession)
+    const ensured = await this.operationService.ensurePaymentForWebhook(cartId, briqpaySessionId)
 
     return ensured ? [ensured] : []
   }
@@ -817,7 +815,7 @@ export class BriqpayNotificationService {
     briqpaySession: MediumBriqpayResponse,
     cartId?: string,
   ): Promise<Payment[]> => {
-    const payments = await this.resolvePaymentForWebhook(payment, briqpaySession, cartId)
+    const payments = await this.resolvePaymentForWebhook(payment, briqpaySession.sessionId, cartId)
     await handler(payments, briqpaySession)
 
     return payments

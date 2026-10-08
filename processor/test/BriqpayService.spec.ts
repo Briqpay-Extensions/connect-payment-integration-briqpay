@@ -3,7 +3,16 @@ import { BRIQPAY_USER_AGENT } from '../src/libs/briqpay/user-agent'
 import { beforeEach, describe, expect, it, jest, afterEach } from '@jest/globals'
 import { mockGetCartResult } from './utils/mock-cart-data'
 import { BRIQPAY_DECISION } from '../src/dtos/briqpay-payment.dto'
-import { Cart } from '@commercetools/platform-sdk'
+import {
+  Cart,
+  CartDiscountValue,
+  CentPrecisionMoney,
+  DiscountedLineItemPortion,
+  DiscountedLineItemPriceForQuantity,
+  LineItem,
+} from '@commercetools/platform-sdk'
+import { CartItem, ITEM_PRODUCT_TYPE, RegularCartItem } from '../src/services/types/briqpay-payment.type'
+import { SessionError } from '../src/libs/errors/briqpay-errors'
 import { apiRoot } from '../src/libs/commercetools/api-root'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
 import { createHash } from 'crypto'
@@ -17,7 +26,7 @@ const updateSessionWithCart = async (
 ) =>
   BriqpayService.updateSession(sessionId, await BriqpayService.buildSessionUpdateRequest(cart, amount as PaymentAmount))
 
-// Mock the apiRoot for fetchCartDiscountNames
+// Mock the apiRoot for fetchCartDiscounts
 jest.mock('../src/libs/commercetools/api-root', () => ({
   apiRoot: {
     cartDiscounts: jest.fn<any>(),
@@ -331,7 +340,12 @@ describe('BriqpayService', () => {
   it('should capture an order successfully', async () => {
     const mockCart = mockGetCartResult()
 
-    const mockCaptureResponse = { captureId: 'capture123', status: 'captured' }
+    const mockCaptureResponse = {
+      captureId: 'capture123',
+      status: 'captured',
+      sessionId: 'abc123',
+      data: { order: { amountIncVat: 0, currency: 'EUR', cart: [] } },
+    }
 
     global.fetch = jest.fn().mockReturnValue(
       Promise.resolve({
@@ -353,7 +367,12 @@ describe('BriqpayService', () => {
   it('should refund an order successfully', async () => {
     const mockCart = mockGetCartResult()
 
-    const mockRefundResponse = { refundId: 'refund123', status: 'refunded' }
+    const mockRefundResponse = {
+      refundId: 'refund123',
+      status: 'refunded',
+      sessionId: 'abc123',
+      data: { order: { amountIncVat: 0, currency: 'EUR', cart: [] } },
+    }
 
     global.fetch = jest.fn().mockReturnValue(
       Promise.resolve({
@@ -552,13 +571,20 @@ describe('BriqpayService', () => {
     it('should throw error when refund response is not ok', async () => {
       const mockCart = mockGetCartResult()
 
-      global.fetch = jest.fn().mockReturnValue(
-        Promise.resolve({
+      global.fetch = jest
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            sessionId: 'session123',
+            data: { order: { amountIncVat: 0, currency: 'EUR', cart: [] } },
+          }),
+        } as Response)
+        .mockResolvedValueOnce({
           ok: false,
           status: 400,
           text: async () => 'Refund failed: insufficient funds',
-        } as unknown as Response),
-      ) as typeof fetch
+        } as unknown as Response) as typeof fetch
 
       await expect(
         BriqpayService.refund(mockCart, { centAmount: 10000, currencyCode: 'EUR' }, 'session123', 'capture123'),
@@ -744,19 +770,19 @@ describe('BriqpayService', () => {
       )
     })
 
-    it('changes the hash when discount name lookup degrades, so it never reads as in sync', async () => {
+    it('changes the hash when the cart discount lookup degrades, so it never reads as in sync', async () => {
       const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
       mockCart.lineItems[0].discountedPricePerQuantity = [
         {
           quantity: 1,
           discountedPrice: {
-            value: { type: 'centPrecision', centAmount: 100000, currencyCode: 'EUR', fractionDigits: 2 },
+            value: { type: 'centPrecision', centAmount: 95200, currencyCode: 'EUR', fractionDigits: 2 },
             includedDiscounts: [
               {
                 discount: { typeId: 'cart-discount', id: 'discount-id-1' },
                 discountedAmount: {
                   type: 'centPrecision',
-                  centAmount: 19000,
+                  centAmount: 23800,
                   currencyCode: 'EUR',
                   fractionDigits: 2,
                 },
@@ -766,22 +792,26 @@ describe('BriqpayService', () => {
         },
       ]
       mockCart.lineItems[0].taxedPrice = {
-        totalGross: { centAmount: 100000, currencyCode: 'EUR' },
-        totalNet: { centAmount: 84034, currencyCode: 'EUR' },
-        totalTax: { centAmount: 15966, currencyCode: 'EUR' },
+        totalGross: { centAmount: 95200, currencyCode: 'EUR' },
+        totalNet: { centAmount: 95200, currencyCode: 'EUR' },
+        totalTax: { centAmount: 0, currencyCode: 'EUR' },
       }
       ;(apiRoot.cartDiscounts as jest.Mock<any>).mockReturnValue({
         get: jest.fn<any>().mockReturnValue({
-          execute: jest
-            .fn<any>()
-            .mockResolvedValue({ body: { results: [{ id: 'discount-id-1', name: { en: 'Summer Sale' } }] } }),
+          execute: jest.fn<any>().mockResolvedValue({
+            body: {
+              results: [
+                { id: 'discount-id-1', name: { en: 'Summer Sale' }, value: { type: 'relative', permyriad: 2000 } },
+              ],
+            },
+          }),
         }),
       })
       const withNames = await BriqpayService.buildSessionUpdateRequest(mockCart, amount)
-      expect(withNames.body).toContain('Summer Sale')
+      expect(withNames.body).toContain('"discountPercentage":2000')
 
-      // fetchCartDiscountNames swallows its own errors and falls back to a generic label,
-      // so the same cart can map to a different payload. That must read as stale, not in sync.
+      // fetchCartDiscounts swallows its own errors and falls back to no rate, so the same cart
+      // can map to a different payload. That must read as stale, not in sync.
       ;(apiRoot.cartDiscounts as jest.Mock<any>).mockReturnValue({
         get: jest.fn<any>().mockReturnValue({
           execute: jest.fn<any>().mockRejectedValue(new Error('CT unavailable')),
@@ -789,7 +819,7 @@ describe('BriqpayService', () => {
       })
       const degraded = await BriqpayService.buildSessionUpdateRequest(mockCart, amount)
 
-      expect(degraded.body).not.toContain('Summer Sale')
+      expect(degraded.body).not.toContain('"discountPercentage":2000')
       expect(degraded.hash).not.toBe(withNames.hash)
     })
   })
@@ -1344,6 +1374,10 @@ describe('BriqpayService', () => {
                   id: 'discount-id-1',
                   name: { en: 'Summer Sale', 'en-GB': 'Summer Sale GB' },
                   key: 'summer-sale',
+                  value: {
+                    type: 'absolute',
+                    money: [{ type: 'centPrecision', currencyCode: 'EUR', centAmount: 19000, fractionDigits: 2 }],
+                  },
                 },
               ],
             },
@@ -1440,7 +1474,16 @@ describe('BriqpayService', () => {
         get: jest.fn<any>().mockReturnValue({
           execute: jest.fn<any>().mockResolvedValue({
             body: {
-              results: [{ id: 'discount-1', name: { en: 'Total Discount' } }],
+              results: [
+                {
+                  id: 'discount-1',
+                  name: { en: 'Total Discount' },
+                  value: {
+                    type: 'absolute',
+                    money: [{ type: 'centPrecision', currencyCode: 'EUR', centAmount: 1000, fractionDigits: 2 }],
+                  },
+                },
+              ],
             },
           }),
         }),
@@ -1625,10 +1668,19 @@ describe('BriqpayService', () => {
     const captureRequestBody = () => {
       let requestBody: any = null
       global.fetch = jest.fn().mockImplementation((url, init: any) => {
-        requestBody = JSON.parse(init.body)
+        // Capture and refund read the session first; that GET has no body
+        if (init.body) {
+          requestBody = JSON.parse(init.body)
+        }
+
         return Promise.resolve({
           ok: true,
-          json: async () => ({ sessionId: 'abc123', captureId: 'cap123', status: 'approved' }),
+          json: async () => ({
+            sessionId: 'abc123',
+            captureId: 'cap123',
+            status: 'approved',
+            data: { order: { amountIncVat: 0, currency: 'EUR', cart: [] } },
+          }),
         } as Response)
       }) as typeof fetch
 
@@ -1834,10 +1886,19 @@ describe('BriqpayService', () => {
     const captureRequestBody = () => {
       let requestBody: any = null
       global.fetch = jest.fn().mockImplementation((url, init: any) => {
-        requestBody = JSON.parse(init.body)
+        // Capture and refund read the session first; that GET has no body
+        if (init.body) {
+          requestBody = JSON.parse(init.body)
+        }
+
         return Promise.resolve({
           ok: true,
-          json: async () => ({ sessionId: 'abc123', captureId: 'cap123', status: 'approved' }),
+          json: async () => ({
+            sessionId: 'abc123',
+            captureId: 'cap123',
+            status: 'approved',
+            data: { order: { amountIncVat: 0, currency: 'EUR', cart: [] } },
+          }),
         } as Response)
       }) as typeof fetch
 
@@ -1845,28 +1906,36 @@ describe('BriqpayService', () => {
     }
 
     const stackTwoCartDiscounts = (mockCart: any) => {
-      mockCart.lineItems[0].discountedPricePerQuantity = [
-        {
-          quantity: 1,
-          discountedPrice: {
-            value: { type: 'centPrecision', centAmount: 100000, currencyCode: 'EUR', fractionDigits: 2 },
-            includedDiscounts: [
-              {
-                discount: { typeId: 'cart-discount', id: '7f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8' },
-                discountedAmount: { type: 'centPrecision', centAmount: 9000, currencyCode: 'EUR', fractionDigits: 2 },
-              },
-              {
-                discount: { typeId: 'cart-discount', id: '1b2c3d4e-5f60-7182-93a4-b5c6d7e8f901' },
-                discountedAmount: { type: 'centPrecision', centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
-              },
-            ],
-          },
+      // Two units priced differently keep the separate discount line these tests name
+      mockCart.lineItems[0].quantity = 2
+      const stackedBucket = {
+        quantity: 1,
+        discountedPrice: {
+          value: { type: 'centPrecision', centAmount: 100000, currencyCode: 'EUR', fractionDigits: 2 },
+          includedDiscounts: [
+            {
+              discount: { typeId: 'cart-discount', id: '7f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8' },
+              discountedAmount: { type: 'centPrecision', centAmount: 9000, currencyCode: 'EUR', fractionDigits: 2 },
+            },
+            {
+              discount: { typeId: 'cart-discount', id: '1b2c3d4e-5f60-7182-93a4-b5c6d7e8f901' },
+              discountedAmount: { type: 'centPrecision', centAmount: 10000, currencyCode: 'EUR', fractionDigits: 2 },
+            },
+          ],
         },
-      ]
+      }
+      const fullPriceBucket = {
+        quantity: 1,
+        discountedPrice: {
+          value: { type: 'centPrecision', centAmount: 119000, currencyCode: 'EUR', fractionDigits: 2 },
+          includedDiscounts: [],
+        },
+      }
+      mockCart.lineItems[0].discountedPricePerQuantity = [stackedBucket, fullPriceBucket]
       mockCart.lineItems[0].taxedPrice = {
-        totalGross: { centAmount: 100000, currencyCode: 'EUR' },
-        totalNet: { centAmount: 84034, currencyCode: 'EUR' },
-        totalTax: { centAmount: 15966, currencyCode: 'EUR' },
+        totalGross: { centAmount: 219000, currencyCode: 'EUR' },
+        totalNet: { centAmount: 184034, currencyCode: 'EUR' },
+        totalTax: { centAmount: 34966, currencyCode: 'EUR' },
       }
       ;(apiRoot.cartDiscounts as jest.Mock<any>).mockReturnValue({
         get: jest.fn<any>().mockReturnValue({
@@ -2083,6 +2152,509 @@ describe('BriqpayService', () => {
       const references: string[] = getRequestBody().data.order.cart.map((item: any) => item.reference)
       expect(references).toContain('total-discount')
       expect(new Set(references).size).toBe(references.length)
+    })
+  })
+
+  describe('item discount on the product line', () => {
+    const amount: PaymentAmount = {
+      centAmount: 100000,
+      currencyCode: 'EUR',
+      fractionDigits: 2,
+    }
+
+    const money = (centAmount: number): CentPrecisionMoney => ({
+      type: 'centPrecision',
+      currencyCode: 'EUR',
+      centAmount,
+      fractionDigits: 2,
+    })
+
+    const relative = (permyriad: number): CartDiscountValue => ({
+      type: 'relative',
+      permyriad,
+    })
+    const absolute = (centAmount: number): CartDiscountValue => ({
+      type: 'absolute',
+      money: [money(centAmount)],
+    })
+
+    const mockCartDiscounts = (discounts: Array<{ id: string; value: CartDiscountValue }>) => {
+      ;(apiRoot.cartDiscounts as jest.Mock<any>).mockReturnValue({
+        get: jest.fn<any>().mockReturnValue({
+          execute: jest.fn<any>().mockResolvedValue({
+            body: {
+              results: discounts.map(({ id, value }) => ({
+                id,
+                value,
+                name: { en: `Discount ${id}` },
+              })),
+            },
+          }),
+        }),
+      })
+    }
+
+    const mockCartDiscountsFailing = () => {
+      ;(apiRoot.cartDiscounts as jest.Mock<any>).mockReturnValue({
+        get: jest.fn<any>().mockReturnValue({
+          execute: jest.fn<any>().mockRejectedValue(new Error('CT unavailable')),
+        }),
+      })
+    }
+
+    type DiscountedLineSpec = {
+      quantity: number
+      unitGross: number
+      totalGross: number
+      discountIds: string[]
+      buckets?: number
+    }
+
+    // One product line at 25% VAT included in the price, as 24MX sells. commercetools
+    // bakes the item discount into taxedPrice; the buckets are discountedPricePerQuantity.
+    const cartWithDiscountedLine = ({
+      quantity,
+      unitGross,
+      totalGross,
+      discountIds,
+      buckets = 1,
+    }: DiscountedLineSpec) => {
+      const base = mockGetCartResult()
+      const totalNet = Math.round(totalGross / 1.25)
+      const includedDiscounts = discountIds.map(
+        (id): DiscountedLineItemPortion => ({
+          discount: { typeId: 'cart-discount', id },
+          discountedAmount: money(0),
+        }),
+      )
+      const bucket: DiscountedLineItemPriceForQuantity = {
+        quantity: quantity / buckets,
+        discountedPrice: {
+          value: money(Math.round(totalGross / quantity)),
+          includedDiscounts,
+        },
+      }
+      const line: LineItem = {
+        ...base.lineItems[0],
+        quantity,
+        price: { ...base.lineItems[0].price, value: money(unitGross) },
+        totalPrice: money(totalGross),
+        taxRate: {
+          name: '25% VAT',
+          amount: 0.25,
+          includedInPrice: true,
+          country: 'SE',
+        },
+        taxedPrice: {
+          totalNet: money(totalNet),
+          totalGross: money(totalGross),
+          totalTax: money(totalGross - totalNet),
+          taxPortions: [],
+        },
+        discountedPricePerQuantity: Array.from({ length: buckets }, () => bucket),
+      }
+      const cart: Cart = { ...base, lineItems: [line], customLineItems: [] }
+
+      return cart
+    }
+
+    const sentCart = async (cart: Cart): Promise<RegularCartItem[]> => {
+      const request = await BriqpayService.buildSessionUpdateRequest(cart, amount)
+      const sent: { data: { order: { cart: RegularCartItem[] } } } = JSON.parse(request.body)
+
+      return sent.data.order.cart
+    }
+
+    const productLine = (cart: RegularCartItem[]) => cart.find((line) => line.reference === 'variant-sku-1')
+    const hasDiscountLine = (cart: RegularCartItem[]) =>
+      cart.some((line) => line.reference === 'variant-sku-1-discount')
+
+    it('sends a single percentage discount on the product line with both fields', async () => {
+      mockCartDiscounts([{ id: 'pct-20', value: relative(2000) }])
+
+      const cart = await sentCart(
+        cartWithDiscountedLine({
+          quantity: 1,
+          unitGross: 100000,
+          totalGross: 80000,
+          discountIds: ['pct-20'],
+        }),
+      )
+
+      expect(productLine(cart)).toMatchObject({
+        unitPrice: 80000,
+        unitPriceIncVat: 100000,
+        taxRate: 2500,
+        unitDiscountAmountIncVat: 20000,
+        discountPercentage: 2000,
+        totalAmount: 80000,
+        totalVatAmount: 16000,
+      })
+      expect(hasDiscountLine(cart)).toBe(false)
+    })
+
+    it('sends 2 x 12.25 at 10% with the amount commercetools charged, not a re-rounded one', async () => {
+      mockCartDiscounts([{ id: 'pct-10', value: relative(1000) }])
+
+      const cart = await sentCart(
+        cartWithDiscountedLine({
+          quantity: 2,
+          unitGross: 1225,
+          totalGross: 2204,
+          discountIds: ['pct-10'],
+        }),
+      )
+
+      expect(productLine(cart)).toMatchObject({
+        unitPrice: 980,
+        unitDiscountAmountIncVat: 123,
+        discountPercentage: 1000,
+        totalAmount: 2204,
+      })
+    })
+
+    it('sends a flat discount as the amount alone', async () => {
+      mockCartDiscounts([{ id: 'flat-150', value: absolute(15000) }])
+
+      const cart = await sentCart(
+        cartWithDiscountedLine({
+          quantity: 1,
+          unitGross: 100000,
+          totalGross: 85000,
+          discountIds: ['flat-150'],
+        }),
+      )
+
+      expect(productLine(cart)).toMatchObject({
+        unitDiscountAmountIncVat: 15000,
+        totalAmount: 85000,
+      })
+      expect(productLine(cart)).not.toHaveProperty('discountPercentage')
+    })
+
+    it('sends stacked discounts as the amount alone, since they compound', async () => {
+      mockCartDiscounts([
+        { id: 'pct-10-a', value: relative(1000) },
+        { id: 'pct-10-b', value: relative(1000) },
+      ])
+
+      // 119.99 -> 10% -> 107.99 -> 10% -> 97.19, rounded after each step: 22.80 off, not 24.00
+      const cart = await sentCart(
+        cartWithDiscountedLine({
+          quantity: 1,
+          unitGross: 11999,
+          totalGross: 9719,
+          discountIds: ['pct-10-a', 'pct-10-b'],
+        }),
+      )
+
+      expect(productLine(cart)).toMatchObject({
+        unitDiscountAmountIncVat: 2280,
+        totalAmount: 9719,
+      })
+      expect(productLine(cart)).not.toHaveProperty('discountPercentage')
+    })
+
+    it.each([
+      ['fails', mockCartDiscountsFailing],
+      ['finds nothing', () => mockCartDiscounts([])],
+    ])('sends the amount alone when the cart discount lookup %s', async (_label, mockLookup) => {
+      mockLookup()
+
+      const cart = await sentCart(
+        cartWithDiscountedLine({
+          quantity: 1,
+          unitGross: 100000,
+          totalGross: 80000,
+          discountIds: ['pct-20'],
+        }),
+      )
+
+      expect(productLine(cart)).toMatchObject({
+        unitDiscountAmountIncVat: 20000,
+        totalAmount: 80000,
+      })
+      expect(productLine(cart)).not.toHaveProperty('discountPercentage')
+    })
+
+    it('sends the amount alone when a product discount makes the rate disagree with it', async () => {
+      // A product discount priced the line down before the 10% cart discount, so the line
+      // is 19% off its list price and a 10% rate would be 9.50 off the amount
+      mockCartDiscounts([{ id: 'pct-10', value: relative(1000) }])
+
+      const cart = await sentCart(
+        cartWithDiscountedLine({
+          quantity: 1,
+          unitGross: 10000,
+          totalGross: 8100,
+          discountIds: ['pct-10'],
+        }),
+      )
+
+      expect(productLine(cart)).toMatchObject({ unitDiscountAmountIncVat: 1900 })
+      expect(productLine(cart)).not.toHaveProperty('discountPercentage')
+    })
+
+    it('sends the amount alone when the rate applied to only some units', async () => {
+      // 30% off one of three 10.00 units: 3.00 off the line spreads evenly as 1.00 per unit,
+      // which no longer matches 30%
+      mockCartDiscounts([{ id: 'pct-30', value: relative(3000) }])
+
+      const cart = await sentCart(
+        cartWithDiscountedLine({
+          quantity: 3,
+          unitGross: 1000,
+          totalGross: 2700,
+          discountIds: ['pct-30'],
+        }),
+      )
+
+      expect(productLine(cart)).toMatchObject({
+        unitDiscountAmountIncVat: 100,
+        totalAmount: 2700,
+      })
+      expect(productLine(cart)).not.toHaveProperty('discountPercentage')
+    })
+
+    it('keeps a separate discount line when the discount does not split into whole cents per unit', async () => {
+      // 24MX: 4 x 69.00 with 20.70 off is 5.175 per unit
+      mockCartDiscounts([{ id: 'flat-2070', value: absolute(2070) }])
+
+      const cart = await sentCart(
+        cartWithDiscountedLine({
+          quantity: 4,
+          unitGross: 6900,
+          totalGross: 25530,
+          discountIds: ['flat-2070'],
+        }),
+      )
+
+      expect(productLine(cart)).toMatchObject({
+        discountPercentage: 0,
+        totalAmount: 27600,
+      })
+      expect(productLine(cart)).not.toHaveProperty('unitDiscountAmountIncVat')
+      expect(cart.find((line) => line.reference === 'variant-sku-1-discount')).toMatchObject({
+        productType: 'discount',
+        name: 'Discount flat-2070',
+        totalAmount: -2070,
+      })
+    })
+
+    it('keeps a separate discount line when units on the line are priced differently', async () => {
+      mockCartDiscounts([{ id: 'pct-20', value: relative(2000) }])
+
+      const cart = await sentCart(
+        cartWithDiscountedLine({
+          quantity: 2,
+          unitGross: 10000,
+          totalGross: 16000,
+          discountIds: ['pct-20'],
+          buckets: 2,
+        }),
+      )
+
+      expect(productLine(cart)).toMatchObject({
+        discountPercentage: 0,
+        totalAmount: 20000,
+      })
+      expect(productLine(cart)).not.toHaveProperty('unitDiscountAmountIncVat')
+      expect(hasDiscountLine(cart)).toBe(true)
+    })
+
+    // commercetools rounds each discounted price by the project's priceRoundingMode; Briqpay
+    // rejects a rate more than 1 off round(unitPrice x (1 + taxRate) x rate)
+    const roundingModes: Record<string, (value: number) => number> = {
+      HalfEven: (value) => {
+        const floor = Math.floor(value)
+        if (value - floor !== 0.5) {
+          return Math.round(value)
+        }
+
+        return floor % 2 === 0 ? floor : floor + 1
+      },
+      HalfUp: (value) => Math.floor(value + 0.5),
+      HalfDown: (value) => Math.ceil(value - 0.5),
+    }
+
+    it.each(Object.keys(roundingModes))(
+      'keeps the amount within 1 of the rate for real prices under %s rounding',
+      async (mode) => {
+        const round = roundingModes[mode]
+        for (const unitGross of [100, 995, 1199, 1225, 3999, 6900, 7999, 11999, 19999, 24999]) {
+          for (const permyriad of [1000, 1500, 2000, 2500, 3000, 5000]) {
+            for (const quantity of [1, 2, 3]) {
+              const unitDiscount = round((unitGross * permyriad) / 10000)
+              mockCartDiscounts([{ id: 'pct', value: relative(permyriad) }])
+
+              const line = productLine(
+                await sentCart(
+                  cartWithDiscountedLine({
+                    quantity,
+                    unitGross,
+                    totalGross: (unitGross - unitDiscount) * quantity,
+                    discountIds: ['pct'],
+                  }),
+                ),
+              )
+              if (!line) {
+                throw new Error('product line missing')
+              }
+
+              const expected = Math.round(line.unitPrice * (1 + line.taxRate / 10000) * (permyriad / 10000))
+              expect(line).toMatchObject({
+                unitDiscountAmountIncVat: unitDiscount,
+                discountPercentage: permyriad,
+              })
+              expect(Math.abs(unitDiscount - expected)).toBeLessThanOrEqual(1)
+            }
+          }
+        }
+      },
+    )
+
+    describe('on capture and refund', () => {
+      const captureAmount = { centAmount: 80000, currencyCode: 'EUR' }
+
+      // Capture and refund read the stored session first, then post their lines
+      const mockStoredSession = (storedCart: CartItem[] | undefined) => {
+        global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+          const body =
+            init.method === 'GET'
+              ? {
+                  sessionId: 'abc123',
+                  ...(storedCart && {
+                    data: { order: { amountIncVat: 80000, currency: 'EUR', cart: storedCart } },
+                  }),
+                }
+              : { captureId: 'cap123', refundId: 'ref123', status: 'approved' }
+
+          return Promise.resolve({ ok: true, json: async () => body } as Response)
+        }) as typeof fetch
+      }
+
+      const postedCart = (): RegularCartItem[] => {
+        const calls = (global.fetch as jest.Mock).mock.calls as Array<[string, RequestInit]>
+        const post = calls.find(([, init]) => init.method === 'POST')
+        if (!post) {
+          throw new Error('no POST sent')
+        }
+
+        const sent: { data: { order: { cart: RegularCartItem[] } } } = JSON.parse(String(post[1].body))
+
+        return sent.data.order.cart
+      }
+
+      const send = (operation: 'capture' | 'refund', cart: Cart) =>
+        operation === 'capture'
+          ? BriqpayService.capture(cart, captureAmount, 'abc123')
+          : BriqpayService.refund(cart, captureAmount, 'abc123')
+
+      // How GET /session echoes a stored product line
+      const storedProductLine = (fields: Partial<RegularCartItem>): RegularCartItem => ({
+        productType: ITEM_PRODUCT_TYPE.PHYSICAL,
+        reference: 'variant-sku-1',
+        name: 'lineitem-name-1',
+        quantity: 1,
+        quantityUnit: 'pc',
+        unitPrice: 80000,
+        unitPriceIncVat: 100000,
+        taxRate: 2500,
+        totalAmount: 80000,
+        totalVatAmount: 16000,
+        ...fields,
+      })
+
+      const discountedCart = () =>
+        cartWithDiscountedLine({
+          quantity: 1,
+          unitGross: 100000,
+          totalGross: 80000,
+          discountIds: ['pct-20'],
+        })
+
+      it.each(['capture', 'refund'] as const)(
+        '%s repeats the session percentage even after the cart discount is gone',
+        async (operation) => {
+          mockCartDiscounts([])
+          mockStoredSession([storedProductLine({ unitDiscountAmountIncVat: 20000, discountPercentage: 2000 })])
+
+          await send(operation, discountedCart())
+
+          expect(productLine(postedCart())).toMatchObject({
+            unitDiscountAmountIncVat: 20000,
+            discountPercentage: 2000,
+            totalAmount: 80000,
+          })
+          expect(hasDiscountLine(postedCart())).toBe(false)
+        },
+      )
+
+      it.each(['capture', 'refund'] as const)(
+        '%s leaves the percentage out when the session line was created with the amount alone',
+        async (operation) => {
+          mockCartDiscounts([{ id: 'pct-20', value: relative(2000) }])
+          mockStoredSession([storedProductLine({ unitDiscountAmountIncVat: 20000 })])
+
+          await send(operation, discountedCart())
+
+          expect(productLine(postedCart())).toMatchObject({ unitDiscountAmountIncVat: 20000 })
+          expect(productLine(postedCart())).not.toHaveProperty('discountPercentage')
+        },
+      )
+
+      it.each(['capture', 'refund'] as const)(
+        '%s keeps the separate discount line for a session created before the upgrade',
+        async (operation) => {
+          mockCartDiscounts([{ id: 'pct-20', value: relative(2000) }])
+          mockStoredSession([
+            storedProductLine({
+              discountPercentage: 0,
+              unitDiscountAmountIncVat: 0,
+              totalAmount: 100000,
+              totalVatAmount: 20000,
+            }),
+            {
+              productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+              reference: 'variant-sku-1-discount',
+              name: 'Discount pct-20',
+              quantity: 1,
+              quantityUnit: 'pc',
+              unitPrice: -16000,
+              unitPriceIncVat: -20000,
+              taxRate: 2500,
+              discountPercentage: 0,
+              unitDiscountAmountIncVat: 0,
+              totalAmount: -20000,
+              totalVatAmount: -4000,
+            },
+          ])
+
+          await send(operation, discountedCart())
+
+          expect(productLine(postedCart())).toMatchObject({ discountPercentage: 0, totalAmount: 100000 })
+          expect(productLine(postedCart())).not.toHaveProperty('unitDiscountAmountIncVat')
+          expect(postedCart().find((line) => line.reference === 'variant-sku-1-discount')).toMatchObject({
+            productType: 'discount',
+            unitPriceIncVat: -20000,
+            totalAmount: -20000,
+          })
+        },
+      )
+
+      it.each(['capture', 'refund'] as const)(
+        '%s fails without posting when the session holds no order cart',
+        async (operation) => {
+          mockStoredSession(undefined)
+
+          await expect(send(operation, discountedCart())).rejects.toThrow(SessionError)
+          expect(
+            ((global.fetch as jest.Mock).mock.calls as Array<[string, RequestInit]>).some(
+              ([, init]) => init.method === 'POST',
+            ),
+          ).toBe(false)
+        },
+      )
     })
   })
 })
