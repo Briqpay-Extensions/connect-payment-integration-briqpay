@@ -199,8 +199,8 @@ const getDiscountPercentage = (
  * priced differently, or whose discount does not split into whole cents per unit, keeps it.
  *
  * On capture and refund the stored session cart decides instead, since Briqpay matches
- * lines exactly: a session created with the separate line keeps it, and the rate is the
- * one the session holds, as the cart discount may have changed since.
+ * lines exactly: a session created with the separate line keeps it, and the amount and rate
+ * are the ones the session holds, as the cart discount may have changed since.
  */
 const getLineDiscount = (
   item: LineItem,
@@ -226,8 +226,10 @@ const getLineDiscount = (
     return undefined
   }
 
-  const unitDiscountAmountIncVat = discountGross / item.quantity
   const storedLine = storedCart?.find((line) => line.reference === reference)
+  const storedAmount =
+    storedLine && 'unitDiscountAmountIncVat' in storedLine ? storedLine.unitDiscountAmountIncVat : undefined
+  const unitDiscountAmountIncVat = storedAmount || discountGross / item.quantity
   const storedPercentage = storedLine && 'discountPercentage' in storedLine ? storedLine.discountPercentage : undefined
   const discountPercentage = storedCart
     ? storedPercentage

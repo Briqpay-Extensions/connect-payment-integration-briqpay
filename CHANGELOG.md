@@ -3,7 +3,7 @@
 All notable changes to the Briqpay commercetools Connect plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
-## [2.1.0] - 2026-10-08
+## [3.0.0] - 2026-10-12
 
 ### Changed
 
@@ -20,6 +20,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 - Lines without a percentage discount (undiscounted product lines, `<sku>-discount` lines, custom
   lines, shipping and the total discount) no longer send `discountPercentage: 0`.
 
+### Security
+
+- Updated `fastify` (5.12.5), `fast-uri` (3.1.8 / 4.2.2), `handlebars` (4.7.10), `undici`
+  (7.29.1), `compression` (1.8.2), `brace-expansion`, `js-yaml` and `source-map-js` to clear
+  their advisories. `cookie` stays pinned at 1.1.1: newer `light-my-request` asks for the
+  ESM-only `cookie` 2, which the tests cannot load. Transitive dependencies only, no API change.
+
 ### Upgrade notes
 
 - If you capture or refund with product lines through the Briqpay merchant API:
@@ -32,8 +39,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
   - Sessions paid before the upgrade keep the old two-line shape. When unsure, read the
     session's cart (`GET /session/{sessionId}`) and repeat its lines.
   - Auto-captures and amount-only (`adjustment`) refunds are not affected.
-- Do not roll back to 2.0.x after deploying 2.1.0: the connector's own captures and refunds of
-  discounted orders from sessions synced by 2.1.0 would send the old two-line shape and be
+- If you read cart lines from Briqpay (the session's cart from `GET /session/{sessionId}`,
+  `transaction.cart` in the `order_status` notification, or `capture.cart` and `refund.cart` in the
+  `capture_status` and `refund_status` notifications):
+  - A discounted product is one line. `totalAmount` and `totalVatAmount` are after the discount;
+    `unitPrice` and `unitPriceIncVat` are before it.
+  - The discount's name is no longer in the cart: it was the name of the `<sku>-discount` line.
+    Read it from commercetools if you need it.
+- Do not roll back to 2.0.x after deploying 3.0.0: the connector's own captures and refunds of
+  discounted orders from sessions synced by 3.0.0 would send the old two-line shape and be
   rejected with 400 `CART_ITEM_NOT_FOUND`.
 - No configuration change and no commercetools change are required.
 

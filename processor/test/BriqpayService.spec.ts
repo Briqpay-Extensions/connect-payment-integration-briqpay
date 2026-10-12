@@ -2603,6 +2603,21 @@ describe('BriqpayService', () => {
       )
 
       it.each(['capture', 'refund'] as const)(
+        '%s repeats the session amount when the cart discount now gives a different one',
+        async (operation) => {
+          mockCartDiscounts([{ id: 'pct-20', value: relative(2000) }])
+          mockStoredSession([storedProductLine({ unitDiscountAmountIncVat: 19999, discountPercentage: 2000 })])
+
+          await send(operation, discountedCart())
+
+          expect(productLine(postedCart())).toMatchObject({
+            unitDiscountAmountIncVat: 19999,
+            discountPercentage: 2000,
+          })
+        },
+      )
+
+      it.each(['capture', 'refund'] as const)(
         '%s leaves the percentage out when the session line was created with the amount alone',
         async (operation) => {
           mockCartDiscounts([{ id: 'pct-20', value: relative(2000) }])

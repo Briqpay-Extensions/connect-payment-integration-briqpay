@@ -34,6 +34,8 @@
       "js-yaml": "3.15.2"
     },
     "compression": "1.8.2",
+    "handlebars": "4.7.10",
+    "cookie": "1.1.1",
     "picomatch@^2": "2.3.2",
     "vite": {
       "picomatch": "4.0.4"
