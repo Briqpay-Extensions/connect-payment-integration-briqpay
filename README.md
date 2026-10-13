@@ -114,6 +114,7 @@ client_credentials&scope=manage_orders:{projectKey} view_states:{projectKey} vie
 6. **Optionally set CORS and the decision safeguard**:
    - `ALLOWED_ORIGINS` - Comma-separated list of allowed CORS origins; supports wildcard patterns for subdomains (e.g. `https://your-store.com,https://*.preview.your-store.com`)
    - `BRIQPAY_DISABLE_DECISION_AMOUNT_CHECK` - Leave unset (recommended). Set to exactly `true` to disable the server-side check that verifies the Briqpay session amount and currency against the cart before forwarding a buyer `allow` decision. Any other value is ignored and the check stays enabled.
+   - `BRIQPAY_RECONCILE_CART_ON_DRIFT` - Leave unset (default off). Set to exactly `true` to let the connector lower a cart back to the lines Briqpay actually authorized before it creates the Payment, for a buyer who changed the cart after paying (a second tab during a redirect PSP). It only reduces quantities or removes lines, and only when the resulting total matches the authorized amount to the cent; discounts, tiered shipping, price changes and a paid line that is no longer in the cart are left untouched and logged instead. Any other value is ignored and carts are never edited.
 
 7. **Deploy on Connect**
 

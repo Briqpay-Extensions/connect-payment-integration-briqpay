@@ -3,6 +3,57 @@
 All notable changes to the Briqpay commercetools Connect plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
+## [3.0.1] - 2026-10-13
+
+### Added
+
+- Opt-in cart reconciliation, behind the new `BRIQPAY_RECONCILE_CART_ON_DRIFT` connector
+  configuration key (set it to exactly `true`; anything else leaves carts untouched). When a cart has grown
+  past what Briqpay authorized, the connector lowers it back to the lines the buyer actually paid
+  for before creating the Payment, so Checkout converts a cart that matches the money. The paid
+  lines come from the Briqpay session (a webhook payload carries the amounts but no lines), and
+  they are matched back to line items by rebuilding the same bounded reference the session was
+  sent with, so the match is exact even for hashed long references - never by price, so swapping
+  one item for a different one at the same price is still recognised as the wrong item.
+
+  Drift is judged on line composition, not on the total. A buyer who swaps a paid item for an
+  equally priced one leaves the cart total untouched, and a totals-only comparison would wave that
+  through.
+
+  It refuses - leaving the cart untouched and the Payment planned at the authorized amount - on
+  anything it cannot compute exactly: discount codes, direct discounts, discounted line items,
+  custom line items, external tax modes, split shipping, tiered shipping rates, net-priced lines,
+  two line items sharing one reference, a session line with no line-item equivalent, and a paid
+  line that is no longer in the cart at all (re-adding it would need a price the session cannot
+  vouch for). commercetools has no dry run for cart updates, so the resulting gross is computed
+  first and the plan is only written when it equals the authorized amount to the cent; the cart is
+  re-read and checked again afterwards.
+
+### Fixed
+
+- A CT Payment now plans the amount Briqpay actually authorized instead of the cart total at the
+  moment the Payment is created. A cart stays mutable while the buyer is away at a redirect PSP,
+  and commercetools Checkout builds the Order from the live cart - so a buyer who paid for one
+  item and then added two more in a second tab got an Order for three items carrying a Payment
+  whose `amountPlanned` matched the three-item cart while only the single item was authorized.
+  The Order looked fully paid to every commercetools paid-in-full check, including the SDK's own
+  `calculateTotalPaidAmount`. The Order still reflects the drifted cart - the connector must never
+  write line items - but the Payment is now truthful, so the shortfall is visible in commercetools
+  itself and fulfilment can be gated on it.
+- The `Authorization` transaction written by `/payments` inherited the same cart-derived amount, so
+  an authorization for less than the cart total was recorded at the cart total. It now carries the
+  authorized amount too.
+
+  Applies to all three paths that create a Payment: `/payments` (buyer returns), `/transactions`,
+  and the order-status webhook fallback (buyer never returns). Amounts that agree are unaffected; a
+  divergence is still logged as `Amount mismatch between Briqpay and commercetools` with the call
+  site in `context`.
+
+  This is detection, not prevention. Nothing in the connector can stop a storefront cart from being
+  edited mid-payment; only the storefront can, by checking out against a cart the buyer cannot edit
+  (`POST /carts/replicate` when checkout opens) or by rejecting cart writes while a payment is in
+  flight (an API Extension, or `lockCart` with the `manage_locked_carts` scope).
+
 ## [3.0.0] - 2026-10-12
 
 ### Changed
