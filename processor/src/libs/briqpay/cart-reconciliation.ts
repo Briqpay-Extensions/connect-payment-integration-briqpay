@@ -102,20 +102,20 @@ export const readPaidLines = (session: MediumBriqpayResponse): CartItem[] | unde
 }
 
 /**
- * Paid quantity per line reference. Undefined when the session carries a line type that has no
- * line-item equivalent (discounts, surcharges, deposits, sales tax): those move the total on
- * their own, so a quantity-only plan cannot reproduce it.
+ * A session line with no line-item equivalent (discounts, surcharges, deposits, sales tax): it
+ * moves the total on its own, so a quantity-only plan cannot reproduce it.
  */
-const buildTargetQuantities = (paidLines: CartItem[]): Map<string, number> | undefined => {
+const isUnmappedLine = (line: CartItem): boolean =>
+  !CART_LEVEL_TYPES.includes(line.productType) && (!LINE_ITEM_TYPES.includes(line.productType) || !('quantity' in line))
+
+/** Paid quantity per line reference, over the lines that map onto a line item. */
+const buildTargetQuantities = (paidLines: CartItem[]): Map<string, number> => {
   const targets = new Map<string, number>()
 
   for (const line of paidLines) {
-    if (CART_LEVEL_TYPES.includes(line.productType)) {
-      continue
-    }
-
+    // Cart-level and unmapped lines have no line item to plan against.
     if (!LINE_ITEM_TYPES.includes(line.productType) || !('quantity' in line)) {
-      return undefined
+      continue
     }
 
     const reference = String(line.reference)
@@ -139,6 +139,30 @@ const indexLineItemsByReference = (cart: Cart): Map<string, CartLineItem> | unde
   }
 
   return byReference
+}
+
+type QuantityPlan = { actions: CartUpdateAction[]; predictedGrossCentAmount: number }
+
+/** The quantity changes that bring every line item to its paid quantity, and the gross that would result. */
+const planQuantities = (cart: Cart, targets: Map<string, number>): QuantityPlan => {
+  const shippingGross = cart.shippingInfo?.taxedPrice?.totalGross.centAmount ?? 0
+  const actions: CartUpdateAction[] = []
+  let predictedGrossCentAmount = shippingGross
+
+  for (const item of cart.lineItems) {
+    const quantity = targets.get(lineItemReference(item)) ?? 0
+
+    // Gross unit price, guarded below: quantity times unit is exactly what CT will recompute.
+    predictedGrossCentAmount += item.price.value.centAmount * quantity
+
+    if (quantity !== item.quantity) {
+      actions.push({ action: 'changeLineItemQuantity', lineItemId: item.id, quantity })
+    }
+  }
+
+  const plan: QuantityPlan = { actions, predictedGrossCentAmount }
+
+  return plan
 }
 
 /**
@@ -167,28 +191,19 @@ export const planCartReconciliation = (cart: Cart, session: MediumBriqpayRespons
   }
 
   const targets = buildTargetQuantities(paidLines)
-  if (!targets) {
-    return refuse('session carries lines with no line-item equivalent')
-  }
 
   const byReference = indexLineItemsByReference(cart)
   if (!byReference) {
     return refuse('two cart line items share one reference')
   }
 
-  const shippingGross = cart.shippingInfo?.taxedPrice?.totalGross.centAmount ?? 0
-  const actions: CartUpdateAction[] = []
-  let predictedGrossCentAmount = shippingGross
+  const { actions, predictedGrossCentAmount } = planQuantities(cart, targets)
 
-  for (const item of cart.lineItems) {
-    const quantity = targets.get(lineItemReference(item)) ?? 0
-
-    // Gross unit price, guarded below: quantity times unit is exactly what CT will recompute.
-    predictedGrossCentAmount += item.price.value.centAmount * quantity
-
-    if (quantity !== item.quantity) {
-      actions.push({ action: 'changeLineItemQuantity', lineItemId: item.id, quantity })
-    }
+  // Before the no-actions answer: a cart that only lost a paid line needs no quantity change,
+  // and would otherwise be reported as holding the paid lines.
+  const missing = [...targets.keys()].find((reference) => !byReference.has(reference))
+  if (missing) {
+    return refuse('a paid line is no longer in the cart')
   }
 
   // Composition, not totals: a swap for an equally priced item leaves the cart total untouched
@@ -200,9 +215,10 @@ export const planCartReconciliation = (cart: Cart, session: MediumBriqpayRespons
       : refuse(`cart holds the paid lines but totals ${cartGross.centAmount}, paid was ${sessionAmounts.amountIncVat}`)
   }
 
-  const missing = [...targets.keys()].find((reference) => !byReference.has(reference))
-  if (missing) {
-    return refuse('a paid line is no longer in the cart')
+  // After the no-actions answer, so an undrifted cart with a discount line is not reported as
+  // one the connector refused to fix.
+  if (paidLines.some(isUnmappedLine)) {
+    return refuse('session carries lines with no line-item equivalent')
   }
 
   const blocker = findCartBlocker(cart)

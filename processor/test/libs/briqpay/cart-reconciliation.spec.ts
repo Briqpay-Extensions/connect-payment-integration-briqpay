@@ -208,6 +208,23 @@ describe('planCartReconciliation', () => {
     })
   })
 
+  // Modelled on the replicated removal: paid for a chair and a lamp, the lamp was removed
+  // afterwards. No quantity needs changing, so this must not read as an undrifted cart.
+  it('refuses a paid line that was removed when the remaining lines match', () => {
+    const cart = buildCart({
+      lineItems: [lineItem({ id: 'line-1', sku: 'TARM-034', quantity: 1, unitGross: CHAIR_UNIT_GROSS })],
+    })
+    const paidChairAndLamp = buildSession(
+      [paidChair, { ...paidChair, reference: 'LAMP-001', unitPriceIncVat: 39900, totalAmount: 39900 }, paidShipping],
+      CHAIR_UNIT_GROSS + 39900 + SHIPPING_GROSS,
+    )
+
+    expect(planCartReconciliation(cart, paidChairAndLamp)).toMatchObject({
+      status: 'refused',
+      reason: 'a paid line is no longer in the cart',
+    })
+  })
+
   it('refuses when two line items share one reference', () => {
     const cart = buildCart({
       lineItems: [
@@ -269,6 +286,26 @@ describe('planCartReconciliation', () => {
       status: 'refused',
       reason: 'cart holds the paid lines but totals 39900, paid was 45000',
     })
+  })
+
+  // Modelled on the replicated discounted checkout: an untouched cart whose session carries a
+  // total-discount line must read as undrifted, not as a cart the connector refused to fix.
+  it('reports an untouched cart as undrifted when the session carries a discount line', () => {
+    const cart = buildCart({
+      lineItems: [lineItem({ id: 'line-1', sku: 'TARM-034', quantity: 1, unitGross: CHAIR_UNIT_GROSS })],
+    })
+    const discountLine: CartItem = {
+      ...paidChair,
+      productType: ITEM_PRODUCT_TYPE.DISCOUNT,
+      reference: 'total-discount',
+    }
+
+    expect(
+      planCartReconciliation(
+        cart,
+        buildSession([paidChair, discountLine, paidShipping], CHAIR_UNIT_GROSS + SHIPPING_GROSS),
+      ),
+    ).toEqual({ status: 'refused', reason: 'cart already matches the paid lines' })
   })
 
   it('refuses when the session carries a line with no line-item equivalent', () => {
