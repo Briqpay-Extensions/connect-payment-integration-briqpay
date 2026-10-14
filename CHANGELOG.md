@@ -3,7 +3,7 @@
 All notable changes to the Briqpay commercetools Connect plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
-## [3.0.1] - 2026-10-13
+## [3.0.1] - 2026-10-14
 
 ### Added
 
@@ -28,6 +28,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
   vouch for). commercetools has no dry run for cart updates, so the resulting gross is computed
   first and the plan is only written when it equals the authorized amount to the cent; the cart is
   re-read and checked again afterwards.
+
+  Every Payment it creates logs one outcome. A cart that still matches what was paid logs
+  `Cart matches the paid lines, nothing to reconcile` at info, including a discounted cart, whose
+  session carries a discount line. A refusal logs `Not reconciling cart to the paid lines` at warn,
+  with the cause in `reason` - for a buyer who removed a paid item, `a paid line is no longer in the
+cart`. Alert on the warn line: it is the moment the money and the cart diverge, before Checkout
+  fails to create the Order.
 
 ### Fixed
 
