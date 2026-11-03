@@ -3,7 +3,7 @@
 All notable changes to the Briqpay commercetools Connect plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [3.0.2] - 2026-11-03
 
 ### Fixed
 
@@ -12,11 +12,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
   100 times too low. Currencies with more than two decimals are now rejected instead of being sent
   10 times too high. A Briqpay amount finer than the commercetools currency allows, such as a
   partial refund made in the Briqpay portal, is rounded to the nearest unit and logged as an error.
+- In a zero-decimal currency, a product or shipping line sent with a separate discount line no
+  longer misses commercetools' net by one unit: the connector splits the difference between the
+  two lines, so their net amounts add up to commercetools' net. Two-decimal currencies are unchanged.
 - The connector no longer requests `view_orders` and `view_types` when it fetches its commercetools
   token, and the permissions health check no longer requires `view_orders`. `manage_orders` and
   `manage_types` already grant read access, and commercetools rejects the whole token request
   when the API client lacks any requested scope, so an API client with only the manage scopes
   failed every `/config` call with `invalid_scope`.
+
+### Security
+
+- The processor and enabler now require Node `^24.22.1`, the release that fixes the Brotli decoder
+  RCE (CVE-2026-111497).
+- Updated `undici` (7.30.1), `fastify` (5.12.7), `vite` (7.3.7), `fast-uri` (3.1.9 / 4.2.3),
+  `glob` (14.0.3) and `minimatch` (11.0.3) to clear their advisories. Transitive dependencies
+  only, no API change. `deepmerge` keeps a low-severity advisory with no fixed release; only the
+  test runner uses it.
+
+### Upgrade notes
+
+- ISK, JPY and KRW checkout sessions created before the upgrade carry amounts 100 times too low.
+  The connector updates such a session when the buyer reloads checkout. If one is paid without
+  that update, the connector plans the payment at the amount Briqpay authorized and logs an amount
+  mismatch, so commercetools does not treat the order as paid in full.
+- Captures and refunds of ISK, JPY or KRW orders paid before the upgrade record in commercetools
+  the amount Briqpay actually moved, which was 100 times too low.
+- The commercetools API client no longer needs `view_orders` or `view_types`.
+- No configuration change and no commercetools change are required.
 
 ## [3.0.1] - 2026-10-14
 
