@@ -1,8 +1,11 @@
 {
   "name": "briqpay-commercetools-connector",
-  "version": "3.0.1",
+  "version": "3.0.2-beta.0",
   "description": "Briqpay payment connector for commercetools Connect",
   "main": "dist/server.js",
+  "engines": {
+    "node": "^24.22.1"
+  },
   "scripts": {
     "start": "node dist/main.js",
     "start:dev": "node_modules/.bin/nodemon -q dist/main.js",
@@ -64,7 +67,7 @@
   "overrides": {
     "path-to-regexp": "3.3.0",
     "jws": "3.2.3",
-    "glob": "11.1.0",
+    "glob": "14.0.3",
     "cookie": "1.1.1"
   }
 }

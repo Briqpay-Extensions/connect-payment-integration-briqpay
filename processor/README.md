@@ -221,7 +221,6 @@ The API client must have the following scopes:
 - **View**:
   - `view_key_value_documents` (View Custom Objects)
   - `view_states`
-  - `view_types`
   - `view_product_selections`
   - `view_attribute_groups`
   - `view_shopping_lists`
@@ -230,7 +229,6 @@ The API client must have the following scopes:
   - `view_discount_codes`
   - `view_products`
   - `view_cart_discounts`
-  - `view_orders`
   - `view_stores`
   - `view_tax_categories`
   - `view_order_edits`
@@ -238,7 +236,7 @@ The API client must have the following scopes:
 <img src="https://cdn.briqpay.com/static/images/api-client-ct.png" alt="commercetools API Client Scopes" style="width: 50%">
 
 ```text
-client_credentials&scope=manage_orders:{projectKey} view_states:{projectKey} view_types:{projectKey} view_product_selections:{projectKey} view_attribute_groups:{projectKey} view_shopping_lists:{projectKey} manage_sessions:{projectKey} manage_types:{projectKey} manage_checkout_payment_intents:{projectKey} view_categories:{projectKey} manage_key_value_documents:{projectKey} view_discount_codes:{projectKey} view_products:{projectKey} view_cart_discounts:{projectKey} manage_payments:{projectKey} view_orders:{projectKey} view_shipping_methods:{projectKey} view_stores:{projectKey} manage_checkout_transactions:{projectKey} view_tax_categories:{projectKey} view_order_edits:{projectKey}
+client_credentials&scope=manage_orders:{projectKey} view_states:{projectKey} view_product_selections:{projectKey} view_attribute_groups:{projectKey} view_shopping_lists:{projectKey} manage_sessions:{projectKey} manage_types:{projectKey} manage_checkout_payment_intents:{projectKey} view_categories:{projectKey} manage_key_value_documents:{projectKey} view_discount_codes:{projectKey} view_products:{projectKey} view_cart_discounts:{projectKey} manage_payments:{projectKey} view_shipping_methods:{projectKey} view_stores:{projectKey} manage_checkout_transactions:{projectKey} view_tax_categories:{projectKey} view_order_edits:{projectKey}
 ```
 
 ## API Endpoints

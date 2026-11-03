@@ -1,6 +1,6 @@
 import { describe, expect, test, jest, beforeEach, afterEach } from '@jest/globals'
 import { BriqpayOperationService } from '../../../src/services/briqpay/operation.service'
-import { mockGetCartResult } from '../../utils/mock-cart-data'
+import { mockGetCartResult, withCurrency } from '../../utils/mock-cart-data'
 import Briqpay from '../../../src/libs/briqpay/BriqpayService'
 import type {
   Cart,
@@ -9,6 +9,7 @@ import type {
   Payment,
 } from '@commercetools/connect-payments-sdk'
 import { briqpaySessionIdFieldName } from '../../../src/custom-types/custom-types'
+import { appLogger } from '../../../src/payment-sdk'
 
 jest.mock('../../../src/libs/commercetools/api-root')
 
@@ -86,8 +87,8 @@ const cartAtTotal = (centAmount: number): Cart =>
 // Mirrors the SDK: cart total inc. tax, less anything already paid.
 const paymentAmountFor = (cart: Cart, alreadyPaid = 0) => ({
   centAmount: (cart.taxedPrice?.totalGross?.centAmount ?? cart.totalPrice.centAmount) - alreadyPaid,
-  currencyCode: 'EUR',
-  fractionDigits: 2,
+  currencyCode: cart.totalPrice.currencyCode,
+  fractionDigits: cart.totalPrice.fractionDigits,
 })
 
 describe('BriqpayOperationService amount reconciliation', () => {
@@ -333,6 +334,24 @@ describe('BriqpayOperationService amount reconciliation', () => {
     } as never)
 
     expect(mockedBriqpay.capture.mock.calls[0][1].centAmount).toBe(recordedAmountFor('Charge'))
+  })
+
+  // Briqpay holds ISK x100; the payment must be planned in whole kronor, with no false mismatch log.
+  test('plans an undrifted ISK cart in ISK', async () => {
+    const cart = withCurrency(cartAtTotal(PRE_SHIPPING_TOTAL), 'ISK', 0)
+    mockedBriqpay.getSession.mockResolvedValue({
+      sessionId: SESSION_ID,
+      htmlSnippet: '',
+      data: { order: { amountIncVat: PRE_SHIPPING_TOTAL * 100, amountExVat: 0, currency: 'ISK' } },
+    } as never)
+
+    const payment = await paymentPlannedOn(cart)
+
+    expect(payment.amountPlanned.centAmount).toBe(PRE_SHIPPING_TOTAL)
+    expect(appLogger.error).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'Amount mismatch between Briqpay and commercetools',
+    )
   })
 
   // Both directions, so relaxing the guard to admit partials cannot also admit over-capturing.

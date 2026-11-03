@@ -19,6 +19,7 @@ import {
   transactionStatusToWebhookStatus,
 } from './utils'
 import { BriqpaySessionDataService } from './session-data.service'
+import { toBriqpayAmount, toCtCentAmount } from '../../libs/briqpay/amount-precision'
 import { logAmountMismatch, readBriqpaySessionAmounts } from '../../libs/briqpay/session-amounts'
 import { apiRoot } from '../../libs/commercetools/api-root'
 import { Order } from '@commercetools/platform-sdk'
@@ -218,11 +219,12 @@ export class BriqpayNotificationService {
     }
 
     const sessionAmounts = readBriqpaySessionAmounts(briqpaySession)
-    if (sessionAmounts.amountIncVat !== planned.centAmount || sessionAmounts.currency !== planned.currencyCode) {
+    const plannedAmount = toBriqpayAmount(planned.centAmount, planned.fractionDigits)
+    if (sessionAmounts.amountIncVat !== plannedAmount || sessionAmounts.currency !== planned.currencyCode) {
       logAmountMismatch({
         context: `webhook:${event}`,
         sessionId: briqpaySession.sessionId,
-        expected: { centAmount: planned.centAmount, currency: planned.currencyCode },
+        expected: { centAmount: plannedAmount, currency: planned.currencyCode },
         actual: sessionAmounts,
       })
     }
@@ -870,7 +872,10 @@ export class BriqpayNotificationService {
       transaction: {
         type: 'Authorization',
         interactionId: briqpaySessionId,
-        amount: { centAmount: amount, currencyCode: currency },
+        amount: {
+          centAmount: toCtCentAmount(amount, payments[0].amountPlanned.fractionDigits),
+          currencyCode: currency,
+        },
         state: 'Pending',
       },
     })
@@ -920,7 +925,10 @@ export class BriqpayNotificationService {
         transaction: {
           type: 'Authorization',
           interactionId: briqpaySessionId,
-          amount: { centAmount: amount, currencyCode: currency },
+          amount: {
+            centAmount: toCtCentAmount(amount, payments[0].amountPlanned.fractionDigits),
+            currencyCode: currency,
+          },
           state: 'Success',
         },
       })
@@ -962,7 +970,10 @@ export class BriqpayNotificationService {
       transaction: {
         type: 'Authorization',
         interactionId: briqpaySessionId,
-        amount: { centAmount: amount, currencyCode: currency },
+        amount: {
+          centAmount: toCtCentAmount(amount, payments[0].amountPlanned.fractionDigits),
+          currencyCode: currency,
+        },
         state: 'Failure',
       },
     })
@@ -1012,7 +1023,10 @@ export class BriqpayNotificationService {
       transaction: {
         type: 'CancelAuthorization',
         interactionId: briqpaySessionId,
-        amount: { centAmount: amount, currencyCode: currency },
+        amount: {
+          centAmount: toCtCentAmount(amount, payments[0].amountPlanned.fractionDigits),
+          currencyCode: currency,
+        },
         state: 'Success',
       },
     })
@@ -1064,7 +1078,7 @@ export class BriqpayNotificationService {
       transaction: {
         type: 'Charge',
         interactionId: briqpayCaptureId,
-        amount: { centAmount: amount, currencyCode: currency },
+        amount: { centAmount: toCtCentAmount(amount, payment[0].amountPlanned.fractionDigits), currencyCode: currency },
         state: 'Pending',
       },
     })
@@ -1109,7 +1123,7 @@ export class BriqpayNotificationService {
       transaction: {
         type: 'Charge',
         interactionId: briqpayCaptureId,
-        amount: { centAmount: amount, currencyCode: currency },
+        amount: { centAmount: toCtCentAmount(amount, payment[0].amountPlanned.fractionDigits), currencyCode: currency },
         state: 'Success',
       },
     })
@@ -1148,7 +1162,7 @@ export class BriqpayNotificationService {
       transaction: {
         type: 'Charge',
         interactionId: briqpayCaptureId,
-        amount: { centAmount: amount, currencyCode: currency },
+        amount: { centAmount: toCtCentAmount(amount, payment[0].amountPlanned.fractionDigits), currencyCode: currency },
         state: 'Failure',
       },
     })
@@ -1199,7 +1213,7 @@ export class BriqpayNotificationService {
       transaction: {
         type: 'Refund',
         interactionId: briqpayRefundId,
-        amount: { centAmount: amount, currencyCode: currency },
+        amount: { centAmount: toCtCentAmount(amount, payment[0].amountPlanned.fractionDigits), currencyCode: currency },
         state: 'Pending',
       },
     })
@@ -1241,7 +1255,7 @@ export class BriqpayNotificationService {
       transaction: {
         type: 'Refund',
         interactionId: briqpayRefundId,
-        amount: { centAmount: amount, currencyCode: currency },
+        amount: { centAmount: toCtCentAmount(amount, payment[0].amountPlanned.fractionDigits), currencyCode: currency },
         state: 'Success',
       },
     })
@@ -1280,7 +1294,7 @@ export class BriqpayNotificationService {
       transaction: {
         type: 'Refund',
         interactionId: briqpayRefundId,
-        amount: { centAmount: amount, currencyCode: currency },
+        amount: { centAmount: toCtCentAmount(amount, payment[0].amountPlanned.fractionDigits), currencyCode: currency },
         state: 'Failure',
       },
     })

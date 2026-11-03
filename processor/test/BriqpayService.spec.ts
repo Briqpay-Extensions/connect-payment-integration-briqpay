@@ -1,7 +1,7 @@
 import BriqpayService from '../src/libs/briqpay/BriqpayService'
 import { BRIQPAY_USER_AGENT } from '../src/libs/briqpay/user-agent'
 import { beforeEach, describe, expect, it, jest, afterEach } from '@jest/globals'
-import { mockGetCartResult } from './utils/mock-cart-data'
+import { mockGetCartResult, withCurrency } from './utils/mock-cart-data'
 import { BRIQPAY_DECISION } from '../src/dtos/briqpay-payment.dto'
 import {
   Cart,
@@ -10,9 +10,10 @@ import {
   DiscountedLineItemPortion,
   DiscountedLineItemPriceForQuantity,
   LineItem,
+  ShippingInfo,
 } from '@commercetools/platform-sdk'
 import { CartItem, ITEM_PRODUCT_TYPE, RegularCartItem } from '../src/services/types/briqpay-payment.type'
-import { SessionError } from '../src/libs/errors/briqpay-errors'
+import { SessionError, ValidationError } from '../src/libs/errors/briqpay-errors'
 import { apiRoot } from '../src/libs/commercetools/api-root'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
 import { createHash } from 'crypto'
@@ -2683,6 +2684,324 @@ describe('BriqpayService', () => {
           ).toBe(false)
         },
       )
+    })
+  })
+
+  describe('fractionDigits conversion', () => {
+    type SentOrder = { currency: string; amountIncVat: number; amountExVat: number; cart: RegularCartItem[] }
+
+    // Built in EUR; withCurrency then moves the whole cart to the currency under test
+    const money = (centAmount: number): CentPrecisionMoney => ({
+      type: 'centPrecision',
+      currencyCode: 'EUR',
+      centAmount,
+      fractionDigits: 2,
+    })
+
+    const vat24 = { name: '24% VAT', amount: 0.24, includedInPrice: true, country: 'IS' }
+
+    const amountOf = (cart: Cart): PaymentAmount => ({
+      centAmount: cart.totalPrice.centAmount,
+      currencyCode: cart.totalPrice.currencyCode,
+      fractionDigits: cart.totalPrice.fractionDigits,
+    })
+
+    const sentBody = async (cart: Cart): Promise<string> => {
+      global.fetch = jest
+        .fn()
+        .mockReturnValue(
+          Promise.resolve({ ok: true, json: async () => ({ sessionId: 'abc123' }) } as Response),
+        ) as typeof fetch
+      await BriqpayService.createSession(cart, amountOf(cart), 'localhost')
+      const [, init] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit]
+
+      return String(init.body)
+    }
+
+    const sentOrder = async (cart: Cart): Promise<SentOrder> => {
+      const sent: { data: { order: SentOrder } } = JSON.parse(await sentBody(cart))
+
+      return sent.data.order
+    }
+
+    const sentLine = (order: SentOrder, reference: string): RegularCartItem => {
+      const line = order.cart.find((item) => item.reference === reference)
+      if (!line) {
+        throw new Error(`no ${reference} line sent`)
+      }
+
+      return line
+    }
+
+    const net = (line: RegularCartItem) => line.totalAmount - line.totalVatAmount
+
+    type LineSpec = {
+      unitGross: number
+      quantity: number
+      totalGross: number
+      totalNet: number
+      discountedPricePerQuantity?: DiscountedLineItemPriceForQuantity[]
+    }
+
+    // One product line at 24% VAT included in the price, as Iceland charges it
+    const cartWithLine = (
+      { unitGross, quantity, totalGross, totalNet, discountedPricePerQuantity = [] }: LineSpec,
+      currencyCode = 'ISK',
+      fractionDigits = 0,
+    ): Cart => {
+      const base = mockGetCartResult()
+      const line: LineItem = {
+        ...base.lineItems[0],
+        quantity,
+        price: { ...base.lineItems[0].price, value: money(unitGross) },
+        totalPrice: money(totalGross),
+        taxRate: vat24,
+        taxedPrice: {
+          totalNet: money(totalNet),
+          totalGross: money(totalGross),
+          totalTax: money(totalGross - totalNet),
+          taxPortions: [],
+        },
+        discountedPricePerQuantity,
+      }
+
+      return withCurrency({ ...base, lineItems: [line], customLineItems: [] }, currencyCode, fractionDigits)
+    }
+
+    // One unit at unitGross, with the cart discount that priced it there, if any
+    const unitBucket = (unitGross: number, discountId?: string): DiscountedLineItemPriceForQuantity => ({
+      quantity: 1,
+      discountedPrice: {
+        value: money(unitGross),
+        includedDiscounts: discountId
+          ? [{ discount: { typeId: 'cart-discount', id: discountId }, discountedAmount: money(0) }]
+          : [],
+      },
+    })
+
+    const mockTenPercentOff = () => {
+      ;(apiRoot.cartDiscounts as jest.Mock<any>).mockReturnValue({
+        get: jest.fn<any>().mockReturnValue({
+          execute: jest.fn<any>().mockResolvedValue({
+            body: {
+              results: [{ id: 'pct-10', name: { en: 'Ten off' }, value: { type: 'relative', permyriad: 1000 } }],
+            },
+          }),
+        }),
+      })
+    }
+
+    const tenPercentOffCart = () =>
+      cartWithLine({
+        unitGross: 10000,
+        quantity: 1,
+        totalGross: 9000,
+        totalNet: 7258,
+        discountedPricePerQuantity: [unitBucket(9000, 'pct-10')],
+      })
+
+    // Two units priced differently keep the discount on a separate line
+    const splitDiscountCart = (currencyCode?: string, fractionDigits?: number) =>
+      cartWithLine(
+        {
+          unitGross: 1000,
+          quantity: 2,
+          totalGross: 1935,
+          totalNet: 1560,
+          discountedPricePerQuantity: [unitBucket(935, 'flat-65'), unitBucket(1000)],
+        },
+        currencyCode,
+        fractionDigits,
+      )
+
+    it('sends an ISK cart as the EUR payload with every amount x100', async () => {
+      const withTotalDiscount = (): Cart => ({
+        ...mockGetCartResult(),
+        discountOnTotalPrice: {
+          discountedAmount: money(1240),
+          discountedNetAmount: money(1000),
+          discountedGrossAmount: money(1240),
+          includedDiscounts: [],
+        },
+      })
+      const eur = await sentOrder(withTotalDiscount())
+      const isk = await sentOrder(withCurrency(withTotalDiscount(), 'ISK', 0))
+
+      expect(sentLine(isk, 'total-discount').unitPriceIncVat).toBe(-124000)
+      expect(isk).toEqual({
+        ...eur,
+        currency: 'ISK',
+        amountIncVat: eur.amountIncVat * 100,
+        amountExVat: eur.amountExVat * 100,
+        cart: eur.cart.map((line) => ({
+          ...line,
+          unitPrice: line.unitPrice * 100,
+          unitPriceIncVat: line.unitPriceIncVat * 100,
+          totalAmount: line.totalAmount * 100,
+          totalVatAmount: line.totalVatAmount * 100,
+          ...(line.unitDiscountAmountIncVat !== undefined && {
+            unitDiscountAmountIncVat: line.unitDiscountAmountIncVat * 100,
+          }),
+        })),
+      })
+    })
+
+    it.each(['JPY', 'KRW'])('converts a %s cart the same way', async (currencyCode) => {
+      const cart = withCurrency(mockGetCartResult(), currencyCode, 0)
+
+      const order = await sentOrder(cart)
+
+      expect(order.amountIncVat).toBe(cart.totalPrice.centAmount * 100)
+    })
+
+    it.each(['SEK', 'NOK', 'DKK'])('leaves a two-decimal %s cart unchanged', async (currencyCode) => {
+      const eur = await sentOrder(mockGetCartResult())
+
+      const order = await sentOrder(withCurrency(mockGetCartResult(), currencyCode, 2))
+
+      expect(order).toEqual({ ...eur, currency: currencyCode })
+    })
+
+    it('converts a high-precision EUR line price with the cart precision', async () => {
+      const cart = mockGetCartResult()
+      const highPrecision: Cart = JSON.parse(JSON.stringify(cart))
+      const { centAmount } = cart.lineItems[0].price.value
+      highPrecision.lineItems[0].price.value = {
+        type: 'highPrecision',
+        currencyCode: 'EUR',
+        centAmount,
+        preciseAmount: centAmount * 100,
+        fractionDigits: 4,
+      }
+
+      const centPrecisionBody = await sentBody(cart)
+      const highPrecisionBody = await sentBody(highPrecision)
+
+      expect(highPrecisionBody).toBe(centPrecisionBody)
+    })
+
+    it('divides ISK unit prices after converting', async () => {
+      const order = await sentOrder(cartWithLine({ unitGross: 1001, quantity: 40, totalGross: 40040, totalNet: 32290 }))
+
+      const line = sentLine(order, 'variant-sku-1')
+      expect(line).toMatchObject({
+        unitPrice: 80725,
+        unitPriceIncVat: 100100,
+        totalAmount: 4004000,
+        totalVatAmount: 775000,
+      })
+      // Briqpay's line tax rule: |totalVatAmount - unitPrice * quantity * taxRate| <= 100 + quantity
+      expect(Math.abs(775000 - 80725 * 40 * 0.24)).toBeLessThanOrEqual(100 + 40)
+    })
+
+    it('omits the discount rate when Briqpay precision disagrees', async () => {
+      mockTenPercentOff()
+
+      const line = sentLine(await sentOrder(tenPercentOffCart()), 'variant-sku-1')
+
+      expect(line).toMatchObject({
+        unitPrice: 806500,
+        unitDiscountAmountIncVat: 100000,
+        totalAmount: 900000,
+        totalVatAmount: 174200,
+      })
+      expect(line).not.toHaveProperty('discountPercentage')
+    })
+
+    it.each(['capture', 'refund'] as const)(
+      'keeps stored Briqpay discount amounts unconverted on ISK %s',
+      async (operation) => {
+        const storedLine: RegularCartItem = {
+          productType: ITEM_PRODUCT_TYPE.PHYSICAL,
+          reference: 'variant-sku-1',
+          name: 'lineitem-name-1',
+          quantity: 1,
+          quantityUnit: 'pc',
+          unitPrice: 806500,
+          unitPriceIncVat: 1000000,
+          taxRate: 2400,
+          unitDiscountAmountIncVat: 100000,
+          totalAmount: 900000,
+          totalVatAmount: 174200,
+        }
+        global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+          const body =
+            init.method === 'GET'
+              ? { sessionId: 'abc123', data: { order: { amountIncVat: 900000, currency: 'ISK', cart: [storedLine] } } }
+              : { captureId: 'cap123', refundId: 'ref123', status: 'approved' }
+
+          return Promise.resolve({ ok: true, json: async () => body } as Response)
+        }) as typeof fetch
+        const cart = tenPercentOffCart()
+        const amount = { centAmount: 9000, currencyCode: 'ISK' }
+
+        await (operation === 'capture'
+          ? BriqpayService.capture(cart, amount, 'abc123')
+          : BriqpayService.refund(cart, amount, 'abc123'))
+
+        const calls = (global.fetch as jest.Mock).mock.calls as Array<[string, RequestInit]>
+        const post = calls.find(([, init]) => init.method === 'POST')
+        if (!post) {
+          throw new Error('no POST sent')
+        }
+        const sent: { data: { order: SentOrder } } = JSON.parse(String(post[1].body))
+        expect(sent.data.order.amountIncVat).toBe(900000)
+        expect(sentLine(sent.data.order, 'variant-sku-1')).toMatchObject({ unitDiscountAmountIncVat: 100000 })
+      },
+    )
+
+    it('reports ISK amounts in Briqpay units from buildSessionUpdateRequest', async () => {
+      const cart = withCurrency(mockGetCartResult(), 'ISK', 0)
+
+      const request = await BriqpayService.buildSessionUpdateRequest(cart, amountOf(cart))
+
+      expect(request.amounts.amountIncVat).toBe(cart.totalPrice.centAmount * 100)
+    })
+
+    it('rejects a three-decimal currency before calling Briqpay', async () => {
+      const cart = withCurrency(mockGetCartResult(), 'BHD', 3)
+      global.fetch = jest.fn() as typeof fetch
+
+      await expect(BriqpayService.createSession(cart, amountOf(cart), 'localhost')).rejects.toThrow(ValidationError)
+      expect(global.fetch).not.toHaveBeenCalled()
+    })
+
+    it('balances an ISK product line and its discount line onto the commercetools net', async () => {
+      const order = await sentOrder(splitDiscountCart())
+
+      const product = sentLine(order, 'variant-sku-1')
+      const discount = sentLine(order, 'variant-sku-1-discount')
+      expect(product).toMatchObject({ unitPrice: 80625, totalAmount: 200000, totalVatAmount: 38750 })
+      expect(discount).toMatchObject({ unitPrice: -5250, totalAmount: -6500, totalVatAmount: -1250 })
+      // Unbalanced, the pair would be 161300 - 5200 = 156100
+      expect(net(product) + net(discount)).toBe(156000)
+    })
+
+    it('leaves the same pair unchanged in EUR', async () => {
+      const order = await sentOrder(splitDiscountCart('EUR', 2))
+
+      // Half a cent cannot be sent, so the pair keeps today's payload
+      expect(net(sentLine(order, 'variant-sku-1'))).toBe(1613)
+      expect(net(sentLine(order, 'variant-sku-1-discount'))).toBe(-52)
+    })
+
+    it('balances an ISK shipping line and its discount line onto the commercetools net', async () => {
+      const base = mockGetCartResult()
+      const shippingInfo: ShippingInfo = {
+        ...base.shippingInfo!,
+        price: money(2000),
+        discountedPrice: { value: money(1935), includedDiscounts: [] },
+        taxRate: vat24,
+        taxedPrice: { totalNet: money(1560), totalGross: money(1935), totalTax: money(375), taxPortions: [] },
+      }
+
+      const order = await sentOrder(withCurrency({ ...base, shippingInfo }, 'ISK', 0))
+
+      const shipping = sentLine(order, 'shippingfee')
+      const discount = sentLine(order, 'shipping-discount')
+      expect(shipping).toMatchObject({ unitPrice: 161250, totalAmount: 200000, totalVatAmount: 38750 })
+      expect(discount).toMatchObject({ unitPrice: -5250, totalAmount: -6500, totalVatAmount: -1250 })
+      expect(net(shipping) + net(discount)).toBe(156000)
     })
   })
 })

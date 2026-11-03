@@ -25,7 +25,6 @@ const connectScopes = [
   'manage_key_value_documents',
   // View scopes
   'view_states',
-  'view_types',
   'view_product_selections',
   'view_attribute_groups',
   'view_shopping_lists',
@@ -34,7 +33,6 @@ const connectScopes = [
   'view_discount_codes',
   'view_products',
   'view_cart_discounts',
-  'view_orders',
   'view_stores',
   'view_tax_categories',
   'view_order_edits',

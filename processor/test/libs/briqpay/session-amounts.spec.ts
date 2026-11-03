@@ -24,6 +24,7 @@ describe('resolvePlannedAmountFromSession', () => {
         cartId: 'cart-1',
         session: sessionWithOrder(39900, 'EUR'),
         cartAmount,
+        fractionDigits: 2,
       }),
     ).toEqual({ centAmount: 39900, currencyCode: 'EUR', fractionDigits: 2 })
   })
@@ -35,6 +36,7 @@ describe('resolvePlannedAmountFromSession', () => {
         cartId: 'cart-1',
         session: sessionWithOrder(99700, 'EUR'),
         cartAmount,
+        fractionDigits: 2,
       }),
     ).toBe(cartAmount)
   })
@@ -43,8 +45,37 @@ describe('resolvePlannedAmountFromSession', () => {
     ['a different currency', sessionWithOrder(39900, 'SEK')],
     ['no amount at all', sessionWithOrder(undefined, 'EUR')],
   ])('keeps the cart amount when the session carries %s', (_case, session) => {
-    expect(resolvePlannedAmountFromSession({ context: 'webhook', cartId: 'cart-1', session, cartAmount })).toBe(
-      cartAmount,
-    )
+    expect(
+      resolvePlannedAmountFromSession({ context: 'webhook', cartId: 'cart-1', session, cartAmount, fractionDigits: 2 }),
+    ).toBe(cartAmount)
+  })
+
+  // Briqpay holds ISK x100, commercetools holds whole kronor.
+  describe('a zero-decimal cart', () => {
+    const iskCart = { centAmount: 10000, currencyCode: 'ISK', fractionDigits: 0 }
+
+    it('keeps the cart amount when the session matches in Briqpay units', () => {
+      expect(
+        resolvePlannedAmountFromSession({
+          context: 'webhook',
+          cartId: 'cart-1',
+          session: sessionWithOrder(1000000, 'ISK'),
+          cartAmount: iskCart,
+          fractionDigits: 0,
+        }),
+      ).toBe(iskCart)
+    })
+
+    it('plans the authorized amount back in commercetools units', () => {
+      expect(
+        resolvePlannedAmountFromSession({
+          context: 'webhook',
+          cartId: 'cart-1',
+          session: sessionWithOrder(900000, 'ISK'),
+          cartAmount: iskCart,
+          fractionDigits: 0,
+        }),
+      ).toEqual({ centAmount: 9000, currencyCode: 'ISK', fractionDigits: 0 })
+    })
   })
 })

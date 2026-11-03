@@ -23,6 +23,7 @@ import { appLogger } from '../../payment-sdk'
 import { briqpayVariantIdFieldName } from '../../custom-types/custom-types'
 import { mapBriqpaySessionError } from './session-error-mapping'
 import { BriqpayOrderAmounts } from './session-amounts'
+import { toBriqpayAmount } from './amount-precision'
 import { sha256Hex } from '../utils/content-hash'
 import { BRIQPAY_USER_AGENT } from './user-agent'
 import { boundCartLineReference } from './cart-line-reference'
@@ -90,12 +91,17 @@ const getLocalizedName = (item: LineItem | CustomLineItem, locale: string): stri
   return item.productKey ?? item.productId ?? 'Item'
 }
 
-const createDiscountLineItem = (item: LineItem, localeName: string, taxRate: number): RegularCartItem => {
+const createDiscountLineItem = (
+  item: LineItem,
+  localeName: string,
+  taxRate: number,
+  fractionDigits: number,
+): RegularCartItem => {
   const quantity = item.quantity
   const grossUnit = item.price.value.centAmount
   const netUnit = item.taxedPrice?.totalNet
-    ? Math.round(item.taxedPrice.totalNet.centAmount / quantity)
-    : Math.round(grossUnit / (1 + (item.taxRate?.amount ?? 0)))
+    ? Math.round(toBriqpayAmount(item.taxedPrice.totalNet.centAmount, fractionDigits) / quantity)
+    : toBriqpayAmount(Math.round(grossUnit / (1 + (item.taxRate?.amount ?? 0))), fractionDigits)
 
   const discountLineItem: RegularCartItem = {
     productType: ITEM_PRODUCT_TYPE.DISCOUNT,
@@ -104,10 +110,10 @@ const createDiscountLineItem = (item: LineItem, localeName: string, taxRate: num
     quantity,
     quantityUnit: 'pc',
     unitPrice: netUnit,
-    unitPriceIncVat: grossUnit,
+    unitPriceIncVat: toBriqpayAmount(grossUnit, fractionDigits),
     taxRate,
-    totalAmount: item.taxedPrice?.totalGross?.centAmount ?? grossUnit * quantity,
-    totalVatAmount: item.taxedPrice?.totalTax?.centAmount ?? 0,
+    totalAmount: toBriqpayAmount(item.taxedPrice?.totalGross?.centAmount ?? grossUnit * quantity, fractionDigits),
+    totalVatAmount: toBriqpayAmount(item.taxedPrice?.totalTax?.centAmount ?? 0, fractionDigits),
     imageUrl: item.variant?.images?.[0]?.url,
   }
 
@@ -209,6 +215,7 @@ const getLineDiscount = (
   taxRate: number,
   discountMap: Map<string, CartDiscountInfo>,
   storedCart: CartItem[] | undefined,
+  fractionDigits: number,
 ): LineDiscount | undefined => {
   const taxedPrice = item.taxedPrice
   const discountGross = getLineDiscountGross(item)
@@ -229,7 +236,8 @@ const getLineDiscount = (
   const storedLine = storedCart?.find((line) => line.reference === reference)
   const storedAmount =
     storedLine && 'unitDiscountAmountIncVat' in storedLine ? storedLine.unitDiscountAmountIncVat : undefined
-  const unitDiscountAmountIncVat = storedAmount || discountGross / item.quantity
+  // The stored amount is already in Briqpay units
+  const unitDiscountAmountIncVat = storedAmount || toBriqpayAmount(discountGross, fractionDigits) / item.quantity
   const storedPercentage = storedLine && 'discountPercentage' in storedLine ? storedLine.discountPercentage : undefined
   const discountPercentage = storedCart
     ? storedPercentage
@@ -239,8 +247,8 @@ const getLineDiscount = (
     unitDiscountAmountIncVat,
     // Never 0: next to an amount, a 0 rate makes Briqpay reject later refunds
     ...(discountPercentage ? { discountPercentage } : {}),
-    totalAmount: taxedPrice.totalGross.centAmount,
-    totalVatAmount: taxedPrice.totalGross.centAmount - taxedPrice.totalNet.centAmount,
+    totalAmount: toBriqpayAmount(taxedPrice.totalGross.centAmount, fractionDigits),
+    totalVatAmount: toBriqpayAmount(taxedPrice.totalGross.centAmount - taxedPrice.totalNet.centAmount, fractionDigits),
   }
 
   return lineDiscount
@@ -257,6 +265,7 @@ const createRegularLineItem = (
   taxRate: number,
   discountMap: Map<string, CartDiscountInfo>,
   storedCart: CartItem[] | undefined,
+  fractionDigits: number,
 ): RegularCartItem => {
   const quantity = item.quantity
   const taxRateAmount = item.taxRate?.amount ?? 0
@@ -267,8 +276,8 @@ const createRegularLineItem = (
   const originalNetTotal = Math.round(originalGrossTotal / (1 + taxRateAmount))
   const originalVatTotal = originalGrossTotal - originalNetTotal
   const reference = boundCartLineReference(item.variant?.sku ?? item.id)
-  const unitPrice = Math.round(originalNetTotal / quantity)
-  const lineDiscount = getLineDiscount(item, reference, unitPrice, taxRate, discountMap, storedCart)
+  const unitPrice = Math.round(toBriqpayAmount(originalNetTotal, fractionDigits) / quantity)
+  const lineDiscount = getLineDiscount(item, reference, unitPrice, taxRate, discountMap, storedCart, fractionDigits)
 
   const regularLineItem: RegularCartItem = {
     productType: mapBriqpayProductType(item),
@@ -277,11 +286,11 @@ const createRegularLineItem = (
     quantity,
     quantityUnit: 'pc',
     unitPrice,
-    unitPriceIncVat: originalUnitGross,
+    unitPriceIncVat: toBriqpayAmount(originalUnitGross, fractionDigits),
     taxRate,
     ...(lineDiscount ?? {
-      totalAmount: originalGrossTotal,
-      totalVatAmount: originalVatTotal,
+      totalAmount: toBriqpayAmount(originalGrossTotal, fractionDigits),
+      totalVatAmount: toBriqpayAmount(originalVatTotal, fractionDigits),
     }),
     imageUrl: item.variant?.images?.[0]?.url,
   }
@@ -347,6 +356,7 @@ const createItemDiscountLineItem = (
   localeName: string,
   taxRate: number,
   discountMap: Map<string, CartDiscountInfo>,
+  fractionDigits: number,
 ): RegularCartItem | null => {
   // Check if item has per-quantity discounts
   if (!item.discountedPricePerQuantity?.length) {
@@ -385,15 +395,49 @@ const createItemDiscountLineItem = (
     name: discountName,
     quantity: 1, // Discount is always quantity 1 with total amount
     quantityUnit: 'pc',
-    unitPrice: -discountNetAmount, // Negative for discount
-    unitPriceIncVat: -discountGrossAmount, // Negative for discount
+    unitPrice: -toBriqpayAmount(discountNetAmount, fractionDigits), // Negative for discount
+    unitPriceIncVat: -toBriqpayAmount(discountGrossAmount, fractionDigits), // Negative for discount
     taxRate,
-    totalAmount: -discountGrossAmount, // Negative for discount
-    totalVatAmount: -discountVatAmount, // Negative for discount
+    totalAmount: -toBriqpayAmount(discountGrossAmount, fractionDigits), // Negative for discount
+    totalVatAmount: -toBriqpayAmount(discountVatAmount, fractionDigits), // Negative for discount
     imageUrl: undefined,
   }
 
   return itemDiscountLineItem
+}
+
+/**
+ * Moves a line and its separate discount line onto the net commercetools charges for the pair.
+ * Each is rounded to whole commercetools units on its own, so together they can miss that net by
+ * exactly one unit, and enough such pairs exceed Briqpay's order ex-VAT tolerance. Only a currency
+ * coarser than Briqpay can put half a unit on each line, and a larger gap is not rounding.
+ */
+const balanceSplitNet = (
+  line: RegularCartItem,
+  discountLine: RegularCartItem,
+  ctNet: number,
+  fractionDigits: number,
+): [RegularCartItem, RegularCartItem] => {
+  const netOf = (item: RegularCartItem): number => item.totalAmount - item.totalVatAmount
+  const gap = netOf(line) + netOf(discountLine) - toBriqpayAmount(ctNet, fractionDigits)
+  if (fractionDigits >= 2 || Math.abs(gap) !== toBriqpayAmount(1, fractionDigits)) {
+    return [line, discountLine]
+  }
+
+  const shift = (item: RegularCartItem): RegularCartItem => {
+    const net = netOf(item) - gap / 2
+    const shifted: RegularCartItem = {
+      ...item,
+      unitPrice: Math.round(net / item.quantity),
+      totalVatAmount: item.totalAmount - net,
+    }
+
+    return shifted
+  }
+
+  const balanced: [RegularCartItem, RegularCartItem] = [shift(line), shift(discountLine)]
+
+  return balanced
 }
 
 /**
@@ -404,14 +448,15 @@ const mapSingleLineItem = (
   fallbackLocale: string,
   discountMap: Map<string, CartDiscountInfo>,
   storedCart: CartItem[] | undefined,
+  fractionDigits: number,
 ): CartItem[] => {
   const localeName = getLocalizedName(item, fallbackLocale)
   const taxRate = Math.round((item.taxRate?.amount ?? 0) * 10000)
   const isDiscountLine = item.lineItemMode === 'GiftCard' || item.priceMode === 'Discounted'
 
   const cartItem = isDiscountLine
-    ? createDiscountLineItem(item, localeName, taxRate)
-    : createRegularLineItem(item, localeName, taxRate, discountMap, storedCart)
+    ? createDiscountLineItem(item, localeName, taxRate, fractionDigits)
+    : createRegularLineItem(item, localeName, taxRate, discountMap, storedCart, fractionDigits)
 
   appLogger.info(
     {
@@ -424,11 +469,16 @@ const mapSingleLineItem = (
     isDiscountLine ? 'Created discount line item:' : 'Created regular line item:',
   )
 
-  const result: CartItem[] = [cartItem]
-
   // A discount carried on the product line needs no separate discount line
   if (!isDiscountLine && cartItem.unitDiscountAmountIncVat === undefined) {
-    const itemDiscountLine = createItemDiscountLineItem(item, cartItem.reference, localeName, taxRate, discountMap)
+    const itemDiscountLine = createItemDiscountLineItem(
+      item,
+      cartItem.reference,
+      localeName,
+      taxRate,
+      discountMap,
+      fractionDigits,
+    )
     if (itemDiscountLine) {
       appLogger.info(
         {
@@ -439,9 +489,17 @@ const mapSingleLineItem = (
         },
         'Created per-item discount line:',
       )
-      result.push(itemDiscountLine)
+      const ctNet = item.taxedPrice?.totalNet?.centAmount
+      const lines: CartItem[] =
+        ctNet === undefined
+          ? [cartItem, itemDiscountLine]
+          : balanceSplitNet(cartItem, itemDiscountLine, ctNet, fractionDigits)
+
+      return lines
     }
   }
+
+  const result: CartItem[] = [cartItem]
 
   return result
 }
@@ -454,7 +512,11 @@ const mapSingleLineItem = (
  * items) since custom line items carry their own price and CT already bakes any
  * discounts into taxedPrice/totalPrice.
  */
-const mapCustomLineItem = (item: CustomLineItem, locale: string | undefined): RegularCartItem => {
+const mapCustomLineItem = (
+  item: CustomLineItem,
+  locale: string | undefined,
+  fractionDigits: number,
+): RegularCartItem => {
   const fallbackLocale = locale || 'en-GB'
   const localeName = getLocalizedName(item, fallbackLocale)
   const quantity = item.quantity
@@ -477,13 +539,13 @@ const mapCustomLineItem = (item: CustomLineItem, locale: string | undefined): Re
     name: localeName,
     quantity,
     quantityUnit: 'pc',
-    unitPrice: Math.round(netTotal / quantity),
+    unitPrice: Math.round(toBriqpayAmount(netTotal, fractionDigits) / quantity),
     // Derived from gross actuals, NOT item.money: money is the pre-discount list
     // price and is NET when taxRate.includedInPrice is false (US/B2B carts)
-    unitPriceIncVat: Math.round(grossTotal / quantity),
+    unitPriceIncVat: Math.round(toBriqpayAmount(grossTotal, fractionDigits) / quantity),
     taxRate: Math.round(taxRateAmount * 10000),
-    totalAmount: grossTotal,
-    totalVatAmount: vatTotal,
+    totalAmount: toBriqpayAmount(grossTotal, fractionDigits),
+    totalVatAmount: toBriqpayAmount(vatTotal, fractionDigits),
     imageUrl: undefined,
   }
 
@@ -495,12 +557,15 @@ const mapBriqpayCartItem = (
   customLineItems: CustomLineItem[],
   locale: string | undefined,
   discountMap: Map<string, CartDiscountInfo>,
+  fractionDigits: number,
   storedCart?: CartItem[],
 ): CartItem[] => {
   const fallbackLocale = locale || 'en-GB'
 
-  const mappedItems = lineItems.flatMap((item) => mapSingleLineItem(item, fallbackLocale, discountMap, storedCart))
-  const mappedCustomItems = customLineItems.map((item) => mapCustomLineItem(item, locale))
+  const mappedItems = lineItems.flatMap((item) =>
+    mapSingleLineItem(item, fallbackLocale, discountMap, storedCart, fractionDigits),
+  )
+  const mappedCustomItems = customLineItems.map((item) => mapCustomLineItem(item, locale, fractionDigits))
   const allItems = [...mappedItems, ...mappedCustomItems]
 
   appLogger.info(allItems, 'Final mapped items:')
@@ -753,6 +818,7 @@ class BriqpayService {
     )
     const vat = gross - net
     const taxRate = net !== 0 ? Math.round(((gross - net) / net) * 10000) : 0
+    const fractionDigits = ctCart.totalPrice.fractionDigits
 
     const discountIds = collectTotalDiscountIds(ctCart)
     const discountNames = discountIds.map((id) => discountMap.get(id)?.name).filter((name): name is string => !!name)
@@ -765,11 +831,11 @@ class BriqpayService {
       name: discountName,
       quantity: 1,
       quantityUnit: 'pc',
-      unitPrice: net, // ex VAT
-      unitPriceIncVat: gross, // incl VAT
+      unitPrice: toBriqpayAmount(net, fractionDigits), // ex VAT
+      unitPriceIncVat: toBriqpayAmount(gross, fractionDigits), // incl VAT
       taxRate,
-      totalAmount: gross,
-      totalVatAmount: vat,
+      totalAmount: toBriqpayAmount(gross, fractionDigits),
+      totalVatAmount: toBriqpayAmount(vat, fractionDigits),
       imageUrl: undefined,
     }
 
@@ -793,6 +859,7 @@ class BriqpayService {
     const shippingTaxRateAmount = ctCart.shippingInfo.taxRate?.amount ?? effectiveTaxRate
     const taxMultiplier = 1 + shippingTaxRateAmount
     const shippingTaxRate = Math.round(shippingTaxRateAmount * 10000)
+    const fractionDigits = ctCart.totalPrice.fractionDigits
 
     const originalShippingGross = ctCart.shippingInfo.price.centAmount
     const originalShippingNet = Math.round(originalShippingGross / taxMultiplier)
@@ -803,11 +870,11 @@ class BriqpayService {
       name: 'Shipping fee',
       quantity: 1,
       quantityUnit: 'pc',
-      unitPrice: originalShippingNet,
-      unitPriceIncVat: originalShippingGross,
+      unitPrice: toBriqpayAmount(originalShippingNet, fractionDigits),
+      unitPriceIncVat: toBriqpayAmount(originalShippingGross, fractionDigits),
       taxRate: shippingTaxRate,
-      totalAmount: originalShippingGross,
-      totalVatAmount: originalShippingGross - originalShippingNet,
+      totalAmount: toBriqpayAmount(originalShippingGross, fractionDigits),
+      totalVatAmount: toBriqpayAmount(originalShippingGross - originalShippingNet, fractionDigits),
     }
 
     appLogger.info({ shippingItem }, 'Added shipping fee item:')
@@ -827,11 +894,11 @@ class BriqpayService {
       name: 'Shipping Discount',
       quantity: 1,
       quantityUnit: 'pc',
-      unitPrice: -shippingDiscountNet, // Negative for discount
-      unitPriceIncVat: -shippingDiscountGross, // Negative for discount
+      unitPrice: -toBriqpayAmount(shippingDiscountNet, fractionDigits), // Negative for discount
+      unitPriceIncVat: -toBriqpayAmount(shippingDiscountGross, fractionDigits), // Negative for discount
       taxRate: shippingTaxRate,
-      totalAmount: -shippingDiscountGross, // Negative for discount
-      totalVatAmount: -shippingDiscountVat, // Negative for discount
+      totalAmount: -toBriqpayAmount(shippingDiscountGross, fractionDigits), // Negative for discount
+      totalVatAmount: -toBriqpayAmount(shippingDiscountVat, fractionDigits), // Negative for discount
       imageUrl: undefined,
     }
 
@@ -840,7 +907,13 @@ class BriqpayService {
       'Added shipping discount line item:',
     )
 
-    return [shippingItem, shippingDiscountItem]
+    const ctShippingNet = ctCart.shippingInfo.taxedPrice?.totalNet?.centAmount
+    const shippingItems: RegularCartItem[] =
+      ctShippingNet === undefined
+        ? [shippingItem, shippingDiscountItem]
+        : balanceSplitNet(shippingItem, shippingDiscountItem, ctShippingNet, fractionDigits)
+
+    return shippingItems
   }
 
   /**
@@ -857,8 +930,15 @@ class BriqpayService {
   private async buildSessionData(ctCart: Cart, amount: PaymentAmount | Money): Promise<BriqpaySessionData> {
     const effectiveTaxRate = await this.getEffectiveTaxRate(ctCart)
     const discountMap = await fetchDiscountsForCart(ctCart)
+    const fractionDigits = ctCart.totalPrice.fractionDigits
 
-    const cartItems = mapBriqpayCartItem(ctCart.lineItems, ctCart.customLineItems, ctCart.locale, discountMap)
+    const cartItems = mapBriqpayCartItem(
+      ctCart.lineItems,
+      ctCart.customLineItems,
+      ctCart.locale,
+      discountMap,
+      fractionDigits,
+    )
 
     const totalDiscountItem = this.buildTotalDiscountItem(ctCart, discountMap)
     if (totalDiscountItem) {
@@ -869,8 +949,11 @@ class BriqpayService {
     const sessionData: BriqpaySessionData = {
       order: {
         currency: amount.currencyCode,
-        amountIncVat: amount.centAmount,
-        amountExVat: ctCart.taxedPrice?.totalNet?.centAmount ?? Math.round(amount.centAmount / (1 + effectiveTaxRate)),
+        amountIncVat: toBriqpayAmount(amount.centAmount, fractionDigits),
+        amountExVat: toBriqpayAmount(
+          ctCart.taxedPrice?.totalNet?.centAmount ?? Math.round(amount.centAmount / (1 + effectiveTaxRate)),
+          fractionDigits,
+        ),
         cart: cartItems,
       },
       ...(ctCart.billingAddress && { billing: mapBriqpayAddress(ctCart.billingAddress) }),
@@ -1057,31 +1140,35 @@ class BriqpayService {
     amount: Omit<PaymentAmount, 'fractionDigits'>,
     sessionId: string,
   ): Promise<{ captureId: string; status: PaymentOutcome } & Record<string, unknown>> {
+    const fractionDigits = ctCart.totalPrice.fractionDigits
     const cartItems = mapBriqpayCartItem(
       ctCart.lineItems,
       ctCart.customLineItems,
       ctCart.locale,
       await fetchDiscountsForCart(ctCart),
+      fractionDigits,
       await this.getStoredCart(sessionId),
     )
     const briqpayCaptureRequest: Pick<CreateSessionRequestBody, 'data'> = {
       data: {
         order: {
           currency: amount.currencyCode,
-          amountIncVat: amount.centAmount,
-          amountExVat:
+          amountIncVat: toBriqpayAmount(amount.centAmount, fractionDigits),
+          amountExVat: toBriqpayAmount(
             ctCart.taxedPrice?.totalNet?.centAmount ??
-            (ctCart.lineItems.reduce(
-              (acc, item) =>
-                // totalNet is already the LINE total; only the unit price needs * quantity
-                acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.price.value.centAmount * item.quantity),
-              0,
-            ) +
-              ctCart.customLineItems.reduce(
-                (acc, item) => acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.totalPrice.centAmount),
+              (ctCart.lineItems.reduce(
+                (acc, item) =>
+                  // totalNet is already the LINE total; only the unit price needs * quantity
+                  acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.price.value.centAmount * item.quantity),
                 0,
-              ) ||
-              amount.centAmount),
+              ) +
+                ctCart.customLineItems.reduce(
+                  (acc, item) => acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.totalPrice.centAmount),
+                  0,
+                ) ||
+                amount.centAmount),
+            fractionDigits,
+          ),
           cart: cartItems,
         },
         // Temporary cast
@@ -1117,11 +1204,13 @@ class BriqpayService {
     sessionId: string,
     captureId?: string,
   ): Promise<{ refundId: string; status: PaymentOutcome } & Record<string, unknown>> {
+    const fractionDigits = ctCart.totalPrice.fractionDigits
     const cartItems = mapBriqpayCartItem(
       ctCart.lineItems,
       ctCart.customLineItems,
       ctCart.locale,
       await fetchDiscountsForCart(ctCart),
+      fractionDigits,
       await this.getStoredCart(sessionId),
     )
     const briqpayRefundRequest: Pick<CreateSessionRequestBody, 'data'> & { captureId?: string } = {
@@ -1129,20 +1218,22 @@ class BriqpayService {
       data: {
         order: {
           currency: ctCart.totalPrice.currencyCode,
-          amountIncVat: amount.centAmount,
-          amountExVat:
+          amountIncVat: toBriqpayAmount(amount.centAmount, fractionDigits),
+          amountExVat: toBriqpayAmount(
             ctCart.taxedPrice?.totalNet?.centAmount ??
-            (ctCart.lineItems.reduce(
-              (acc, item) =>
-                // totalNet is already the LINE total; only the unit price needs * quantity
-                acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.price.value.centAmount * item.quantity),
-              0,
-            ) +
-              ctCart.customLineItems.reduce(
-                (acc, item) => acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.totalPrice.centAmount),
+              (ctCart.lineItems.reduce(
+                (acc, item) =>
+                  // totalNet is already the LINE total; only the unit price needs * quantity
+                  acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.price.value.centAmount * item.quantity),
                 0,
-              ) ||
-              amount.centAmount),
+              ) +
+                ctCart.customLineItems.reduce(
+                  (acc, item) => acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.totalPrice.centAmount),
+                  0,
+                ) ||
+                amount.centAmount),
+            fractionDigits,
+          ),
           cart: cartItems,
         },
       },

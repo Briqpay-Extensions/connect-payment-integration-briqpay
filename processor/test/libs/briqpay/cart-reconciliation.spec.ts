@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@jest/globals'
 import { Cart } from '@commercetools/connect-payments-sdk'
 import { planCartReconciliation } from '../../../src/libs/briqpay/cart-reconciliation'
+import { withCurrency } from '../../utils/mock-cart-data'
 import {
   CartItem,
   ITEM_PRODUCT_TYPE,
@@ -172,6 +173,15 @@ describe('planCartReconciliation', () => {
     const result = planCartReconciliation(buildCart(), session)
 
     expect(result).toMatchObject({ status: 'plan', predictedGrossCentAmount: 39900 })
+  })
+
+  it('plans an ISK cart back to the paid lines', () => {
+    const session = buildSession([paidChair, paidShipping], (CHAIR_UNIT_GROSS + SHIPPING_GROSS) * 100)
+    session.data = { ...session.data, order: { ...session.data?.order, currency: 'ISK' } }
+
+    const result = planCartReconciliation(withCurrency(buildCart(), 'ISK', 0), session)
+
+    expect(result).toMatchObject({ status: 'plan', predictedGrossCentAmount: CHAIR_UNIT_GROSS + SHIPPING_GROSS })
   })
 
   // Everything below must leave the cart alone: a half-corrected cart is worse than a flagged one.

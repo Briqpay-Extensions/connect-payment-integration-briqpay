@@ -1,8 +1,11 @@
 {
   "name": "enabler",
   "private": true,
-  "version": "3.0.1",
+  "version": "3.0.2-beta.0",
   "type": "module",
+  "engines": {
+    "node": "^24.22.1"
+  },
   "scripts": {
     "dev": "npm run build && vite --port 3000",
     "start": "serve public -l 8080 --cors",
@@ -37,8 +40,8 @@
     "vite-plugin-css-injected-by-js": "3.5.2"
   },
   "overrides": {
-    "minimatch": "5.1.8",
-    "glob": "11.1.0",
+    "minimatch": "11.0.3",
+    "glob": "14.0.3",
     "compression": "1.8.2"
   }
 }

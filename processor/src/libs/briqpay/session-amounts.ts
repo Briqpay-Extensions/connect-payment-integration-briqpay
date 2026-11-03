@@ -1,5 +1,6 @@
 import { MediumBriqpayResponse } from '../../services/types/briqpay-payment.type'
 import { appLogger } from '../../payment-sdk'
+import { toBriqpayAmount, toCtCentAmount } from './amount-precision'
 
 export type BriqpayOrderAmounts = {
   currency: string
@@ -73,11 +74,14 @@ export const resolvePlannedAmountFromSession = <T extends { centAmount: number; 
   cartId: string
   session: MediumBriqpayResponse
   cartAmount: T
+  fractionDigits: number
 }): T => {
-  const { context, cartId, session, cartAmount } = fields
+  const { context, cartId, session, cartAmount, fractionDigits } = fields
   const sessionAmounts = readBriqpaySessionAmounts(session)
+  // The session holds Briqpay units; lift the cart side to match, which is exact.
+  const cartBriqpayAmount = toBriqpayAmount(cartAmount.centAmount, fractionDigits)
 
-  if (sessionAmounts.amountIncVat === cartAmount.centAmount && sessionAmounts.currency === cartAmount.currencyCode) {
+  if (sessionAmounts.amountIncVat === cartBriqpayAmount && sessionAmounts.currency === cartAmount.currencyCode) {
     return cartAmount
   }
 
@@ -85,7 +89,7 @@ export const resolvePlannedAmountFromSession = <T extends { centAmount: number; 
     context,
     cartId,
     sessionId: session.sessionId,
-    expected: { centAmount: cartAmount.centAmount, currency: cartAmount.currencyCode },
+    expected: { centAmount: cartBriqpayAmount, currency: cartAmount.currencyCode },
     actual: sessionAmounts,
   })
 
@@ -93,7 +97,7 @@ export const resolvePlannedAmountFromSession = <T extends { centAmount: number; 
     return cartAmount
   }
 
-  const authorized: T = { ...cartAmount, centAmount: sessionAmounts.amountIncVat }
+  const authorized: T = { ...cartAmount, centAmount: toCtCentAmount(sessionAmounts.amountIncVat, fractionDigits) }
 
   return authorized
 }

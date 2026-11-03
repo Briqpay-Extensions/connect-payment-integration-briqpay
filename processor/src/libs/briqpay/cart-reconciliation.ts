@@ -7,6 +7,7 @@ import {
   TRANSACTION_STATUS,
 } from '../../services/types/briqpay-payment.type'
 import { boundCartLineReference } from './cart-line-reference'
+import { toBriqpayAmount } from './amount-precision'
 import { readBriqpaySessionAmounts } from './session-amounts'
 
 type CartLineItem = Cart['lineItems'][number]
@@ -185,6 +186,8 @@ export const planCartReconciliation = (cart: Cart, session: MediumBriqpayRespons
     return refuse('session carries no amount in the cart currency')
   }
 
+  const cartBriqpayGross = toBriqpayAmount(cartGross.centAmount, cartGross.fractionDigits)
+
   const paidLines = readPaidLines(session)
   if (!paidLines) {
     return refuse('session carries no cart lines')
@@ -210,9 +213,9 @@ export const planCartReconciliation = (cart: Cart, session: MediumBriqpayRespons
   // and still ships something nobody paid for. This runs before the blockers so an ordinary,
   // undrifted cart is answered here rather than flagged for a discount code it is allowed to have.
   if (actions.length === 0) {
-    return cartGross.centAmount === sessionAmounts.amountIncVat
+    return cartBriqpayGross === sessionAmounts.amountIncVat
       ? refuse(UNDRIFTED)
-      : refuse(`cart holds the paid lines but totals ${cartGross.centAmount}, paid was ${sessionAmounts.amountIncVat}`)
+      : refuse(`cart holds the paid lines but totals ${cartBriqpayGross}, paid was ${sessionAmounts.amountIncVat}`)
   }
 
   // After the no-actions answer, so an undrifted cart with a discount line is not reported as
@@ -226,8 +229,9 @@ export const planCartReconciliation = (cart: Cart, session: MediumBriqpayRespons
     return refuse(blocker)
   }
 
-  if (predictedGrossCentAmount !== sessionAmounts.amountIncVat) {
-    return refuse(`reconciled cart would total ${predictedGrossCentAmount}, paid was ${sessionAmounts.amountIncVat}`)
+  const predictedBriqpayGross = toBriqpayAmount(predictedGrossCentAmount, cartGross.fractionDigits)
+  if (predictedBriqpayGross !== sessionAmounts.amountIncVat) {
+    return refuse(`reconciled cart would total ${predictedBriqpayGross}, paid was ${sessionAmounts.amountIncVat}`)
   }
 
   const plan: CartReconciliationResult = { status: 'plan', actions, predictedGrossCentAmount }

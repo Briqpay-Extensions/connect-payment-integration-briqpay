@@ -39,6 +39,20 @@ export const mockGetCartResult = (): Cart => {
   }
 }
 
+/**
+ * The cart in another currency: every money object takes the code and precision, keeping its
+ * centAmount, so one fixture exercises every currency without a parallel copy per currency.
+ */
+export const withCurrency = (cart: Cart, currencyCode: string, fractionDigits: number): Cart => {
+  const converted: Cart = JSON.parse(JSON.stringify(cart), (_key, value) =>
+    typeof value === 'object' && value !== null && 'centAmount' in value && 'currencyCode' in value
+      ? { ...value, currencyCode, fractionDigits }
+      : value,
+  )
+
+  return converted
+}
+
 const lineItem: LineItem = {
   id: 'lineitem-id-1',
   productId: 'product-id-1',

@@ -117,9 +117,11 @@ describe('BriqpayNotificationService selector (order vs cart staging)', () => {
 // data. session_status carries no transaction data, so it is the one event that returns
 // early without ingesting.
 describe('BriqpayNotificationService ingest-on-every-webhook', () => {
-  const mockFindPayments = jest.fn<() => Promise<Array<{ id: string; transactions: unknown[] }>>>()
+  const mockFindPayments =
+    jest.fn<() => Promise<Array<{ id: string; transactions: unknown[]; amountPlanned?: unknown }>>>()
   const mockUpdatePayment = jest.fn<() => Promise<unknown>>()
-  const mockEnsurePayment = jest.fn<() => Promise<{ id: string; transactions: unknown[] } | null>>()
+  const mockEnsurePayment =
+    jest.fn<() => Promise<{ id: string; transactions: unknown[]; amountPlanned?: unknown } | null>>()
 
   let service: BriqpayNotificationService
 
@@ -133,7 +135,9 @@ describe('BriqpayNotificationService ingest-on-every-webhook', () => {
     jest.clearAllMocks()
     mockIngestToOrder.mockResolvedValue(undefined)
     mockIngestToCart.mockResolvedValue(undefined)
-    mockFindPayments.mockResolvedValue([{ id: 'pay-1', transactions: [] }])
+    mockFindPayments.mockResolvedValue([
+      { id: 'pay-1', transactions: [], amountPlanned: { centAmount: 500, currencyCode: 'EUR', fractionDigits: 2 } },
+    ])
     mockUpdatePayment.mockResolvedValue({})
     mockEnsurePayment.mockResolvedValue(null)
     mockOrdersGet.mockResolvedValue({ body: { results: [{ id: 'order-1', version: 1 }] } })
@@ -174,7 +178,11 @@ describe('BriqpayNotificationService ingest-on-every-webhook', () => {
 
   test('capture_status with a partial amount logs no mismatch (payload carries the capture amount, not the order total)', async () => {
     mockFindPayments.mockResolvedValue([
-      { id: 'pay-1', transactions: [], amountPlanned: { centAmount: 500, currencyCode: 'EUR' } } as never,
+      {
+        id: 'pay-1',
+        transactions: [],
+        amountPlanned: { centAmount: 500, currencyCode: 'EUR', fractionDigits: 2 },
+      } as never,
     ])
 
     await notify({
@@ -194,7 +202,11 @@ describe('BriqpayNotificationService ingest-on-every-webhook', () => {
 
   test('refund_status with a partial amount logs no mismatch (payload carries the refund amount, not the order total)', async () => {
     mockFindPayments.mockResolvedValue([
-      { id: 'pay-1', transactions: [], amountPlanned: { centAmount: 500, currencyCode: 'EUR' } } as never,
+      {
+        id: 'pay-1',
+        transactions: [],
+        amountPlanned: { centAmount: 500, currencyCode: 'EUR', fractionDigits: 2 },
+      } as never,
     ])
 
     await notify({
@@ -214,7 +226,11 @@ describe('BriqpayNotificationService ingest-on-every-webhook', () => {
 
   test('order_status with a diverging amount still logs the mismatch', async () => {
     mockFindPayments.mockResolvedValue([
-      { id: 'pay-1', transactions: [], amountPlanned: { centAmount: 500, currencyCode: 'EUR' } } as never,
+      {
+        id: 'pay-1',
+        transactions: [],
+        amountPlanned: { centAmount: 500, currencyCode: 'EUR', fractionDigits: 2 },
+      } as never,
     ])
 
     await notify({
@@ -227,6 +243,78 @@ describe('BriqpayNotificationService ingest-on-every-webhook', () => {
     await flushIngestion()
 
     expect(appLogger.error).toHaveBeenCalledWith(expect.anything(), 'Amount mismatch between Briqpay and commercetools')
+  })
+
+  const iskPayment = {
+    id: 'pay-1',
+    transactions: [],
+    amountPlanned: { centAmount: 10000, currencyCode: 'ISK', fractionDigits: 0 },
+  } as never
+
+  test('writes an ISK capture back in ISK', async () => {
+    mockFindPayments.mockResolvedValue([iskPayment])
+
+    await notify({
+      event: BRIQPAY_WEBHOOK_EVENT.CAPTURE_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.APPROVED,
+      sessionId: 'sess-1',
+      captureId: 'cap-1',
+      capture: {
+        captureId: 'cap-1',
+        transactionId: 'tx-1',
+        status: 'approved',
+        amountIncVat: 1000000,
+        currency: 'ISK',
+      },
+    })
+    await flushIngestion()
+
+    expect(mockUpdatePayment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transaction: expect.objectContaining({ amount: { centAmount: 10000, currencyCode: 'ISK' } }),
+      }),
+    )
+  })
+
+  test('rounds a non-whole ISK refund and logs it', async () => {
+    mockFindPayments.mockResolvedValue([iskPayment])
+
+    await notify({
+      event: BRIQPAY_WEBHOOK_EVENT.REFUND_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.APPROVED,
+      sessionId: 'sess-1',
+      refundId: 'ref-1',
+      refund: { refundId: 'ref-1', transactionId: 'tx-1', status: 'approved', amountIncVat: 5050, currency: 'ISK' },
+    })
+    await flushIngestion()
+
+    expect(mockUpdatePayment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transaction: expect.objectContaining({ amount: { centAmount: 51, currencyCode: 'ISK' } }),
+      }),
+    )
+    expect(appLogger.error).toHaveBeenCalledWith(
+      expect.anything(),
+      'Briqpay amount is finer than the commercetools currency, rounded',
+    )
+  })
+
+  test('logs no mismatch for a matching ISK order_status', async () => {
+    mockFindPayments.mockResolvedValue([iskPayment])
+
+    await notify({
+      event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
+      status: BRIQPAY_WEBHOOK_STATUS.APPROVED,
+      sessionId: 'sess-1',
+      cartId: 'cart-1',
+      transaction: { transactionId: 'tx-1', status: 'approved', amountIncVat: 1000000, currency: 'ISK' },
+    })
+    await flushIngestion()
+
+    expect(appLogger.error).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'Amount mismatch between Briqpay and commercetools',
+    )
   })
 
   test('order_status approved ingests even when the handler early-returns (auth already Success)', async () => {
@@ -390,7 +478,11 @@ describe('BriqpayNotificationService ingest-on-every-webhook', () => {
     // threaded to ingestion. If it were NOT threaded, ingestOnWebhook would re-query (a 2nd
     // findPayments call) and - since that also returns [] - skip ingestion entirely.
     mockFindPayments.mockResolvedValue([])
-    mockEnsurePayment.mockResolvedValue({ id: 'ensured-pay', transactions: [] })
+    mockEnsurePayment.mockResolvedValue({
+      id: 'ensured-pay',
+      transactions: [],
+      amountPlanned: { centAmount: 500, currencyCode: 'EUR', fractionDigits: 2 },
+    })
 
     await notify({
       event: BRIQPAY_WEBHOOK_EVENT.ORDER_STATUS,
@@ -413,7 +505,8 @@ describe('BriqpayNotificationService ingest-on-every-webhook', () => {
 // the fields it knows and ignore the rest, never rejecting on the unknown ones. notifyRaw feeds
 // an untyped object, exactly as the parsed HTTP body arrives.
 describe('BriqpayNotificationService tolerates unknown extra fields from Briqpay', () => {
-  const mockFindPayments = jest.fn<() => Promise<Array<{ id: string; transactions: unknown[] }>>>()
+  const mockFindPayments =
+    jest.fn<() => Promise<Array<{ id: string; transactions: unknown[]; amountPlanned?: unknown }>>>()
   const mockUpdatePayment = jest.fn<(opts: unknown) => Promise<unknown>>()
   const mockEnsurePayment = jest.fn<() => Promise<{ id: string; transactions: unknown[] } | null>>()
 
@@ -428,7 +521,9 @@ describe('BriqpayNotificationService tolerates unknown extra fields from Briqpay
     jest.clearAllMocks()
     mockIngestToOrder.mockResolvedValue(undefined)
     mockIngestToCart.mockResolvedValue(undefined)
-    mockFindPayments.mockResolvedValue([{ id: 'pay-1', transactions: [] }])
+    mockFindPayments.mockResolvedValue([
+      { id: 'pay-1', transactions: [], amountPlanned: { centAmount: 500, currencyCode: 'EUR', fractionDigits: 2 } },
+    ])
     mockUpdatePayment.mockResolvedValue({})
     mockEnsurePayment.mockResolvedValue(null)
     mockOrdersGet.mockResolvedValue({ body: { results: [{ id: 'order-1', version: 1 }] } })
@@ -557,7 +652,8 @@ describe('BriqpayNotificationService tolerates unknown extra fields from Briqpay
 // per-payment home for the value that previously only existed as an order custom field. The SDK
 // only writes the fields while they are empty, so retries cannot flip an already-set value.
 describe('BriqpayNotificationService writes PSP method info on authorization events', () => {
-  const mockFindPayments = jest.fn<() => Promise<Array<{ id: string; transactions: unknown[] }>>>()
+  const mockFindPayments =
+    jest.fn<() => Promise<Array<{ id: string; transactions: unknown[]; amountPlanned?: unknown }>>>()
   const mockUpdatePayment = jest.fn<(opts: unknown) => Promise<unknown>>()
   const mockEnsurePayment = jest.fn<() => Promise<{ id: string; transactions: unknown[] } | null>>()
 
@@ -570,7 +666,9 @@ describe('BriqpayNotificationService writes PSP method info on authorization eve
     jest.clearAllMocks()
     mockIngestToOrder.mockResolvedValue(undefined)
     mockIngestToCart.mockResolvedValue(undefined)
-    mockFindPayments.mockResolvedValue([{ id: 'pay-1', transactions: [] }])
+    mockFindPayments.mockResolvedValue([
+      { id: 'pay-1', transactions: [], amountPlanned: { centAmount: 500, currencyCode: 'EUR', fractionDigits: 2 } },
+    ])
     mockUpdatePayment.mockResolvedValue({})
     mockEnsurePayment.mockResolvedValue(null)
     mockOrdersGet.mockResolvedValue({ body: { results: [{ id: 'order-1', version: 1 }] } })

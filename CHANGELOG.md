@@ -3,6 +3,21 @@
 All notable changes to the Briqpay commercetools Connect plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Amounts are now converted between commercetools' `fractionDigits` and Briqpay's two decimals in
+  both directions. Zero-decimal currencies such as ISK, JPY and KRW were previously sent to Briqpay
+  100 times too low. Currencies with more than two decimals are now rejected instead of being sent
+  10 times too high. A Briqpay amount finer than the commercetools currency allows, such as a
+  partial refund made in the Briqpay portal, is rounded to the nearest unit and logged as an error.
+- The connector no longer requests `view_orders` and `view_types` when it fetches its commercetools
+  token, and the permissions health check no longer requires `view_orders`. `manage_orders` and
+  `manage_types` already grant read access, and commercetools rejects the whole token request
+  when the API client lacks any requested scope, so an API client with only the manage scopes
+  failed every `/config` call with `invalid_scope`.
+
 ## [3.0.1] - 2026-10-14
 
 ### Added

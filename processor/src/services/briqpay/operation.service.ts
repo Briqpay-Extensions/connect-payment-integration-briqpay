@@ -40,6 +40,7 @@ import {
   readBriqpaySessionAmounts,
   resolvePlannedAmountFromSession,
 } from '../../libs/briqpay/session-amounts'
+import { toBriqpayAmount } from '../../libs/briqpay/amount-precision'
 import { planCartReconciliation, readPaidLines, UNDRIFTED } from '../../libs/briqpay/cart-reconciliation'
 import CtConflictRetry from '../../libs/commercetools/ct-conflict-retry'
 import { briqpayCheckoutTransactionItemIdFieldName, briqpaySessionIdFieldName } from '../../custom-types/custom-types'
@@ -478,12 +479,14 @@ export class BriqpayOperationService {
 
     const sessionAmounts = readBriqpaySessionAmounts(briqpaySession)
 
-    if (sessionAmounts.amountIncVat !== cartAmountIncVat || sessionAmounts.currency !== cartCurrency) {
+    const cartBriqpayAmountIncVat = toBriqpayAmount(cartAmountIncVat, ctCart.totalPrice.fractionDigits)
+
+    if (sessionAmounts.amountIncVat !== cartBriqpayAmountIncVat || sessionAmounts.currency !== cartCurrency) {
       logAmountMismatch({
         context: 'createPayment',
         cartId: ctCart.id,
         sessionId: briqpaySessionId,
-        expected: { amountIncVat: cartAmountIncVat, currency: cartCurrency },
+        expected: { amountIncVat: cartBriqpayAmountIncVat, currency: cartCurrency },
         actual: sessionAmounts,
       })
     }
@@ -549,6 +552,7 @@ export class BriqpayOperationService {
       cartId: ctCart.id,
       session: briqpaySession,
       cartAmount: amountPlanned,
+      fractionDigits: ctCart.totalPrice.fractionDigits,
     })
 
     // Dedupe: a CT Cart with multiple Payments blocks Checkout's automatic Order creation.
@@ -763,7 +767,13 @@ export class BriqpayOperationService {
     const cart = await this.reconcileCartToSession(ctCart, briqpaySession, context)
     const cartAmount = await this.ctCartService.getPaymentAmount({ cart })
 
-    return resolvePlannedAmountFromSession({ context, cartId: cart.id, session: briqpaySession, cartAmount })
+    return resolvePlannedAmountFromSession({
+      context,
+      cartId: cart.id,
+      session: briqpaySession,
+      cartAmount,
+      fractionDigits: cart.totalPrice.fractionDigits,
+    })
   }
 
   /**
@@ -796,8 +806,10 @@ export class BriqpayOperationService {
 
       const sessionAmounts = readBriqpaySessionAmounts(paidSession)
       const reconciledGross = reconciled.taxedPrice?.totalGross ?? reconciled.totalPrice
+      // Same unit as paidAmount, so the two logged figures can be compared at a glance
+      const cartGross = toBriqpayAmount(reconciledGross.centAmount, reconciledGross.fractionDigits)
 
-      if (applied && reconciledGross.centAmount !== sessionAmounts.amountIncVat) {
+      if (applied && cartGross !== sessionAmounts.amountIncVat) {
         // The plan is only written when its predicted total matches, so landing here means the
         // cart changed again between the plan and the write.
         appLogger.error(
@@ -805,7 +817,7 @@ export class BriqpayOperationService {
             cartId: ctCart.id,
             briqpaySessionId: briqpaySession.sessionId,
             context,
-            cartGross: reconciledGross.centAmount,
+            cartGross,
             paidAmount: sessionAmounts.amountIncVat,
           },
           'Cart still does not match the paid amount after reconciliation',
