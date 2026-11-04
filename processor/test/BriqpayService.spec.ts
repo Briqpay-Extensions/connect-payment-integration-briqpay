@@ -470,6 +470,76 @@ describe('BriqpayService', () => {
     })
   })
 
+  // The connector sends a single percentage discount as rate and amount, and Briqpay then matches a
+  // refund line on the rate too: leaving it out fails as "mismatching discount".
+  it('should keep a rate that agrees with its amount', async () => {
+    const percentageDiscountedLine: RegularCartItem = {
+      ...capturedLine,
+      discountPercentage: 2000,
+      unitDiscountAmountIncVat: 3144,
+      totalAmount: 12574,
+      totalVatAmount: 2515,
+    }
+
+    let requestBody: unknown = null
+    global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+      requestBody = JSON.parse(init.body)
+
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ refundId: 'refund123', status: 'approved' }),
+      } as Response)
+    }) as typeof fetch
+
+    await BriqpayService.refund('abc123', {
+      ...capturedOrder(),
+      amountIncVat: 12574,
+      amountExVat: 10059,
+      cart: [percentageDiscountedLine],
+    })
+
+    expect(requestBody).toEqual({
+      captureId: 'cap-1',
+      data: { order: { currency: 'EUR', amountIncVat: 12574, amountExVat: 10059, cart: [percentageDiscountedLine] } },
+    })
+  })
+
+  // Briqpay accepts a rate within 1 of the amount: 50.00 off 1299.00 at 19% derives 385, which implies 50.01.
+  it('should keep a derived rate Briqpay accepts next to the amount', async () => {
+    const derivedWithinOneLine: RegularCartItem = {
+      ...capturedLine,
+      unitPrice: 109160,
+      unitPriceIncVat: 129900,
+      taxRate: 1900,
+      discountPercentage: 385,
+      unitDiscountAmountIncVat: 5000,
+      totalAmount: 124900,
+      totalVatAmount: 19942,
+    }
+
+    let requestBody: unknown = null
+    global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+      requestBody = JSON.parse(init.body)
+
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ refundId: 'refund123', status: 'approved' }),
+      } as Response)
+    }) as typeof fetch
+
+    await BriqpayService.refund('abc123', {
+      ...capturedOrder(),
+      amountIncVat: 124900,
+      amountExVat: 104958,
+      cart: [derivedWithinOneLine],
+    })
+
+    expect(requestBody).toEqual({
+      captureId: 'cap-1',
+      data: { order: { currency: 'EUR', amountIncVat: 124900, amountExVat: 104958, cart: [derivedWithinOneLine] } },
+    })
+  })
+
   it('should reject a capture with no lines without calling Briqpay', async () => {
     global.fetch = jest.fn() as typeof fetch
 

@@ -159,6 +159,11 @@ const getLineDiscountGross = (item: LineItem): number => {
   return discountGrossAmount
 }
 
+/** Briqpay rejects a discount rate whose amount is more than 1 off what this returns. */
+const getRateImpliedDiscountAmount = (unitPrice: number, taxRate: number, permyriad: number): number =>
+  // Briqpay's own expression and rounding for the amount a rate implies
+  Math.round(Number((unitPrice * (taxRate / 10000 + 1) * (permyriad / 10000)).toFixed(7)))
+
 /**
  * The rate to send next to the amount: only for exactly one percentage discount, since
  * stacked discounts compound and no single rate matches their amount. Briqpay rejects a
@@ -181,8 +186,7 @@ const getDiscountPercentage = (
     return undefined
   }
 
-  // Briqpay's own expression and rounding for the amount a rate implies
-  const expectedAmount = Math.round(Number((unitPrice * (taxRate / 10000 + 1) * (permyriad / 10000)).toFixed(7)))
+  const expectedAmount = getRateImpliedDiscountAmount(unitPrice, taxRate, permyriad)
   if (Math.abs(unitDiscountAmountIncVat - expectedAmount) > 1) {
     appLogger.info(
       {
@@ -1200,9 +1204,9 @@ class BriqpayService {
   }
 
   /**
-   * Refunds one capture in full by sending it back exactly as Briqpay holds it. Briqpay validates a
-   * refund line by line against that capture, so lines rebuilt from a commercetools cart the shopper
-   * changed after paying would be refused.
+   * Refunds one capture in full by sending it back as Briqpay holds it, less any discount rate Briqpay
+   * would itself refuse. Briqpay validates a refund line by line against that capture, so lines rebuilt
+   * from a commercetools cart the shopper changed after paying would be refused.
    */
   async refund(
     sessionId: string,
@@ -1214,10 +1218,19 @@ class BriqpayService {
       throw new SessionError(`Briqpay capture ${captureId} has no lines to refund`)
     }
 
-    // Briqpay stores a rate it derived from an amount discount, rounded to a whole basis point, and
-    // refuses a refund whose rate is more than 1 off that amount. The amount alone is what it matches.
+    // Briqpay stores the rate it derives from an amount discount rounded to a whole basis point, and refuses
+    // a refund whose rate is more than 1 off the amount; such a line is matched on the amount alone. A rate
+    // the connector sent agrees with its amount, and Briqpay matches the refund on it, so it must stay.
     const refundCart = cart.map((line): CartItem => {
-      if (!('unitDiscountAmountIncVat' in line) || !line.unitDiscountAmountIncVat) {
+      if (
+        !('unitDiscountAmountIncVat' in line) ||
+        !line.unitDiscountAmountIncVat ||
+        !line.discountPercentage ||
+        Math.abs(
+          line.unitDiscountAmountIncVat -
+            getRateImpliedDiscountAmount(line.unitPrice, line.taxRate, line.discountPercentage),
+        ) <= 1
+      ) {
         return line
       }
       const { discountPercentage: _derived, ...amountOnly } = line

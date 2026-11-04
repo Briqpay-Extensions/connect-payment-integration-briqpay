@@ -26,8 +26,8 @@ const truncateUtf8 = (value: string, maxBytes: number): string => {
 /**
  * Caps a cart line reference, keeping a head a merchant can still recognise and
  * appending a hash of the full original value. Pure and deterministic: session
- * create/update, capture and refund all rebuild their lines from the same cart and
- * must produce the same reference for the same line.
+ * create/update and capture all rebuild their lines from the same cart and must
+ * produce the same reference for the same line.
  */
 export const boundCartLineReference = (reference: string): string => {
   if (Buffer.byteLength(reference, 'utf8') <= MAX_BYTES) {
