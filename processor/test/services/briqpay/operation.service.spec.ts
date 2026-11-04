@@ -1,4 +1,5 @@
 import { describe, expect, test, jest, beforeEach, afterEach } from '@jest/globals'
+import { ErrorInvalidOperation } from '@commercetools/connect-payments-sdk'
 import { BriqpayOperationService } from '../../../src/services/briqpay/operation.service'
 import { mockGetCartResult, withCurrency } from '../../utils/mock-cart-data'
 import Briqpay from '../../../src/libs/briqpay/BriqpayService'
@@ -388,16 +389,6 @@ describe('BriqpayOperationService amount reconciliation', () => {
       expect(mockedBriqpay.refund).not.toHaveBeenCalled()
     })
 
-    test('finds the capture on the deprecated top-level captures', async () => {
-      const payment = await paymentPlannedOn(cartAtTotal(POST_SHIPPING_TOTAL))
-      const capture = captureOf(POST_SHIPPING_TOTAL)
-      mockedBriqpay.getSession.mockResolvedValue({ sessionId: SESSION_ID, captures: [capture] } as never)
-
-      await refundOf(payment, POST_SHIPPING_TOTAL)
-
-      expect(mockedBriqpay.refund).toHaveBeenCalledWith(SESSION_ID, capture)
-    })
-
     // Briqpay holds ISK x100; commercetools holds whole kronor.
     test('refunds an ISK capture requested in whole kronor', async () => {
       const ISK_TOTAL = 12345
@@ -657,6 +648,75 @@ describe('BriqpayOperationService amount reconciliation', () => {
 
       expect(mockedBriqpay.refund).not.toHaveBeenCalled()
       expect(mockedBriqpay.cancel).not.toHaveBeenCalled()
+    })
+
+    // Briqpay will not cancel an order with a capture on it, so the uncaptured rest stays authorized.
+    test('refunds a partial capture and logs that the rest is still authorized', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      const capture = captureOf(5000)
+      mockedBriqpay.getSession.mockResolvedValue({
+        sessionId: SESSION_ID,
+        data: { captures: [capture], order: { amountIncVat: PRE_SHIPPING_TOTAL, currency: 'EUR' } },
+      } as never)
+
+      await reverse(payment)
+
+      expect(mockedBriqpay.refund).toHaveBeenCalledWith(SESSION_ID, capture)
+      expect(appLogger.error).toHaveBeenCalledWith(
+        {
+          sessionId: SESSION_ID,
+          captureId: CAPTURE_ID,
+          capturedAmountIncVat: 5000,
+          authorizedAmountIncVat: PRE_SHIPPING_TOTAL,
+        },
+        'Reversed a partial Briqpay capture; the rest is still authorized',
+      )
+    })
+
+    test('does not flag a capture of the full authorized amount', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      const capture = captureOf(PRE_SHIPPING_TOTAL)
+      mockedBriqpay.getSession.mockResolvedValue({
+        sessionId: SESSION_ID,
+        data: { captures: [capture], order: { amountIncVat: PRE_SHIPPING_TOTAL, currency: 'EUR' } },
+      } as never)
+
+      await reverse(payment)
+
+      expect(mockedBriqpay.refund).toHaveBeenCalledWith(SESSION_ID, capture)
+      expect(appLogger.error).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'Reversed a partial Briqpay capture; the rest is still authorized',
+      )
+    })
+
+    test('refuses as an invalid operation when the Authorization carries no Briqpay session id', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      const withoutSessionId: Payment = {
+        ...payment,
+        transactions: payment.transactions.map((tx) => ({ ...tx, interactionId: undefined })),
+      }
+      mockedBriqpay.getSession.mockClear()
+
+      await expect(reverse(withoutSessionId)).rejects.toThrow(ErrorInvalidOperation)
+      expect(mockedBriqpay.getSession).not.toHaveBeenCalled()
+    })
+
+    test('logs the refund without the shopper details Briqpay returns', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      mockedBriqpay.getSession.mockResolvedValue(sessionHolding([captureOf(PRE_SHIPPING_TOTAL)]) as never)
+      mockedBriqpay.refund.mockResolvedValue({
+        refundId: 'briqpay-refund-1',
+        status: 'approved',
+        email: 'shopper@example.com',
+      } as never)
+
+      await reverse(payment)
+
+      expect(appLogger.info).toHaveBeenCalledWith(
+        { sessionId: SESSION_ID, refundId: 'briqpay-refund-1', status: 'approved' },
+        'Briqpay refund completed',
+      )
     })
 
     // Briqpay holds ISK x100; the Refund is recorded in whole kronor.

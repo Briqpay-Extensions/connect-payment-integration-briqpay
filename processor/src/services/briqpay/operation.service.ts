@@ -264,7 +264,10 @@ export class BriqpayOperationService {
     appLogger.info({ sessionId: briqpaySessionId, captureId: capture.captureId }, 'Calling Briqpay refund API')
     // `amount` is the capture's own amount; commercetools cannot correct the recorded Refund afterwards.
     const briqpayRefund = await Briqpay.refund(briqpaySessionId, capture)
-    appLogger.info({ briqpayRefund }, 'Briqpay refund completed')
+    appLogger.info(
+      { sessionId: briqpaySessionId, refundId: briqpayRefund.refundId, status: briqpayRefund.status },
+      'Briqpay refund completed',
+    )
 
     // Update pending authorization to success if needed
     const pendingAuthorization = payment.transactions.find(
@@ -329,13 +332,13 @@ export class BriqpayOperationService {
 
     const briqpaySessionId = request.payment.transactions.find((tx) => tx.type === 'Authorization')?.interactionId
     if (!briqpaySessionId) {
-      throw new SessionError('Cannot find briqpay session for reversal')
+      throw new ErrorInvalidOperation('Cannot find briqpay session for reversal')
     }
 
     // Briqpay decides, not the commercetools transactions: a capture can land before its webhook does,
     // and Briqpay refuses to cancel an order with any capture on it, even a rejected one.
     const briqpaySession = await Briqpay.getSession(briqpaySessionId)
-    const allCaptures = briqpaySession.data?.captures ?? briqpaySession.captures ?? []
+    const allCaptures = briqpaySession.data?.captures ?? []
 
     if (allCaptures.length === 0) {
       return this.cancelPayment({ payment: request.payment })
@@ -369,7 +372,23 @@ export class BriqpayOperationService {
       currencyCode: capture.currency,
     }
 
-    return this.refundCapture(request.payment, briqpaySessionId, capture, amount)
+    const response = await this.refundCapture(request.payment, briqpaySessionId, capture, amount)
+
+    // Briqpay will not cancel an order with a capture on it, so the uncaptured rest stays authorized.
+    const authorizedAmountIncVat = readBriqpaySessionAmounts(briqpaySession).amountIncVat
+    if (typeof authorizedAmountIncVat === 'number' && capture.amountIncVat < authorizedAmountIncVat) {
+      appLogger.error(
+        {
+          sessionId: briqpaySessionId,
+          captureId: capture.captureId,
+          capturedAmountIncVat: capture.amountIncVat,
+          authorizedAmountIncVat,
+        },
+        'Reversed a partial Briqpay capture; the rest is still authorized',
+      )
+    }
+
+    return response
   }
 
   public async createPayment(request: CreatePaymentRequest): Promise<PaymentResponseSchemaDTO> {

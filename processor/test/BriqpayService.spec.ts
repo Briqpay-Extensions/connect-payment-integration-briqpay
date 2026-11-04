@@ -429,6 +429,47 @@ describe('BriqpayService', () => {
     expect(response).toEqual(mockRefundResponse)
   })
 
+  // Briqpay stores the rate it derives from an amount discount, rounded to a whole basis point, and
+  // refuses a refund whose rate is more than 1 off that amount: 100.00 off 1299.00 derives 770.
+  it('should leave the derived rate out of a line with an amount discount', async () => {
+    const amountDiscountedLine: RegularCartItem = {
+      ...capturedLine,
+      unitPrice: 103920,
+      unitPriceIncVat: 129900,
+      discountPercentage: 770,
+      unitDiscountAmountIncVat: 10000,
+      totalAmount: 119900,
+      totalVatAmount: 23980,
+    }
+    // An undiscounted line as GET session returns it
+    const undiscountedLine: RegularCartItem = { ...capturedLine, discountPercentage: 0, unitDiscountAmountIncVat: 0 }
+
+    let requestBody: unknown = null
+    global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+      requestBody = JSON.parse(init.body)
+
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ refundId: 'refund123', status: 'approved' }),
+      } as Response)
+    }) as typeof fetch
+
+    await BriqpayService.refund('abc123', {
+      ...capturedOrder(),
+      amountIncVat: 135618,
+      amountExVat: 108494,
+      cart: [amountDiscountedLine, undiscountedLine],
+    })
+
+    const { discountPercentage: _derived, ...amountOnly } = amountDiscountedLine
+    expect(requestBody).toEqual({
+      captureId: 'cap-1',
+      data: {
+        order: { currency: 'EUR', amountIncVat: 135618, amountExVat: 108494, cart: [amountOnly, undiscountedLine] },
+      },
+    })
+  })
+
   it('should reject a capture with no lines without calling Briqpay', async () => {
     global.fetch = jest.fn() as typeof fetch
 

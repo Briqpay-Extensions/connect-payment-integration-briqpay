@@ -16,8 +16,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
   not reached commercetools yet. It refuses a capture that is still pending, a payment with more
   than one capture, or one whose captures were all rejected or cancelled (Briqpay will not cancel
   those), and logs `Cannot reverse the Briqpay payment automatically` at error level.
+- A reversal of a partial capture refunds that capture and logs
+  `Reversed a partial Briqpay capture; the rest is still authorized` at error level, since Briqpay
+  will not cancel an order with a capture on it.
+- A reversal of a payment whose Authorization carries no Briqpay session id is refused with 400,
+  not 500.
 - `refundPayment` now expects the full captured amount, in the capture's currency, instead of the
   cart total, and no longer reads the cart.
+- The `Briqpay refund completed` log no longer includes the shopper's email from Briqpay's response.
 
 ## [3.0.2] - 2026-11-03
 

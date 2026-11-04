@@ -1214,9 +1214,20 @@ class BriqpayService {
       throw new SessionError(`Briqpay capture ${captureId} has no lines to refund`)
     }
 
+    // Briqpay stores a rate it derived from an amount discount, rounded to a whole basis point, and
+    // refuses a refund whose rate is more than 1 off that amount. The amount alone is what it matches.
+    const refundCart = cart.map((line): CartItem => {
+      if (!('unitDiscountAmountIncVat' in line) || !line.unitDiscountAmountIncVat) {
+        return line
+      }
+      const { discountPercentage: _derived, ...amountOnly } = line
+
+      return amountOnly
+    })
+
     const briqpayRefundRequest: Pick<CreateSessionRequestBody, 'data'> & { captureId: string } = {
       captureId,
-      data: { order: { currency, amountIncVat, amountExVat, cart } },
+      data: { order: { currency, amountIncVat, amountExVat, cart: refundCart } },
     }
     return fetch(`${this.baseUrl}/session/${sessionId}/order/refund`, {
       method: 'POST',
