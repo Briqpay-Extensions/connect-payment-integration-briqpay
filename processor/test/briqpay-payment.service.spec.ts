@@ -9,6 +9,7 @@ import { mockGetCartResult } from './utils/mock-cart-data'
 import * as Config from '../src/config/config'
 import {
   BriqpayPaymentServiceOptions,
+  ITEM_PRODUCT_TYPE,
   ORDER_STATUS,
   TRANSACTION_STATUS,
   MediumBriqpayResponse,
@@ -31,6 +32,37 @@ import { SessionError, SessionNotFoundError, UpstreamError } from '../src/libs/e
 import { Cart, Payment, Transaction, TransactionState, TransactionType } from '@commercetools/connect-payments-sdk'
 import { TransactionDraftDTO } from '../src/dtos/operations/transaction.dto'
 import { briqpaySessionIdCustomType } from '../src/custom-types/custom-types'
+
+/** A session holding one approved capture, the shape a refund echoes back to Briqpay. */
+const sessionWithCapture = (captureId: string, amountIncVat: number): MediumBriqpayResponse => ({
+  sessionId: 'abc123',
+  htmlSnippet: '<div></div>',
+  data: {
+    captures: [
+      {
+        captureId,
+        status: TRANSACTION_STATUS.APPROVED,
+        amountIncVat,
+        amountExVat: Math.round(amountIncVat / 1.25),
+        currency: 'EUR',
+        cart: [
+          {
+            productType: ITEM_PRODUCT_TYPE.PHYSICAL,
+            reference: 'variant-sku-1',
+            name: 'lineitem-name-1',
+            quantity: 1,
+            quantityUnit: 'pc',
+            unitPrice: Math.round(amountIncVat / 1.25),
+            unitPriceIncVat: amountIncVat,
+            taxRate: 2500,
+            totalAmount: amountIncVat,
+            totalVatAmount: amountIncVat - Math.round(amountIncVat / 1.25),
+          },
+        ],
+      },
+    ],
+  },
+})
 
 /**
  * Helper to create a mock Briqpay session response with the appropriate moduleStatus.
@@ -805,6 +837,8 @@ describe('briqpay-payment.service', () => {
   })
 
   test('refundPayment', async () => {
+    jest.spyOn(Briqpay, 'getSession').mockResolvedValue(sessionWithCapture('test-capture-id', 119000))
+
     const modifyPaymentOpts: ModifyPayment = {
       paymentId: 'dummy-paymentId',
       data: {
@@ -2722,6 +2756,8 @@ describe('briqpay-payment.service', () => {
     })
 
     test('it should successfully revert transaction via refund when payment is captured', async () => {
+      jest.spyOn(Briqpay, 'getSession').mockResolvedValue(sessionWithCapture('test-capture-id', 119000))
+
       const modifyPaymentOpts: ModifyPayment = {
         paymentId: 'dummy-paymentId',
         data: {
@@ -4690,17 +4726,15 @@ describe('briqpay-payment.service', () => {
     ).rejects.toThrow('Already refunded')
   })
 
-  test('calls refundPayment() with incorrect amounts', async () => {
-    jest.spyOn(paymentSDK.ctCartService, 'getCartByPaymentId').mockResolvedValueOnce({
-      taxedPrice: {
-        totalGross: {
-          centAmount: 452243,
-        },
-      },
-    } as any)
+  test('calls refundPayment() with an amount other than the capture', async () => {
+    jest.spyOn(Briqpay, 'getSession').mockResolvedValue(sessionWithCapture('bcd123', 452243))
 
     await expect(
       briqpayPaymentService.refundPayment({
+        amount: {
+          centAmount: 123123,
+          currencyCode: 'EUR',
+        },
         payment: {
           transactions: [
             {
@@ -4715,26 +4749,22 @@ describe('briqpay-payment.service', () => {
           ],
           amountPlanned: {
             centAmount: 123123,
+            fractionDigits: 2,
           },
         },
       } as any),
-    ).rejects.toThrow('Commerce Tools does not support partial refunds towards all payment providers')
+    ).rejects.toThrow('Only a full refund of the captured amount is supported')
   })
 
   test('calls refundPayment() with pending authorization', async () => {
-    jest.spyOn(paymentSDK.ctCartService, 'getCartByPaymentId').mockResolvedValueOnce({
-      taxedPrice: {
-        totalGross: {
-          centAmount: 123123,
-        },
-      },
-    } as any)
+    jest.spyOn(Briqpay, 'getSession').mockResolvedValue(sessionWithCapture('bcd123', 123123))
 
     const updateSpy = jest.spyOn(paymentSDK.ctPaymentService, 'updatePayment').mockResolvedValueOnce({} as any)
 
     await briqpayPaymentService.refundPayment({
       amount: {
         centAmount: 123123,
+        currencyCode: 'EUR',
       },
       payment: {
         transactions: [
@@ -4751,6 +4781,7 @@ describe('briqpay-payment.service', () => {
         ],
         amountPlanned: {
           centAmount: 123123,
+          fractionDigits: 2,
         },
       },
     } as any)

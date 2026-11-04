@@ -10,6 +10,7 @@ import type {
 } from '@commercetools/connect-payments-sdk'
 import { briqpaySessionIdFieldName } from '../../../src/custom-types/custom-types'
 import { appLogger } from '../../../src/payment-sdk'
+import { BriqpayCapture, ITEM_PRODUCT_TYPE, TRANSACTION_STATUS } from '../../../src/services/types/briqpay-payment.type'
 
 jest.mock('../../../src/libs/commercetools/api-root')
 
@@ -183,6 +184,32 @@ describe('BriqpayOperationService amount reconciliation', () => {
       },
     ] as unknown as Payment['transactions']
 
+  // A capture as GET session returns it: amounts plus the lines Briqpay validates a refund against.
+  const captureOf = (amountIncVat: number, overrides: Partial<BriqpayCapture> = {}): BriqpayCapture => ({
+    captureId: CAPTURE_ID,
+    status: TRANSACTION_STATUS.APPROVED,
+    amountIncVat,
+    amountExVat: Math.round(amountIncVat / 1.25),
+    currency: 'EUR',
+    cart: [
+      {
+        productType: ITEM_PRODUCT_TYPE.PHYSICAL,
+        reference: 'PIA-350482',
+        name: 'Raven Airborne Evo MX Helmet',
+        quantity: 1,
+        quantityUnit: 'pc',
+        unitPrice: Math.round(amountIncVat / 1.25),
+        unitPriceIncVat: amountIncVat,
+        taxRate: 2500,
+        totalAmount: amountIncVat,
+        totalVatAmount: amountIncVat - Math.round(amountIncVat / 1.25),
+      },
+    ],
+    ...overrides,
+  })
+
+  const sessionHolding = (captures: BriqpayCapture[]) => ({ sessionId: SESSION_ID, data: { captures } })
+
   const recordedAmountFor = (type: string) =>
     jest
       .mocked(mockCtPaymentService.updatePayment)
@@ -303,19 +330,101 @@ describe('BriqpayOperationService amount reconciliation', () => {
     expect(mockedBriqpay.capture.mock.calls[0][1].centAmount).toBe(recordedAmountFor('Charge'))
   })
 
-  test('refunds the amount it records in commercetools', async () => {
-    const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
-    jest.mocked(mockCtCartService.getCartByPaymentId).mockResolvedValue(cartAtTotal(POST_SHIPPING_TOTAL))
+  describe('refundPayment refunds the capture its Charge points to', () => {
+    const refundOf = (payment: Payment, centAmount: number, currencyCode = 'EUR') =>
+      operationService.refundPayment({
+        payment: {
+          ...payment,
+          transactions: [...payment.transactions, ...chargeWrittenByCapture(centAmount)],
+        },
+        amount: { centAmount, currencyCode },
+      } as never)
 
-    await operationService.refundPayment({
-      payment: {
-        ...payment,
-        transactions: [...payment.transactions, ...chargeWrittenByCapture(POST_SHIPPING_TOTAL)],
-      },
-      amount: { centAmount: POST_SHIPPING_TOTAL, currencyCode: 'EUR' },
-    } as never)
+    test('refunds the capture, not a since-drifted cart', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      const capture = captureOf(PRE_SHIPPING_TOTAL)
+      mockedBriqpay.getSession.mockResolvedValue(sessionHolding([capture]) as never)
+      // The shopper changed the cart after paying
+      jest.mocked(mockCtCartService.getCartByPaymentId).mockResolvedValue(cartAtTotal(POST_SHIPPING_TOTAL))
 
-    expect(mockedBriqpay.refund.mock.calls[0][1].centAmount).toBe(recordedAmountFor('Refund'))
+      await refundOf(payment, PRE_SHIPPING_TOTAL)
+
+      expect(mockedBriqpay.refund).toHaveBeenCalledWith(SESSION_ID, capture)
+      expect(mockCtCartService.getCartByPaymentId).not.toHaveBeenCalled()
+      expect(recordedAmountFor('Refund')).toBe(PRE_SHIPPING_TOTAL)
+    })
+
+    test('refuses a refund in another currency than the capture', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(POST_SHIPPING_TOTAL))
+      mockedBriqpay.getSession.mockResolvedValue(sessionHolding([captureOf(POST_SHIPPING_TOTAL)]) as never)
+
+      await expect(refundOf(payment, POST_SHIPPING_TOTAL, 'SEK')).rejects.toThrow(
+        'Only a full refund of the captured amount is supported',
+      )
+      expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+    })
+
+    test('refuses when the Charge points to a capture the session does not hold', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(POST_SHIPPING_TOTAL))
+      mockedBriqpay.getSession.mockResolvedValue(
+        sessionHolding([captureOf(POST_SHIPPING_TOTAL, { captureId: 'another-capture' })]) as never,
+      )
+
+      await expect(refundOf(payment, POST_SHIPPING_TOTAL)).rejects.toThrow('Cannot find the Briqpay capture to refund')
+      expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+    })
+
+    test('refuses when the Charge carries no capture id', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(POST_SHIPPING_TOTAL))
+      mockedBriqpay.getSession.mockResolvedValue(sessionHolding([captureOf(POST_SHIPPING_TOTAL)]) as never)
+      const [charge] = chargeWrittenByCapture(POST_SHIPPING_TOTAL)
+
+      await expect(
+        operationService.refundPayment({
+          payment: { ...payment, transactions: [...payment.transactions, { ...charge, interactionId: undefined }] },
+          amount: { centAmount: POST_SHIPPING_TOTAL, currencyCode: 'EUR' },
+        } as never),
+      ).rejects.toThrow('Cannot find the Briqpay capture to refund')
+      expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+    })
+
+    test('finds the capture on the deprecated top-level captures', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(POST_SHIPPING_TOTAL))
+      const capture = captureOf(POST_SHIPPING_TOTAL)
+      mockedBriqpay.getSession.mockResolvedValue({ sessionId: SESSION_ID, captures: [capture] } as never)
+
+      await refundOf(payment, POST_SHIPPING_TOTAL)
+
+      expect(mockedBriqpay.refund).toHaveBeenCalledWith(SESSION_ID, capture)
+    })
+
+    // Briqpay holds ISK x100; commercetools holds whole kronor.
+    test('refunds an ISK capture requested in whole kronor', async () => {
+      const ISK_TOTAL = 12345
+      const payment = await paymentPlannedOn(withCurrency(cartAtTotal(ISK_TOTAL), 'ISK', 0))
+      const capture = captureOf(ISK_TOTAL * 100, { currency: 'ISK' })
+      mockedBriqpay.getSession.mockResolvedValue(sessionHolding([capture]) as never)
+
+      await operationService.refundPayment({
+        payment: {
+          ...payment,
+          transactions: [
+            ...payment.transactions,
+            {
+              id: 'charge-1',
+              type: 'Charge',
+              interactionId: CAPTURE_ID,
+              state: 'Success',
+              amount: { type: 'centPrecision', centAmount: ISK_TOTAL, currencyCode: 'ISK', fractionDigits: 0 },
+            },
+          ],
+        },
+        amount: { centAmount: ISK_TOTAL, currencyCode: 'ISK' },
+      } as never)
+
+      expect(mockedBriqpay.refund).toHaveBeenCalledWith(SESSION_ID, capture)
+      expect(recordedAmountFor('Refund')).toBe(ISK_TOTAL)
+    })
   })
 
   // No drift needed: getPaymentAmount subtracts what is already paid, the guard does not.
@@ -384,9 +493,9 @@ describe('BriqpayOperationService amount reconciliation', () => {
       expect(mockedBriqpay.capture).not.toHaveBeenCalled()
     })
 
-    test('refuses a refund for less than the cart total', async () => {
+    test('refuses a refund for less than the captured amount', async () => {
       const payment = await paymentPlannedOn(cartAtTotal(POST_SHIPPING_TOTAL))
-      jest.mocked(mockCtCartService.getCartByPaymentId).mockResolvedValue(cartAtTotal(POST_SHIPPING_TOTAL))
+      mockedBriqpay.getSession.mockResolvedValue(sessionHolding([captureOf(POST_SHIPPING_TOTAL)]) as never)
 
       await expect(
         operationService.refundPayment({
@@ -396,17 +505,17 @@ describe('BriqpayOperationService amount reconciliation', () => {
           },
           amount: { centAmount: POST_SHIPPING_TOTAL - 1, currencyCode: 'EUR' },
         } as never),
-      ).rejects.toThrow('Commerce Tools does not support partial refunds towards all payment providers')
+      ).rejects.toThrow('Only a full refund of the captured amount is supported')
 
       expect(mockedBriqpay.refund).not.toHaveBeenCalled()
     })
   })
 
-  // The guard only ever compares the capture/refund request against the CURRENT cart total - it never
-  // checks back against amountPlanned (what was actually authorized on the Briqpay session). A cart
-  // that drifts a second time after the payment was created can walk the requested amount arbitrarily
-  // far from what was actually authorized, and this guard alone does not catch it. This documents that
-  // gap rather than asserting a fix - see DEV-3731 follow-up.
+  // The capture guard only ever compares the request against the CURRENT cart total - it never checks
+  // back against amountPlanned (what was actually authorized on the Briqpay session). A cart that
+  // drifts a second time after the payment was created can walk the requested amount arbitrarily far
+  // from what was actually authorized, and this guard alone does not catch it. This documents that
+  // gap rather than asserting a fix.
   describe('three amounts differing: authorized/planned vs cart-at-capture vs requested (documents a gap)', () => {
     const SECOND_DRIFT_TOTAL = 17650
 
@@ -430,24 +539,157 @@ describe('BriqpayOperationService amount reconciliation', () => {
       expect(mockedBriqpay.capture.mock.calls[0][1].centAmount).toBe(SECOND_DRIFT_TOTAL)
       expect(mockedBriqpay.capture.mock.calls[0][1].centAmount).not.toBe(payment.amountPlanned.centAmount)
     })
+  })
 
-    test('a refund matching a since-drifted cart total is not checked against amountPlanned', async () => {
+  describe('reversePayment asks Briqpay what to undo', () => {
+    beforeEach(() => {
+      // Mirrors the SDK: a transaction of that type in one of those states
+      jest
+        .mocked(mockCtPaymentService.hasTransactionInState)
+        .mockImplementation(({ payment, transactionType, states }) =>
+          payment.transactions.some((tx) => tx.type === transactionType && states.includes(tx.state)),
+        )
+      mockedBriqpay.cancel.mockResolvedValue({ status: 'approved' } as never)
+    })
+
+    const reverse = (payment: Payment) => operationService.reversePayment({ payment } as never)
+
+    const withTransactions = (payment: Payment, transactions: Payment['transactions']): Payment => ({
+      ...payment,
+      transactions: [...payment.transactions, ...transactions],
+    })
+
+    test('refunds the capture when the cart drifted after payment', async () => {
       const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
-      expect(payment.amountPlanned.centAmount).toBe(PRE_SHIPPING_TOTAL)
+      const capture = captureOf(PRE_SHIPPING_TOTAL)
+      mockedBriqpay.getSession.mockResolvedValue(sessionHolding([capture]) as never)
+      jest.mocked(mockCtCartService.getCartByPaymentId).mockResolvedValue(cartAtTotal(POST_SHIPPING_TOTAL))
 
-      jest.mocked(mockCtCartService.getCartByPaymentId).mockResolvedValue(cartAtTotal(SECOND_DRIFT_TOTAL))
+      await reverse(withTransactions(payment, chargeWrittenByCapture(PRE_SHIPPING_TOTAL)))
 
-      await operationService.refundPayment({
-        payment: {
-          ...payment,
-          transactions: [...payment.transactions, ...chargeWrittenByCapture(SECOND_DRIFT_TOTAL)],
+      expect(mockedBriqpay.refund).toHaveBeenCalledWith(SESSION_ID, capture)
+      expect(mockedBriqpay.cancel).not.toHaveBeenCalled()
+      expect(mockCtCartService.getCartByPaymentId).not.toHaveBeenCalled()
+      expect(recordedAmountFor('Refund')).toBe(PRE_SHIPPING_TOTAL)
+    })
+
+    test('refunds when Briqpay captured before commercetools recorded the Charge', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      const capture = captureOf(PRE_SHIPPING_TOTAL)
+      mockedBriqpay.getSession.mockResolvedValue(sessionHolding([capture]) as never)
+
+      await reverse(payment)
+
+      expect(mockedBriqpay.refund).toHaveBeenCalledWith(SESSION_ID, capture)
+      expect(mockedBriqpay.cancel).not.toHaveBeenCalled()
+    })
+
+    test('cancels when Briqpay holds no capture', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      mockedBriqpay.getSession.mockResolvedValue(sessionHolding([]) as never)
+
+      await reverse(payment)
+
+      expect(mockedBriqpay.cancel).toHaveBeenCalledWith(SESSION_ID)
+      expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+    })
+
+    // Briqpay refuses to cancel an order with any capture on it, whatever that capture's status.
+    test('refuses, and says so in the logs, when every capture was rejected or cancelled', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      mockedBriqpay.getSession.mockResolvedValue(
+        sessionHolding([
+          captureOf(PRE_SHIPPING_TOTAL, { captureId: 'rejected', status: TRANSACTION_STATUS.REJECTED }),
+          captureOf(PRE_SHIPPING_TOTAL, { captureId: 'cancelled', status: TRANSACTION_STATUS.CANCELLED }),
+        ]) as never,
+      )
+
+      await expect(reverse(payment)).rejects.toThrow(
+        'Cannot reverse a payment whose Briqpay captures were all rejected or cancelled',
+      )
+
+      expect(appLogger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: SESSION_ID }),
+        'Cannot reverse the Briqpay payment automatically',
+      )
+      expect(mockedBriqpay.cancel).not.toHaveBeenCalled()
+      expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+    })
+
+    test('refunds the approved capture next to a rejected one', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      const capture = captureOf(PRE_SHIPPING_TOTAL)
+      mockedBriqpay.getSession.mockResolvedValue(
+        sessionHolding([
+          captureOf(PRE_SHIPPING_TOTAL, { captureId: 'rejected', status: TRANSACTION_STATUS.REJECTED }),
+          capture,
+        ]) as never,
+      )
+
+      await reverse(payment)
+
+      expect(mockedBriqpay.refund).toHaveBeenCalledWith(SESSION_ID, capture)
+    })
+
+    test('refuses a capture that is still pending, and says so in the logs', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      mockedBriqpay.getSession.mockResolvedValue(
+        sessionHolding([captureOf(PRE_SHIPPING_TOTAL, { status: TRANSACTION_STATUS.PENDING })]) as never,
+      )
+
+      await expect(reverse(payment)).rejects.toThrow('Cannot reverse a payment whose Briqpay capture is still pending')
+
+      expect(appLogger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: SESSION_ID }),
+        'Cannot reverse the Briqpay payment automatically',
+      )
+      expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+      expect(mockedBriqpay.cancel).not.toHaveBeenCalled()
+    })
+
+    test('refuses two captures rather than reversing only one', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      mockedBriqpay.getSession.mockResolvedValue(
+        sessionHolding([captureOf(5000), captureOf(PRE_SHIPPING_TOTAL - 5000, { captureId: 'second' })]) as never,
+      )
+
+      await expect(reverse(payment)).rejects.toThrow('Cannot reverse a payment with more than one Briqpay capture')
+
+      expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+      expect(mockedBriqpay.cancel).not.toHaveBeenCalled()
+    })
+
+    // Briqpay holds ISK x100; the Refund is recorded in whole kronor.
+    test('records an ISK refund in whole kronor', async () => {
+      const ISK_TOTAL = 12345
+      const payment = await paymentPlannedOn(withCurrency(cartAtTotal(ISK_TOTAL), 'ISK', 0))
+      mockedBriqpay.getSession.mockResolvedValue(
+        sessionHolding([captureOf(ISK_TOTAL * 100, { currency: 'ISK' })]) as never,
+      )
+
+      await reverse(payment)
+
+      expect(recordedAmountFor('Refund')).toBe(ISK_TOTAL)
+    })
+
+    test('still refuses a payment that was already reversed', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      mockedBriqpay.getSession.mockResolvedValue(sessionHolding([captureOf(PRE_SHIPPING_TOTAL)]) as never)
+      const refunded = [
+        {
+          id: 'refund-1',
+          type: 'Refund',
+          interactionId: 'briqpay-refund-1',
+          state: 'Success',
+          amount: { type: 'centPrecision', centAmount: PRE_SHIPPING_TOTAL, currencyCode: 'EUR', fractionDigits: 2 },
         },
-        amount: { centAmount: SECOND_DRIFT_TOTAL, currencyCode: 'EUR' },
-      } as never)
+      ] as unknown as Payment['transactions']
 
-      expect(mockedBriqpay.refund).toHaveBeenCalled()
-      expect(mockedBriqpay.refund.mock.calls[0][1].centAmount).toBe(SECOND_DRIFT_TOTAL)
-      expect(mockedBriqpay.refund.mock.calls[0][1].centAmount).not.toBe(payment.amountPlanned.centAmount)
+      await expect(reverse(withTransactions(payment, refunded))).rejects.toThrow(
+        'There is no successful payment transaction to reverse.',
+      )
+      expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+      expect(mockedBriqpay.cancel).not.toHaveBeenCalled()
     })
   })
 })

@@ -266,8 +266,8 @@ The `/operations/payment-intents/:id` endpoint supports the following actions:
 
 - `capturePayment` - Capture an authorized payment
 - `cancelPayment` - Cancel an authorized payment
-- `refundPayment` - Refund a captured payment
-- `reversePayment` - Reverse a payment (automated reversals)
+- `refundPayment` - Refund a capture in full
+- `reversePayment` - Reverse a payment (automated reversals): cancel it, or refund the Briqpay capture, whichever Briqpay's state calls for
 
 ## Authentication
 

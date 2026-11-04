@@ -343,8 +343,8 @@ flowchart TD
 - The connector supports the following payment operations through the `/operations/payment-intents/:id` endpoint:
   - `capturePayment` - Capture an authorized payment
   - `cancelPayment` - Cancel an authorized payment
-  - `refundPayment` - Refund a captured payment
-  - `reversePayment` - Reverse a payment
+  - `refundPayment` - Refund a capture in full
+  - `reversePayment` - Reverse a payment: cancel it, or refund the Briqpay capture, whichever Briqpay's state calls for
 
 - For local development, use the provided Docker Compose setup which includes a mock JWT server for authentication.
 

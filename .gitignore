@@ -55,3 +55,5 @@ coverage/
 .connect
 .connect/*
 .toml
+# Internal specs and plans; this repo is mirrored to a public GitHub repo
+docs/superpowers/

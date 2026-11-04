@@ -16,7 +16,12 @@ import {
   RefundPaymentRequest,
   ReversePaymentRequest,
 } from '../types/operation.type'
-import { CreatePaymentRequest, MediumBriqpayResponse } from '../types/briqpay-payment.type'
+import {
+  BriqpayCapture,
+  CreatePaymentRequest,
+  MediumBriqpayResponse,
+  TRANSACTION_STATUS,
+} from '../types/briqpay-payment.type'
 import { PaymentOutcome, PaymentResponseSchemaDTO } from '../../dtos/briqpay-payment.dto'
 import { TransactionDraftDTO, TransactionResponseDTO } from '../../dtos/operations/transaction.dto'
 import {
@@ -33,6 +38,7 @@ import {
   convertPaymentResultCode,
   deriveTransactionStateFromSession,
   getActualOrderStatus,
+  getCapture,
 } from './utils'
 import { BriqpayError, SessionError, UpstreamError, ValidationError } from '../../libs/errors/briqpay-errors'
 import {
@@ -40,7 +46,7 @@ import {
   readBriqpaySessionAmounts,
   resolvePlannedAmountFromSession,
 } from '../../libs/briqpay/session-amounts'
-import { toBriqpayAmount } from '../../libs/briqpay/amount-precision'
+import { toBriqpayAmount, toCtCentAmount } from '../../libs/briqpay/amount-precision'
 import { planCartReconciliation, readPaidLines, UNDRIFTED } from '../../libs/briqpay/cart-reconciliation'
 import CtConflictRetry from '../../libs/commercetools/ct-conflict-retry'
 import { briqpayCheckoutTransactionItemIdFieldName, briqpaySessionIdFieldName } from '../../custom-types/custom-types'
@@ -214,48 +220,60 @@ export class BriqpayOperationService {
       throw new ErrorInvalidOperation('Already refunded')
     }
 
-    appLogger.info({ paymentId: request.payment.id }, 'Getting cart by payment ID')
-    const ctCart = await this.ctCartService.getCartByPaymentId({
-      paymentId: request.payment.id,
-    })
-    appLogger.info({ cartId: ctCart.id }, 'Retrieved cart')
+    // The capture is what Briqpay refunds against; the cart may have changed since the shopper paid.
+    const briqpaySession = await Briqpay.getSession(briqpaySessionId)
+    const capture = existingCapture.interactionId
+      ? getCapture(briqpaySession, existingCapture.interactionId)
+      : undefined
 
-    const expectedAmount = ctCart.taxedPrice?.totalGross?.centAmount ?? ctCart.totalPrice.centAmount
-    appLogger.info({ requestedAmount: request.amount?.centAmount, expectedAmount }, 'Checking refund amount')
-
-    if (request.amount?.centAmount !== expectedAmount) {
-      logAmountMismatch({
-        context: 'refundPayment',
-        cartId: ctCart.id,
-        sessionId: briqpaySessionId,
-        expected: { centAmount: expectedAmount },
-        actual: { centAmount: request.amount?.centAmount },
-      })
-
-      throw new ErrorInvalidOperation('Commerce Tools does not support partial refunds towards all payment providers')
+    if (!capture) {
+      appLogger.error(
+        { sessionId: briqpaySessionId, captureId: existingCapture.interactionId },
+        'Cannot find the Briqpay capture to refund',
+      )
+      throw new ErrorInvalidOperation('Cannot find the Briqpay capture to refund')
     }
 
-    appLogger.info(
-      { sessionId: briqpaySessionId, captureId: existingCapture.interactionId },
-      'Calling Briqpay refund API',
+    const requestedAmountIncVat = toBriqpayAmount(
+      request.amount.centAmount,
+      request.payment.amountPlanned.fractionDigits,
     )
-    // Must be the amount recorded on the Refund below; commercetools cannot correct it afterwards.
-    const briqpayRefund = await Briqpay.refund(
-      ctCart as PlatformCart,
-      request.amount,
-      briqpaySessionId,
-      existingCapture.interactionId,
-    )
+    if (requestedAmountIncVat !== capture.amountIncVat || request.amount.currencyCode !== capture.currency) {
+      logAmountMismatch({
+        context: 'refundPayment',
+        sessionId: briqpaySessionId,
+        expected: { amountIncVat: capture.amountIncVat, currency: capture.currency },
+        actual: { amountIncVat: requestedAmountIncVat, currency: request.amount.currencyCode },
+      })
+
+      throw new ErrorInvalidOperation('Only a full refund of the captured amount is supported')
+    }
+
+    return this.refundCapture(request.payment, briqpaySessionId, capture, request.amount)
+  }
+
+  /**
+   * Refunds one Briqpay capture in full and records the Refund on the commercetools Payment.
+   */
+  private async refundCapture(
+    payment: Payment,
+    briqpaySessionId: string,
+    capture: BriqpayCapture,
+    amount: RefundPaymentRequest['amount'],
+  ): Promise<PaymentProviderModificationResponse> {
+    appLogger.info({ sessionId: briqpaySessionId, captureId: capture.captureId }, 'Calling Briqpay refund API')
+    // `amount` is the capture's own amount; commercetools cannot correct the recorded Refund afterwards.
+    const briqpayRefund = await Briqpay.refund(briqpaySessionId, capture)
     appLogger.info({ briqpayRefund }, 'Briqpay refund completed')
 
     // Update pending authorization to success if needed
-    const pendingAuthorization = request.payment.transactions.find(
+    const pendingAuthorization = payment.transactions.find(
       (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Pending',
     )
 
     if (pendingAuthorization) {
       await this.ctPaymentService.updatePayment({
-        id: request.payment.id,
+        id: payment.id,
         transaction: {
           type: 'Authorization',
           interactionId: briqpaySessionId,
@@ -266,10 +284,10 @@ export class BriqpayOperationService {
     }
 
     await this.ctPaymentService.updatePayment({
-      id: request.payment.id,
+      id: payment.id,
       transaction: {
         type: 'Refund',
-        amount: request.amount,
+        amount,
         state: convertPaymentResultCode(briqpayRefund.status),
         interactionId: briqpayRefund.refundId,
       },
@@ -277,7 +295,7 @@ export class BriqpayOperationService {
 
     return {
       outcome: convertPaymentModificationStatusCode(briqpayRefund.status),
-      pspReference: request.payment.interfaceId as string,
+      pspReference: payment.interfaceId as string,
     }
   }
 
@@ -299,27 +317,59 @@ export class BriqpayOperationService {
     })
 
     const wasPaymentReverted = hasRefund || hasCancelAuthorization
-
-    // If payment has been captured (hasCharge) and not yet refunded, use refund
-    if (hasCharge && !wasPaymentReverted) {
-      return this.refundPayment({
-        payment: request.payment,
-        merchantReference: request.merchantReference,
-        amount: request.payment.amountPlanned,
-      })
-    }
-
-    // If payment has been authorized but not captured, and not yet cancelled, use cancel
     const hasAuthorization = this.ctPaymentService.hasTransactionInState({
       payment: request.payment,
       transactionType: 'Authorization',
       states: ['Success'],
     })
-    if (hasAuthorization && !wasPaymentReverted) {
+
+    if (wasPaymentReverted || (!hasCharge && !hasAuthorization)) {
+      throw new ErrorInvalidOperation('There is no successful payment transaction to reverse.')
+    }
+
+    const briqpaySessionId = request.payment.transactions.find((tx) => tx.type === 'Authorization')?.interactionId
+    if (!briqpaySessionId) {
+      throw new SessionError('Cannot find briqpay session for reversal')
+    }
+
+    // Briqpay decides, not the commercetools transactions: a capture can land before its webhook does,
+    // and Briqpay refuses to cancel an order with any capture on it, even a rejected one.
+    const briqpaySession = await Briqpay.getSession(briqpaySessionId)
+    const allCaptures = briqpaySession.data?.captures ?? briqpaySession.captures ?? []
+
+    if (allCaptures.length === 0) {
       return this.cancelPayment({ payment: request.payment })
     }
 
-    throw new ErrorInvalidOperation('There is no successful payment transaction to reverse.')
+    const captures = allCaptures.filter(
+      (capture) => capture.status === TRANSACTION_STATUS.APPROVED || capture.status === TRANSACTION_STATUS.PENDING,
+    )
+    const [capture] = captures
+    if (captures.length !== 1 || capture.status !== TRANSACTION_STATUS.APPROVED) {
+      appLogger.error(
+        {
+          sessionId: briqpaySessionId,
+          captures: allCaptures.map(({ captureId, status }) => ({ captureId, status })),
+        },
+        'Cannot reverse the Briqpay payment automatically',
+      )
+
+      let reason = 'Cannot reverse a payment whose Briqpay capture is still pending'
+      if (captures.length === 0) {
+        reason = 'Cannot reverse a payment whose Briqpay captures were all rejected or cancelled'
+      } else if (captures.length > 1) {
+        reason = 'Cannot reverse a payment with more than one Briqpay capture'
+      }
+
+      throw new ErrorInvalidOperation(reason)
+    }
+
+    const amount: RefundPaymentRequest['amount'] = {
+      centAmount: toCtCentAmount(capture.amountIncVat, request.payment.amountPlanned.fractionDigits),
+      currencyCode: capture.currency,
+    }
+
+    return this.refundCapture(request.payment, briqpaySessionId, capture, amount)
   }
 
   public async createPayment(request: CreatePaymentRequest): Promise<PaymentResponseSchemaDTO> {

@@ -2,6 +2,7 @@ import { Address, Cart, CustomLineItem, LineItem } from '@commercetools/platform
 import { apiRoot } from '../commercetools/api-root'
 import { BriqpayDecisionRequest, PaymentOutcome } from '../../dtos/briqpay-payment.dto'
 import {
+  BriqpayCapture,
   CartItem,
   CreateSessionRequestBody,
   CUSTOMER_TYPE,
@@ -204,7 +205,7 @@ const getDiscountPercentage = (
  * separate discount line. One amount must hold for every unit, so a line whose units are
  * priced differently, or whose discount does not split into whole cents per unit, keeps it.
  *
- * On capture and refund the stored session cart decides instead, since Briqpay matches
+ * On capture the stored session cart decides instead, since Briqpay matches
  * lines exactly: a session created with the separate line keeps it, and the amount and rate
  * are the ones the session holds, as the cart discount may have changed since.
  */
@@ -1121,8 +1122,8 @@ class BriqpayService {
   }
 
   /**
-   * The cart Briqpay holds for the session. Capture and refund rebuild their lines in the
-   * shape it was created in, since Briqpay matches them exactly against it.
+   * The cart Briqpay holds for the session. Capture rebuilds its lines in the shape it was
+   * created in, since Briqpay matches them exactly against it.
    */
   private async getStoredCart(sessionId: string): Promise<CartItem[]> {
     const session = await this.getSession(sessionId)
@@ -1198,45 +1199,24 @@ class BriqpayService {
     })
   }
 
+  /**
+   * Refunds one capture in full by sending it back exactly as Briqpay holds it. Briqpay validates a
+   * refund line by line against that capture, so lines rebuilt from a commercetools cart the shopper
+   * changed after paying would be refused.
+   */
   async refund(
-    ctCart: Cart,
-    amount: Omit<PaymentAmount, 'fractionDigits'>,
     sessionId: string,
-    captureId?: string,
+    capture: BriqpayCapture,
   ): Promise<{ refundId: string; status: PaymentOutcome } & Record<string, unknown>> {
-    const fractionDigits = ctCart.totalPrice.fractionDigits
-    const cartItems = mapBriqpayCartItem(
-      ctCart.lineItems,
-      ctCart.customLineItems,
-      ctCart.locale,
-      await fetchDiscountsForCart(ctCart),
-      fractionDigits,
-      await this.getStoredCart(sessionId),
-    )
-    const briqpayRefundRequest: Pick<CreateSessionRequestBody, 'data'> & { captureId?: string } = {
-      ...(captureId && { captureId }),
-      data: {
-        order: {
-          currency: ctCart.totalPrice.currencyCode,
-          amountIncVat: toBriqpayAmount(amount.centAmount, fractionDigits),
-          amountExVat: toBriqpayAmount(
-            ctCart.taxedPrice?.totalNet?.centAmount ??
-              (ctCart.lineItems.reduce(
-                (acc, item) =>
-                  // totalNet is already the LINE total; only the unit price needs * quantity
-                  acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.price.value.centAmount * item.quantity),
-                0,
-              ) +
-                ctCart.customLineItems.reduce(
-                  (acc, item) => acc + Number(item.taxedPrice?.totalNet?.centAmount ?? item.totalPrice.centAmount),
-                  0,
-                ) ||
-                amount.centAmount),
-            fractionDigits,
-          ),
-          cart: cartItems,
-        },
-      },
+    const { captureId, currency, amountIncVat, amountExVat, cart } = capture
+    if (!cart?.length || typeof amountExVat !== 'number') {
+      appLogger.error({ sessionId, captureId }, 'Briqpay capture has no lines to refund')
+      throw new SessionError(`Briqpay capture ${captureId} has no lines to refund`)
+    }
+
+    const briqpayRefundRequest: Pick<CreateSessionRequestBody, 'data'> & { captureId: string } = {
+      captureId,
+      data: { order: { currency, amountIncVat, amountExVat, cart } },
     }
     return fetch(`${this.baseUrl}/session/${sessionId}/order/refund`, {
       method: 'POST',

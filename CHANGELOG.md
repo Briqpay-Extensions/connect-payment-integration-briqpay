@@ -3,6 +3,22 @@
 All notable changes to the Briqpay commercetools Connect plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Checkout's automated reversals now give the money back once Briqpay has captured the payment.
+  The connector refunds the Briqpay capture exactly as Briqpay holds it, instead of rebuilding the
+  refund from the commercetools cart, which the shopper may have changed after paying. Such a
+  reversal previously failed before it reached Briqpay.
+- A reversal now follows Briqpay's state instead of the Payment's transactions. It cancels when
+  nothing is captured. It refunds the single approved capture, also when the capture webhook has
+  not reached commercetools yet. It refuses a capture that is still pending, a payment with more
+  than one capture, or one whose captures were all rejected or cancelled (Briqpay will not cancel
+  those), and logs `Cannot reverse the Briqpay payment automatically` at error level.
+- `refundPayment` now expects the full captured amount, in the capture's currency, instead of the
+  cart total, and no longer reads the cart.
+
 ## [3.0.2] - 2026-11-03
 
 ### Fixed

@@ -12,7 +12,13 @@ import {
   LineItem,
   ShippingInfo,
 } from '@commercetools/platform-sdk'
-import { CartItem, ITEM_PRODUCT_TYPE, RegularCartItem } from '../src/services/types/briqpay-payment.type'
+import {
+  BriqpayCapture,
+  CartItem,
+  ITEM_PRODUCT_TYPE,
+  RegularCartItem,
+  TRANSACTION_STATUS,
+} from '../src/services/types/briqpay-payment.type'
 import { SessionError, ValidationError } from '../src/libs/errors/briqpay-errors'
 import { apiRoot } from '../src/libs/commercetools/api-root'
 import { PaymentAmount } from '@commercetools/connect-payments-sdk/dist/commercetools/types/payment.type'
@@ -26,6 +32,29 @@ const updateSessionWithCart = async (
   amount: { centAmount: number; currencyCode: string },
 ) =>
   BriqpayService.updateSession(sessionId, await BriqpayService.buildSessionUpdateRequest(cart, amount as PaymentAmount))
+
+// A capture as GET session returns it: the shape a refund echoes back.
+const capturedLine: RegularCartItem = {
+  productType: ITEM_PRODUCT_TYPE.PHYSICAL,
+  reference: 'PIA-350482',
+  name: 'Raven Airborne Evo MX Helmet',
+  quantity: 1,
+  quantityUnit: 'pc',
+  unitPrice: 12574,
+  unitPriceIncVat: 15718,
+  taxRate: 2500,
+  totalAmount: 15718,
+  totalVatAmount: 3144,
+}
+
+const capturedOrder = (): BriqpayCapture => ({
+  captureId: 'cap-1',
+  status: TRANSACTION_STATUS.APPROVED,
+  amountIncVat: 15718,
+  amountExVat: 12574,
+  currency: 'EUR',
+  cart: [capturedLine],
+})
 
 // Mock the apiRoot for fetchCartDiscounts
 jest.mock('../src/libs/commercetools/api-root', () => ({
@@ -365,31 +394,57 @@ describe('BriqpayService', () => {
     expect(response).toEqual(mockCaptureResponse)
   })
 
-  it('should refund an order successfully', async () => {
-    const mockCart = mockGetCartResult()
-
+  it('should refund a capture by echoing it', async () => {
     const mockRefundResponse = {
       refundId: 'refund123',
-      status: 'refunded',
+      status: 'approved',
       sessionId: 'abc123',
-      data: { order: { amountIncVat: 0, currency: 'EUR', cart: [] } },
     }
 
-    global.fetch = jest.fn().mockReturnValue(
-      Promise.resolve({
+    let requestBody: unknown = null
+    global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+      requestBody = JSON.parse(init.body)
+
+      return Promise.resolve({
         ok: true,
         json: async () => mockRefundResponse,
-      } as Response),
-    ) as typeof fetch
+      } as Response)
+    }) as typeof fetch
 
-    const response = await BriqpayService.refund(
-      mockCart,
-      { centAmount: mockCart.totalPrice.centAmount, currencyCode: mockCart.totalPrice.currencyCode },
-      'abc123',
-    )
+    const response = await BriqpayService.refund('abc123', capturedOrder())
 
-    expect(global.fetch).toHaveBeenCalled()
+    // The capture as Briqpay holds it, with no session read and nothing rebuilt from a cart
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    expect(requestBody).toEqual({
+      captureId: 'cap-1',
+      data: {
+        order: {
+          currency: 'EUR',
+          amountIncVat: 15718,
+          amountExVat: 12574,
+          cart: [capturedLine],
+        },
+      },
+    })
     expect(response).toEqual(mockRefundResponse)
+  })
+
+  it('should reject a capture with no lines without calling Briqpay', async () => {
+    global.fetch = jest.fn() as typeof fetch
+
+    await expect(BriqpayService.refund('abc123', { ...capturedOrder(), cart: [] })).rejects.toThrow(
+      'Briqpay capture cap-1 has no lines to refund',
+    )
+    expect(global.fetch).not.toHaveBeenCalled()
+  })
+
+  it('should reject a capture without amountExVat without calling Briqpay', async () => {
+    global.fetch = jest.fn() as typeof fetch
+
+    await expect(BriqpayService.refund('abc123', { ...capturedOrder(), amountExVat: undefined })).rejects.toThrow(
+      'Briqpay capture cap-1 has no lines to refund',
+    )
+    expect(global.fetch).not.toHaveBeenCalled()
   })
 
   it('should make a decision successfully', async () => {
@@ -570,26 +625,15 @@ describe('BriqpayService', () => {
 
   describe('refund error handling', () => {
     it('should throw error when refund response is not ok', async () => {
-      const mockCart = mockGetCartResult()
+      global.fetch = jest.fn().mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        text: async () => 'Refund failed: insufficient funds',
+      } as unknown as Response) as typeof fetch
 
-      global.fetch = jest
-        .fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({
-            sessionId: 'session123',
-            data: { order: { amountIncVat: 0, currency: 'EUR', cart: [] } },
-          }),
-        } as Response)
-        .mockResolvedValueOnce({
-          ok: false,
-          status: 400,
-          text: async () => 'Refund failed: insufficient funds',
-        } as unknown as Response) as typeof fetch
-
-      await expect(
-        BriqpayService.refund(mockCart, { centAmount: 10000, currencyCode: 'EUR' }, 'session123', 'capture123'),
-      ).rejects.toThrow('Briqpay refund error: Refund failed: insufficient funds')
+      await expect(BriqpayService.refund('session123', capturedOrder())).rejects.toThrow(
+        'Briqpay refund error: Refund failed: insufficient funds',
+      )
     })
   })
 
@@ -1669,7 +1713,7 @@ describe('BriqpayService', () => {
     const captureRequestBody = () => {
       let requestBody: any = null
       global.fetch = jest.fn().mockImplementation((url, init: any) => {
-        // Capture and refund read the session first; that GET has no body
+        // Capture reads the session first; that GET has no body
         if (init.body) {
           requestBody = JSON.parse(init.body)
         }
@@ -1779,22 +1823,6 @@ describe('BriqpayService', () => {
       expect(getRequestBody().data.order.amountExVat).toBe(238000)
     })
 
-    it('should include custom line items in refund requests', async () => {
-      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
-      const getRequestBody = captureRequestBody()
-
-      await BriqpayService.refund(
-        mockCart,
-        { centAmount: mockCart.totalPrice.centAmount, currencyCode: mockCart.totalPrice.currencyCode },
-        'abc123',
-      )
-
-      const customItem = getRequestBody().data.order.cart.find((item: any) => item.reference === 'customLineItem-id-1')
-      expect(customItem).toBeDefined()
-      expect(customItem.productType).toBe('physical')
-      expect(getRequestBody().data.order.amountExVat).toBe(238000)
-    })
-
     it('should include custom line items in updateSession requests', async () => {
       const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as Cart
       let requestBody: any = null
@@ -1834,23 +1862,6 @@ describe('BriqpayService', () => {
       expect(getRequestBody().data.order.amountExVat).toBe(319000)
     })
 
-    it('should not double-count quantity in refund amountExVat fallback when line item has taxedPrice', async () => {
-      const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
-      mockCart.lineItems[0].quantity = 2
-      mockCart.lineItems[0].totalPrice.centAmount = 238000
-      mockCart.lineItems[0].taxedPrice = {
-        totalNet: { centAmount: 200000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
-        totalGross: { centAmount: 238000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
-        totalTax: { centAmount: 38000, currencyCode: 'EUR', type: 'centPrecision', fractionDigits: 2 },
-        taxPortions: [],
-      }
-      const getRequestBody = captureRequestBody()
-
-      await BriqpayService.refund(mockCart, { centAmount: 357000, currencyCode: 'EUR' }, 'abc123')
-
-      expect(getRequestBody().data.order.amountExVat).toBe(319000)
-    })
-
     it('should derive unitPriceIncVat from taxed actuals, not the net/pre-discount money value', async () => {
       const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
       // Tax-exclusive (US/B2B) pricing: money is NET and excludes any discounts
@@ -1887,7 +1898,7 @@ describe('BriqpayService', () => {
     const captureRequestBody = () => {
       let requestBody: any = null
       global.fetch = jest.fn().mockImplementation((url, init: any) => {
-        // Capture and refund read the session first; that GET has no body
+        // Capture reads the session first; that GET has no body
         if (init.body) {
           requestBody = JSON.parse(init.body)
         }
@@ -1965,7 +1976,7 @@ describe('BriqpayService', () => {
       )
     })
 
-    it('should produce the same capped reference on create, capture and refund', async () => {
+    it('should produce the same capped reference on create and capture', async () => {
       const buildCart = () => {
         const mockCart = JSON.parse(JSON.stringify(mockGetCartResult())) as any
         mockCart.lineItems[0].variant.sku = OVER_LENGTH_SKU
@@ -1981,13 +1992,8 @@ describe('BriqpayService', () => {
       await BriqpayService.capture(buildCart(), amount, 'abc123')
       const captureReferences = getCaptureBody().data.order.cart.map((item: any) => item.reference)
 
-      const getRefundBody = captureRequestBody()
-      await BriqpayService.refund(buildCart(), amount, 'abc123')
-      const refundReferences = getRefundBody().data.order.cart.map((item: any) => item.reference)
-
-      // Capture/refund payloads carry no shipping line, so compare on the shared items
+      // Capture payloads carry no shipping line, so compare on the shared items
       expect(captureReferences).toEqual(createReferences.filter((r: string) => captureReferences.includes(r)))
-      expect(refundReferences).toEqual(captureReferences)
       expect(captureReferences).toContain(
         `${OVER_LENGTH_SKU.slice(0, 52)}-${createHash('sha256').update(OVER_LENGTH_SKU).digest('hex').slice(0, 10)}`,
       )
@@ -2526,10 +2532,10 @@ describe('BriqpayService', () => {
       },
     )
 
-    describe('on capture and refund', () => {
+    describe('on capture', () => {
       const captureAmount = { centAmount: 80000, currencyCode: 'EUR' }
 
-      // Capture and refund read the stored session first, then post their lines
+      // Capture reads the stored session first, then posts its lines
       const mockStoredSession = (storedCart: CartItem[] | undefined) => {
         global.fetch = jest.fn().mockImplementation((_url, init: any) => {
           const body =
@@ -2558,10 +2564,7 @@ describe('BriqpayService', () => {
         return sent.data.order.cart
       }
 
-      const send = (operation: 'capture' | 'refund', cart: Cart) =>
-        operation === 'capture'
-          ? BriqpayService.capture(cart, captureAmount, 'abc123')
-          : BriqpayService.refund(cart, captureAmount, 'abc123')
+      const send = (_operation: 'capture', cart: Cart) => BriqpayService.capture(cart, captureAmount, 'abc123')
 
       // How GET /session echoes a stored product line
       const storedProductLine = (fields: Partial<RegularCartItem>): RegularCartItem => ({
@@ -2586,7 +2589,7 @@ describe('BriqpayService', () => {
           discountIds: ['pct-20'],
         })
 
-      it.each(['capture', 'refund'] as const)(
+      it.each(['capture'] as const)(
         '%s repeats the session percentage even after the cart discount is gone',
         async (operation) => {
           mockCartDiscounts([])
@@ -2603,7 +2606,7 @@ describe('BriqpayService', () => {
         },
       )
 
-      it.each(['capture', 'refund'] as const)(
+      it.each(['capture'] as const)(
         '%s repeats the session amount when the cart discount now gives a different one',
         async (operation) => {
           mockCartDiscounts([{ id: 'pct-20', value: relative(2000) }])
@@ -2618,7 +2621,7 @@ describe('BriqpayService', () => {
         },
       )
 
-      it.each(['capture', 'refund'] as const)(
+      it.each(['capture'] as const)(
         '%s leaves the percentage out when the session line was created with the amount alone',
         async (operation) => {
           mockCartDiscounts([{ id: 'pct-20', value: relative(2000) }])
@@ -2631,7 +2634,7 @@ describe('BriqpayService', () => {
         },
       )
 
-      it.each(['capture', 'refund'] as const)(
+      it.each(['capture'] as const)(
         '%s keeps the separate discount line for a session created before the upgrade',
         async (operation) => {
           mockCartDiscounts([{ id: 'pct-20', value: relative(2000) }])
@@ -2671,7 +2674,7 @@ describe('BriqpayService', () => {
         },
       )
 
-      it.each(['capture', 'refund'] as const)(
+      it.each(['capture'] as const)(
         '%s fails without posting when the session holds no order cart',
         async (operation) => {
           mockStoredSession(undefined)
@@ -2908,47 +2911,42 @@ describe('BriqpayService', () => {
       expect(line).not.toHaveProperty('discountPercentage')
     })
 
-    it.each(['capture', 'refund'] as const)(
-      'keeps stored Briqpay discount amounts unconverted on ISK %s',
-      async (operation) => {
-        const storedLine: RegularCartItem = {
-          productType: ITEM_PRODUCT_TYPE.PHYSICAL,
-          reference: 'variant-sku-1',
-          name: 'lineitem-name-1',
-          quantity: 1,
-          quantityUnit: 'pc',
-          unitPrice: 806500,
-          unitPriceIncVat: 1000000,
-          taxRate: 2400,
-          unitDiscountAmountIncVat: 100000,
-          totalAmount: 900000,
-          totalVatAmount: 174200,
-        }
-        global.fetch = jest.fn().mockImplementation((_url, init: any) => {
-          const body =
-            init.method === 'GET'
-              ? { sessionId: 'abc123', data: { order: { amountIncVat: 900000, currency: 'ISK', cart: [storedLine] } } }
-              : { captureId: 'cap123', refundId: 'ref123', status: 'approved' }
+    it('keeps stored Briqpay discount amounts unconverted on ISK capture', async () => {
+      const storedLine: RegularCartItem = {
+        productType: ITEM_PRODUCT_TYPE.PHYSICAL,
+        reference: 'variant-sku-1',
+        name: 'lineitem-name-1',
+        quantity: 1,
+        quantityUnit: 'pc',
+        unitPrice: 806500,
+        unitPriceIncVat: 1000000,
+        taxRate: 2400,
+        unitDiscountAmountIncVat: 100000,
+        totalAmount: 900000,
+        totalVatAmount: 174200,
+      }
+      global.fetch = jest.fn().mockImplementation((_url, init: any) => {
+        const body =
+          init.method === 'GET'
+            ? { sessionId: 'abc123', data: { order: { amountIncVat: 900000, currency: 'ISK', cart: [storedLine] } } }
+            : { captureId: 'cap123', refundId: 'ref123', status: 'approved' }
 
-          return Promise.resolve({ ok: true, json: async () => body } as Response)
-        }) as typeof fetch
-        const cart = tenPercentOffCart()
-        const amount = { centAmount: 9000, currencyCode: 'ISK' }
+        return Promise.resolve({ ok: true, json: async () => body } as Response)
+      }) as typeof fetch
+      const cart = tenPercentOffCart()
+      const amount = { centAmount: 9000, currencyCode: 'ISK' }
 
-        await (operation === 'capture'
-          ? BriqpayService.capture(cart, amount, 'abc123')
-          : BriqpayService.refund(cart, amount, 'abc123'))
+      await BriqpayService.capture(cart, amount, 'abc123')
 
-        const calls = (global.fetch as jest.Mock).mock.calls as Array<[string, RequestInit]>
-        const post = calls.find(([, init]) => init.method === 'POST')
-        if (!post) {
-          throw new Error('no POST sent')
-        }
-        const sent: { data: { order: SentOrder } } = JSON.parse(String(post[1].body))
-        expect(sent.data.order.amountIncVat).toBe(900000)
-        expect(sentLine(sent.data.order, 'variant-sku-1')).toMatchObject({ unitDiscountAmountIncVat: 100000 })
-      },
-    )
+      const calls = (global.fetch as jest.Mock).mock.calls as Array<[string, RequestInit]>
+      const post = calls.find(([, init]) => init.method === 'POST')
+      if (!post) {
+        throw new Error('no POST sent')
+      }
+      const sent: { data: { order: SentOrder } } = JSON.parse(String(post[1].body))
+      expect(sent.data.order.amountIncVat).toBe(900000)
+      expect(sentLine(sent.data.order, 'variant-sku-1')).toMatchObject({ unitDiscountAmountIncVat: 100000 })
+    })
 
     it('reports ISK amounts in Briqpay units from buildSessionUpdateRequest', async () => {
       const cart = withCurrency(mockGetCartResult(), 'ISK', 0)
