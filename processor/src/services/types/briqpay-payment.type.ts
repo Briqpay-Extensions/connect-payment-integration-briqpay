@@ -341,6 +341,8 @@ export interface BriqpayTransaction {
   cart?: CartItem[]
   captureStatus?: string
   refundStatus?: string
+  /** Briqpay captures the payment itself shortly after approval. */
+  autoCaptureEnabled?: boolean
 }
 
 /**

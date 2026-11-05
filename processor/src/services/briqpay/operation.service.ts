@@ -317,13 +317,19 @@ export class BriqpayOperationService {
   /**
    * Cancels a payment Briqpay holds no capture for, once Briqpay has approved it. Briqpay reports an
    * expired authorization as order_cancelled, so that keeps expired ones out too.
+   *
+   * A payment Briqpay captures itself is refunded once captured instead: its capture job keeps retrying
+   * on a cancelled order for two days, and a PSP that took the money at purchase refuses the cancel.
    */
   private async cancelApprovedPayment(
     payment: Payment,
     briqpaySession: MediumBriqpayResponse,
   ): Promise<PaymentProviderModificationResponse> {
     const orderStatus = getActualOrderStatus(briqpaySession)
-    if (orderStatus === ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED) {
+    const willAutoCapture = (briqpaySession.data?.transactions ?? []).some(
+      (transaction) => transaction.status === TRANSACTION_STATUS.APPROVED && transaction.autoCaptureEnabled,
+    )
+    if (orderStatus === ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED && !willAutoCapture) {
       return this.cancelPayment({ payment })
     }
 
@@ -332,11 +338,14 @@ export class BriqpayOperationService {
       'Cannot reverse the Briqpay payment automatically',
     )
 
-    throw new ErrorInvalidOperation(
-      !orderStatus || orderStatus === ORDER_STATUS.ORDER_PENDING
-        ? 'Briqpay has not approved the payment yet; retry the reversal in a few minutes'
-        : `Cannot reverse a Briqpay order in status ${orderStatus}`,
-    )
+    let reason = `Cannot reverse a Briqpay order in status ${orderStatus}`
+    if (!orderStatus || orderStatus === ORDER_STATUS.ORDER_PENDING) {
+      reason = 'Briqpay has not approved the payment yet; retry the reversal in a few minutes'
+    } else if (orderStatus === ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED) {
+      reason = 'Briqpay is capturing this payment automatically; retry the reversal in a few minutes'
+    }
+
+    throw new ErrorInvalidOperation(reason)
   }
 
   public async reversePayment(request: ReversePaymentRequest): Promise<PaymentProviderModificationResponse> {

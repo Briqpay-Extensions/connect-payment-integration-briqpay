@@ -14,6 +14,7 @@ import { appLogger } from '../../../src/payment-sdk'
 import {
   BriqpayCapture,
   BriqpayRefund,
+  BriqpayTransaction,
   ITEM_PRODUCT_TYPE,
   ORDER_STATUS,
   TRANSACTION_STATUS,
@@ -218,8 +219,24 @@ describe('BriqpayOperationService amount reconciliation', () => {
   // orderStatus is a string: Briqpay also returns statuses the connector's enum does not list
   const sessionHolding = (
     captures: BriqpayCapture[],
-    { orderStatus, refunds = [] }: { orderStatus?: string; refunds?: BriqpayRefund[] } = {},
-  ) => ({ sessionId: SESSION_ID, data: { captures, refunds }, moduleStatus: { payment: { orderStatus } } })
+    {
+      orderStatus,
+      refunds = [],
+      transactions = [],
+    }: { orderStatus?: string; refunds?: BriqpayRefund[]; transactions?: BriqpayTransaction[] } = {},
+  ) => ({
+    sessionId: SESSION_ID,
+    data: { captures, refunds, transactions },
+    moduleStatus: { payment: { orderStatus } },
+  })
+
+  const authorizationOf = (status: TRANSACTION_STATUS, autoCaptureEnabled: boolean): BriqpayTransaction => ({
+    transactionId: `transaction-${status}`,
+    status,
+    amountIncVat: PRE_SHIPPING_TOTAL,
+    currency: 'EUR',
+    autoCaptureEnabled,
+  })
 
   // 24MX refunds the shipping fee on its own, so a capture carrying an earlier refund is routine.
   const refundOn = (parentCaptureId: string | undefined, status: TRANSACTION_STATUS): BriqpayRefund => ({
@@ -684,6 +701,70 @@ describe('BriqpayOperationService amount reconciliation', () => {
           expect(mockedBriqpay.refund).not.toHaveBeenCalled()
         },
       )
+    })
+
+    // Briqpay captures such a payment about a minute after approval. Cancelling first leaves its capture job
+    // retrying on a cancelled order, and a PSP that already took the money refuses the cancel.
+    describe('when Briqpay captures the payment automatically', () => {
+      test('asks for a retry instead of cancelling before the capture lands', async () => {
+        const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+        mockedBriqpay.getSession.mockResolvedValue(
+          sessionHolding([], {
+            orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+            transactions: [authorizationOf(TRANSACTION_STATUS.APPROVED, true)],
+          }) as never,
+        )
+
+        await expect(reverse(payment)).rejects.toThrow(
+          'Briqpay is capturing this payment automatically; retry the reversal in a few minutes',
+        )
+        expect(mockedBriqpay.cancel).not.toHaveBeenCalled()
+        expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+      })
+
+      test('refunds once the capture has landed', async () => {
+        const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+        const capture = captureOf(PRE_SHIPPING_TOTAL)
+        mockedBriqpay.getSession.mockResolvedValue(
+          sessionHolding([capture], { transactions: [authorizationOf(TRANSACTION_STATUS.APPROVED, true)] }) as never,
+        )
+
+        await reverse(payment)
+
+        expect(mockedBriqpay.refund).toHaveBeenCalledWith(SESSION_ID, capture)
+      })
+
+      test('still cancels a payment Briqpay leaves for the merchant to capture', async () => {
+        const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+        mockedBriqpay.getSession.mockResolvedValue(
+          sessionHolding([], {
+            orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+            transactions: [authorizationOf(TRANSACTION_STATUS.APPROVED, false)],
+          }) as never,
+        )
+
+        await reverse(payment)
+
+        expect(mockedBriqpay.cancel).toHaveBeenCalledWith(SESSION_ID)
+      })
+
+      // Only the approved authorization is the one Briqpay will capture.
+      test('ignores auto-capture on an earlier rejected attempt', async () => {
+        const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+        mockedBriqpay.getSession.mockResolvedValue(
+          sessionHolding([], {
+            orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+            transactions: [
+              authorizationOf(TRANSACTION_STATUS.REJECTED, true),
+              authorizationOf(TRANSACTION_STATUS.APPROVED, false),
+            ],
+          }) as never,
+        )
+
+        await reverse(payment)
+
+        expect(mockedBriqpay.cancel).toHaveBeenCalledWith(SESSION_ID)
+      })
     })
 
     // Briqpay reports an expired authorization as order_cancelled.

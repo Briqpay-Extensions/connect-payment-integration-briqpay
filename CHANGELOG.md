@@ -24,7 +24,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
   the payment, the reversal is refused with
   `Briqpay has not approved the payment yet; retry the reversal in a few minutes`, and a pending
   capture's refusal now also asks for a retry. An order Briqpay holds as cancelled (including an
-  expired authorization) or rejected is refused without calling Briqpay. A cancel records a still
+  expired authorization) or rejected is refused without calling Briqpay. A payment Briqpay captures
+  automatically (`autoCaptureEnabled`) is not cancelled before its capture lands: the reversal is
+  refused with `Briqpay is capturing this payment automatically; retry the reversal in a few minutes`
+  and refunds once captured, since Briqpay's capture job keeps retrying on a cancelled order and a
+  payment method that takes the money at purchase refuses the cancel. A cancel records a still
   Pending Authorization as Success first, as captures and refunds already do, so the Authorization
   never turns Success after the cancellation.
 - A refund or reversal is refused, without calling Briqpay, when the capture already carries a
