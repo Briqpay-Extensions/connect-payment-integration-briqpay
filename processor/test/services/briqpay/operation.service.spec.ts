@@ -11,7 +11,13 @@ import type {
 } from '@commercetools/connect-payments-sdk'
 import { briqpaySessionIdFieldName } from '../../../src/custom-types/custom-types'
 import { appLogger } from '../../../src/payment-sdk'
-import { BriqpayCapture, ITEM_PRODUCT_TYPE, TRANSACTION_STATUS } from '../../../src/services/types/briqpay-payment.type'
+import {
+  BriqpayCapture,
+  BriqpayRefund,
+  ITEM_PRODUCT_TYPE,
+  ORDER_STATUS,
+  TRANSACTION_STATUS,
+} from '../../../src/services/types/briqpay-payment.type'
 
 jest.mock('../../../src/libs/commercetools/api-root')
 
@@ -209,7 +215,20 @@ describe('BriqpayOperationService amount reconciliation', () => {
     ...overrides,
   })
 
-  const sessionHolding = (captures: BriqpayCapture[]) => ({ sessionId: SESSION_ID, data: { captures } })
+  // orderStatus is a string: Briqpay also returns statuses the connector's enum does not list
+  const sessionHolding = (
+    captures: BriqpayCapture[],
+    { orderStatus, refunds = [] }: { orderStatus?: string; refunds?: BriqpayRefund[] } = {},
+  ) => ({ sessionId: SESSION_ID, data: { captures, refunds }, moduleStatus: { payment: { orderStatus } } })
+
+  // 24MX refunds the shipping fee on its own, so a capture carrying an earlier refund is routine.
+  const refundOn = (parentCaptureId: string | undefined, status: TRANSACTION_STATUS): BriqpayRefund => ({
+    refundId: 'earlier-refund',
+    status,
+    amountIncVat: 495,
+    currency: 'EUR',
+    parentCaptureId,
+  })
 
   const recordedAmountFor = (type: string) =>
     jest
@@ -372,6 +391,21 @@ describe('BriqpayOperationService amount reconciliation', () => {
       )
 
       await expect(refundOf(payment, POST_SHIPPING_TOTAL)).rejects.toThrow('Cannot find the Briqpay capture to refund')
+      expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+    })
+
+    // The refund webhook reaches commercetools a minute after Briqpay holds the refund.
+    test('refuses a capture Briqpay already refunded before commercetools heard of it', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(POST_SHIPPING_TOTAL))
+      mockedBriqpay.getSession.mockResolvedValue(
+        sessionHolding([captureOf(POST_SHIPPING_TOTAL)], {
+          refunds: [refundOn(CAPTURE_ID, TRANSACTION_STATUS.APPROVED)],
+        }) as never,
+      )
+
+      await expect(refundOf(payment, POST_SHIPPING_TOTAL)).rejects.toThrow(
+        'The Briqpay capture has already been refunded, in full or in part',
+      )
       expect(mockedBriqpay.refund).not.toHaveBeenCalled()
     })
 
@@ -575,14 +609,154 @@ describe('BriqpayOperationService amount reconciliation', () => {
       expect(mockedBriqpay.cancel).not.toHaveBeenCalled()
     })
 
-    test('cancels when Briqpay holds no capture', async () => {
+    test('cancels when Briqpay holds an approved order with no capture', async () => {
       const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
-      mockedBriqpay.getSession.mockResolvedValue(sessionHolding([]) as never)
+      mockedBriqpay.getSession.mockResolvedValue(
+        sessionHolding([], { orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED }) as never,
+      )
 
       await reverse(payment)
 
       expect(mockedBriqpay.cancel).toHaveBeenCalledWith(SESSION_ID)
       expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+    })
+
+    // commercetools hears of Briqpay's approval and capture through webhooks, a minute or more later.
+    describe('while commercetools still shows the authorization as pending', () => {
+      const withAuthorizationPending = (payment: Payment): Payment => ({
+        ...payment,
+        transactions: payment.transactions.map((tx) =>
+          tx.type === 'Authorization' ? { ...tx, state: 'Pending' as const } : tx,
+        ),
+      })
+
+      test('cancels an order Briqpay already approved', async () => {
+        const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+        mockedBriqpay.getSession.mockResolvedValue(
+          sessionHolding([], { orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED }) as never,
+        )
+
+        await reverse(withAuthorizationPending(payment))
+
+        expect(mockedBriqpay.cancel).toHaveBeenCalledWith(SESSION_ID)
+      })
+
+      // Fulfilment keys off Authorization Success; it must not first appear after the cancel.
+      test('records the authorization as approved before the cancellation', async () => {
+        const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+        mockedBriqpay.getSession.mockResolvedValue(
+          sessionHolding([], { orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED }) as never,
+        )
+        jest.mocked(mockCtPaymentService.updatePayment).mockClear()
+
+        await reverse(withAuthorizationPending(payment))
+
+        const written = jest
+          .mocked(mockCtPaymentService.updatePayment)
+          .mock.calls.map(([call]) => [call.transaction?.type, call.transaction?.state])
+        expect(written).toEqual([
+          ['Authorization', 'Success'],
+          ['CancelAuthorization', 'Success'],
+        ])
+      })
+
+      test('refunds a capture Briqpay already approved', async () => {
+        const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+        const capture = captureOf(PRE_SHIPPING_TOTAL)
+        mockedBriqpay.getSession.mockResolvedValue(sessionHolding([capture]) as never)
+
+        await reverse(withAuthorizationPending(payment))
+
+        expect(mockedBriqpay.refund).toHaveBeenCalledWith(SESSION_ID, capture)
+      })
+
+      // createPayment records a session without an order status as a pending Authorization too.
+      test.each([ORDER_STATUS.ORDER_PENDING, undefined])(
+        'asks for a retry, and calls Briqpay for nothing, while Briqpay holds the order as %s',
+        async (orderStatus) => {
+          const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+          mockedBriqpay.getSession.mockResolvedValue(sessionHolding([], { orderStatus }) as never)
+
+          await expect(reverse(withAuthorizationPending(payment))).rejects.toThrow(
+            'Briqpay has not approved the payment yet; retry the reversal in a few minutes',
+          )
+          expect(mockedBriqpay.cancel).not.toHaveBeenCalled()
+          expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+        },
+      )
+    })
+
+    // Briqpay reports an expired authorization as order_cancelled.
+    test.each(['order_cancelled', 'order_cancel_pending', 'order_rejected'])(
+      'does not cancel an order Briqpay holds as %s',
+      async (orderStatus) => {
+        const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+        mockedBriqpay.getSession.mockResolvedValue(sessionHolding([], { orderStatus }) as never)
+
+        await expect(reverse(payment)).rejects.toThrow(`Cannot reverse a Briqpay order in status ${orderStatus}`)
+        expect(mockedBriqpay.cancel).not.toHaveBeenCalled()
+        expect(appLogger.error).toHaveBeenCalledWith(
+          { sessionId: SESSION_ID, orderStatus },
+          'Cannot reverse the Briqpay payment automatically',
+        )
+      },
+    )
+
+    test.each([TRANSACTION_STATUS.APPROVED, TRANSACTION_STATUS.PENDING])(
+      'does not refund a capture that already carries a %s refund',
+      async (status) => {
+        const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+        mockedBriqpay.getSession.mockResolvedValue(
+          sessionHolding([captureOf(PRE_SHIPPING_TOTAL)], { refunds: [refundOn(CAPTURE_ID, status)] }) as never,
+        )
+
+        await expect(reverse(payment)).rejects.toThrow(
+          'The Briqpay capture has already been refunded, in full or in part',
+        )
+        expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+      },
+    )
+
+    // Briqpay counts a refund that names no capture against every capture.
+    test('counts a refund that names no capture, as Briqpay does', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      mockedBriqpay.getSession.mockResolvedValue(
+        sessionHolding([captureOf(PRE_SHIPPING_TOTAL)], {
+          refunds: [refundOn(undefined, TRANSACTION_STATUS.APPROVED)],
+        }) as never,
+      )
+
+      await expect(reverse(payment)).rejects.toThrow(
+        'The Briqpay capture has already been refunded, in full or in part',
+      )
+      expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+    })
+
+    test('refunds a capture whose earlier refund was rejected', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      const capture = captureOf(PRE_SHIPPING_TOTAL)
+      mockedBriqpay.getSession.mockResolvedValue(
+        sessionHolding([capture], { refunds: [refundOn(CAPTURE_ID, TRANSACTION_STATUS.REJECTED)] }) as never,
+      )
+
+      await reverse(payment)
+
+      expect(mockedBriqpay.refund).toHaveBeenCalledWith(SESSION_ID, capture)
+    })
+
+    test('refunds a capture when the only refund belongs to another capture', async () => {
+      const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+      const capture = captureOf(PRE_SHIPPING_TOTAL)
+      mockedBriqpay.getSession.mockResolvedValue(
+        sessionHolding(
+          [captureOf(PRE_SHIPPING_TOTAL, { captureId: 'rejected', status: TRANSACTION_STATUS.REJECTED }), capture],
+          { refunds: [refundOn('rejected', TRANSACTION_STATUS.APPROVED)] },
+        ) as never,
+      )
+
+      await reverse(payment)
+
+      expect(mockedBriqpay.refund).toHaveBeenCalledWith(SESSION_ID, capture)
     })
 
     // Briqpay refuses to cancel an order with any capture on it, whatever that capture's status.
@@ -628,7 +802,9 @@ describe('BriqpayOperationService amount reconciliation', () => {
         sessionHolding([captureOf(PRE_SHIPPING_TOTAL, { status: TRANSACTION_STATUS.PENDING })]) as never,
       )
 
-      await expect(reverse(payment)).rejects.toThrow('Cannot reverse a payment whose Briqpay capture is still pending')
+      await expect(reverse(payment)).rejects.toThrow(
+        'Cannot reverse a payment whose Briqpay capture is still pending; retry the reversal in a few minutes',
+      )
 
       expect(appLogger.error).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId: SESSION_ID }),

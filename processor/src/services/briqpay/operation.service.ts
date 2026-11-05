@@ -20,6 +20,7 @@ import {
   BriqpayCapture,
   CreatePaymentRequest,
   MediumBriqpayResponse,
+  ORDER_STATUS,
   TRANSACTION_STATUS,
 } from '../types/briqpay-payment.type'
 import { PaymentOutcome, PaymentResponseSchemaDTO } from '../../dtos/briqpay-payment.dto'
@@ -95,6 +96,25 @@ export class BriqpayOperationService {
     private readonly ctPaymentService: CommercetoolsPaymentService,
   ) {}
 
+  // Update pending authorization to success if needed
+  private async approvePendingAuthorization(payment: Payment, briqpaySessionId: string): Promise<void> {
+    const pendingAuthorization = payment.transactions.find(
+      (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Pending',
+    )
+
+    if (pendingAuthorization) {
+      await this.ctPaymentService.updatePayment({
+        id: payment.id,
+        transaction: {
+          type: 'Authorization',
+          interactionId: briqpaySessionId,
+          amount: pendingAuthorization.amount,
+          state: convertPaymentResultCode(PaymentOutcome.APPROVED),
+        },
+      })
+    }
+  }
+
   public async capturePayment(request: CapturePaymentRequest): Promise<PaymentProviderModificationResponse> {
     const briqpaySessionId = request.payment.transactions.find((tx) => tx.type === 'Authorization')?.interactionId
     if (!briqpaySessionId) {
@@ -126,22 +146,7 @@ export class BriqpayOperationService {
     // Must be the amount recorded on the Charge below; commercetools cannot correct it afterwards.
     const briqpayCapture = await Briqpay.capture(ctCart as PlatformCart, request.amount, briqpaySessionId)
 
-    // Update pending authorization to success if needed
-    const pendingAuthorization = request.payment.transactions.find(
-      (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Pending',
-    )
-
-    if (pendingAuthorization) {
-      await this.ctPaymentService.updatePayment({
-        id: request.payment.id,
-        transaction: {
-          type: 'Authorization',
-          interactionId: briqpaySessionId,
-          amount: pendingAuthorization.amount,
-          state: convertPaymentResultCode(PaymentOutcome.APPROVED),
-        },
-      })
-    }
+    await this.approvePendingAuthorization(request.payment, briqpaySessionId)
 
     await this.ctPaymentService.updatePayment({
       id: request.payment.id,
@@ -173,6 +178,10 @@ export class BriqpayOperationService {
 
     try {
       const cancelResult = await Briqpay.cancel(briqpaySessionId)
+
+      // Briqpay cancels only an approved order, so its webhook will lift a pending Authorization to
+      // Success; doing it now keeps that Success from landing after the cancellation.
+      await this.approvePendingAuthorization(request.payment, briqpaySessionId)
 
       await this.ctPaymentService.updatePayment({
         id: request.payment.id,
@@ -249,7 +258,7 @@ export class BriqpayOperationService {
       throw new ErrorInvalidOperation('Only a full refund of the captured amount is supported')
     }
 
-    return this.refundCapture(request.payment, briqpaySessionId, capture, request.amount)
+    return this.refundCapture(request.payment, briqpaySession, capture, request.amount)
   }
 
   /**
@@ -257,10 +266,28 @@ export class BriqpayOperationService {
    */
   private async refundCapture(
     payment: Payment,
-    briqpaySessionId: string,
+    briqpaySession: MediumBriqpayResponse,
     capture: BriqpayCapture,
     amount: RefundPaymentRequest['amount'],
   ): Promise<PaymentProviderModificationResponse> {
+    const briqpaySessionId = briqpaySession.sessionId
+
+    // Briqpay counts every refund but a rejected one against the capture, and a refund naming no capture
+    // against them all. commercetools hears of a refund only through its webhook, about a minute later.
+    const alreadyRefunded = (briqpaySession.data?.refunds ?? []).some(
+      (refund) =>
+        refund.status !== TRANSACTION_STATUS.REJECTED &&
+        (!refund.parentCaptureId || refund.parentCaptureId === capture.captureId),
+    )
+    if (alreadyRefunded) {
+      appLogger.error(
+        { sessionId: briqpaySessionId, captureId: capture.captureId },
+        'Cannot refund a Briqpay capture that already carries a refund',
+      )
+
+      throw new ErrorInvalidOperation('The Briqpay capture has already been refunded, in full or in part')
+    }
+
     appLogger.info({ sessionId: briqpaySessionId, captureId: capture.captureId }, 'Calling Briqpay refund API')
     // `amount` is the capture's own amount; commercetools cannot correct the recorded Refund afterwards.
     const briqpayRefund = await Briqpay.refund(briqpaySessionId, capture)
@@ -269,22 +296,7 @@ export class BriqpayOperationService {
       'Briqpay refund completed',
     )
 
-    // Update pending authorization to success if needed
-    const pendingAuthorization = payment.transactions.find(
-      (tx) => tx.type === 'Authorization' && tx.interactionId === briqpaySessionId && tx.state === 'Pending',
-    )
-
-    if (pendingAuthorization) {
-      await this.ctPaymentService.updatePayment({
-        id: payment.id,
-        transaction: {
-          type: 'Authorization',
-          interactionId: briqpaySessionId,
-          amount: pendingAuthorization.amount,
-          state: convertPaymentResultCode(PaymentOutcome.APPROVED),
-        },
-      })
-    }
+    await this.approvePendingAuthorization(payment, briqpaySessionId)
 
     await this.ctPaymentService.updatePayment({
       id: payment.id,
@@ -300,6 +312,31 @@ export class BriqpayOperationService {
       outcome: convertPaymentModificationStatusCode(briqpayRefund.status),
       pspReference: payment.interfaceId as string,
     }
+  }
+
+  /**
+   * Cancels a payment Briqpay holds no capture for, once Briqpay has approved it. Briqpay reports an
+   * expired authorization as order_cancelled, so that keeps expired ones out too.
+   */
+  private async cancelApprovedPayment(
+    payment: Payment,
+    briqpaySession: MediumBriqpayResponse,
+  ): Promise<PaymentProviderModificationResponse> {
+    const orderStatus = getActualOrderStatus(briqpaySession)
+    if (orderStatus === ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED) {
+      return this.cancelPayment({ payment })
+    }
+
+    appLogger.error(
+      { sessionId: briqpaySession.sessionId, orderStatus },
+      'Cannot reverse the Briqpay payment automatically',
+    )
+
+    throw new ErrorInvalidOperation(
+      !orderStatus || orderStatus === ORDER_STATUS.ORDER_PENDING
+        ? 'Briqpay has not approved the payment yet; retry the reversal in a few minutes'
+        : `Cannot reverse a Briqpay order in status ${orderStatus}`,
+    )
   }
 
   public async reversePayment(request: ReversePaymentRequest): Promise<PaymentProviderModificationResponse> {
@@ -323,7 +360,8 @@ export class BriqpayOperationService {
     const hasAuthorization = this.ctPaymentService.hasTransactionInState({
       payment: request.payment,
       transactionType: 'Authorization',
-      states: ['Success'],
+      // Pending too: commercetools hears of Briqpay's approval through a webhook about a minute late
+      states: ['Success', 'Pending'],
     })
 
     if (wasPaymentReverted || (!hasCharge && !hasAuthorization)) {
@@ -341,7 +379,7 @@ export class BriqpayOperationService {
     const allCaptures = briqpaySession.data?.captures ?? []
 
     if (allCaptures.length === 0) {
-      return this.cancelPayment({ payment: request.payment })
+      return this.cancelApprovedPayment(request.payment, briqpaySession)
     }
 
     const captures = allCaptures.filter(
@@ -357,7 +395,8 @@ export class BriqpayOperationService {
         'Cannot reverse the Briqpay payment automatically',
       )
 
-      let reason = 'Cannot reverse a payment whose Briqpay capture is still pending'
+      let reason =
+        'Cannot reverse a payment whose Briqpay capture is still pending; retry the reversal in a few minutes'
       if (captures.length === 0) {
         reason = 'Cannot reverse a payment whose Briqpay captures were all rejected or cancelled'
       } else if (captures.length > 1) {
@@ -372,7 +411,7 @@ export class BriqpayOperationService {
       currencyCode: capture.currency,
     }
 
-    const response = await this.refundCapture(request.payment, briqpaySessionId, capture, amount)
+    const response = await this.refundCapture(request.payment, briqpaySession, capture, amount)
 
     // Briqpay will not cancel an order with a capture on it, so the uncaptured rest stays authorized.
     const authorizedAmountIncVat = readBriqpaySessionAmounts(briqpaySession).amountIncVat

@@ -13,11 +13,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
   previously failed before it reached Briqpay. The one change to the capture's lines: a discount
   rate Briqpay derived from an amount discount is left out when it is more than 1 minor unit off
   that amount, since Briqpay would refuse it.
-- A reversal now follows Briqpay's state instead of the Payment's transactions. It cancels when
-  nothing is captured. It refunds the single approved capture, also when the capture webhook has
-  not reached commercetools yet. It refuses a capture that is still pending, a payment with more
-  than one capture, or one whose captures were all rejected or cancelled (Briqpay will not cancel
-  those), and logs `Cannot reverse the Briqpay payment automatically` at error level.
+- A reversal now follows Briqpay's state instead of the Payment's transactions. It cancels only an
+  order Briqpay holds as approved with nothing captured. It refunds the single approved capture,
+  also when the capture webhook has not reached commercetools yet. It refuses a capture that is
+  still pending, a payment with more than one capture, or one whose captures were all rejected or
+  cancelled (Briqpay will not cancel those), and logs
+  `Cannot reverse the Briqpay payment automatically` at error level.
+- A reversal no longer waits for the Authorization to turn Success in commercetools, which trails
+  Briqpay's approval by the webhook delay (about a minute). While Briqpay itself has not approved
+  the payment, the reversal is refused with
+  `Briqpay has not approved the payment yet; retry the reversal in a few minutes`, and a pending
+  capture's refusal now also asks for a retry. An order Briqpay holds as cancelled (including an
+  expired authorization) or rejected is refused without calling Briqpay. A cancel records a still
+  Pending Authorization as Success first, as captures and refunds already do, so the Authorization
+  never turns Success after the cancellation.
+- A refund or reversal is refused, without calling Briqpay, when the capture already carries a
+  refund that Briqpay counts against it, also when its webhook has not reached commercetools yet.
+  Briqpay would refuse it.
 - A reversal of a partial capture refunds that capture and logs
   `Reversed a partial Briqpay capture; the rest is still authorized` at error level, since Briqpay
   will not cancel an order with a capture on it.
