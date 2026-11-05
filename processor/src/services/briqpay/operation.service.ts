@@ -90,6 +90,19 @@ const isNotFoundError = (err: unknown): boolean => {
   return e.httpErrorStatus === 404 || e.statusCode === 404
 }
 
+/** How long a reversal waits for Briqpay's automatic capture, counted from the purchase. */
+const AUTO_CAPTURE_WAIT_MS = 15 * 60 * 1000
+
+/**
+ * A reversal refused only until Briqpay moves on. Callers are told to retry and retry often, so it is
+ * logged as a warning and kept out of the request error log, unlike a refusal someone has to act on.
+ */
+const retryReversalLater = (logContext: Record<string, unknown>, reason: string): ErrorInvalidOperation => {
+  appLogger.warn(logContext, 'Briqpay payment is not ready to reverse yet')
+
+  return new ErrorInvalidOperation(`${reason}; retry the reversal in a few minutes`, { skipLog: true })
+}
+
 export class BriqpayOperationService {
   constructor(
     private readonly ctCartService: CommercetoolsCartService,
@@ -325,27 +338,31 @@ export class BriqpayOperationService {
     payment: Payment,
     briqpaySession: MediumBriqpayResponse,
   ): Promise<PaymentProviderModificationResponse> {
+    const sessionId = briqpaySession.sessionId
     const orderStatus = getActualOrderStatus(briqpaySession)
-    const willAutoCapture = (briqpaySession.data?.transactions ?? []).some(
-      (transaction) => transaction.status === TRANSACTION_STATUS.APPROVED && transaction.autoCaptureEnabled,
-    )
-    if (orderStatus === ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED && !willAutoCapture) {
-      return this.cancelPayment({ payment })
-    }
-
-    appLogger.error(
-      { sessionId: briqpaySession.sessionId, orderStatus },
-      'Cannot reverse the Briqpay payment automatically',
-    )
-
-    let reason = `Cannot reverse a Briqpay order in status ${orderStatus}`
     if (!orderStatus || orderStatus === ORDER_STATUS.ORDER_PENDING) {
-      reason = 'Briqpay has not approved the payment yet; retry the reversal in a few minutes'
-    } else if (orderStatus === ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED) {
-      reason = 'Briqpay is capturing this payment automatically; retry the reversal in a few minutes'
+      throw retryReversalLater({ sessionId, orderStatus }, 'Briqpay has not approved the payment yet')
     }
 
-    throw new ErrorInvalidOperation(reason)
+    if (orderStatus !== ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED) {
+      appLogger.error({ sessionId, orderStatus }, 'Cannot reverse the Briqpay payment automatically')
+
+      throw new ErrorInvalidOperation(`Cannot reverse a Briqpay order in status ${orderStatus}`)
+    }
+
+    // Briqpay's first capture attempt lands within minutes of the purchase and a failed one is retried only
+    // two hours later, so a payment still uncaptured past the wait is cancelled as before.
+    const awaitingAutoCapture = (briqpaySession.data?.transactions ?? []).some(
+      (transaction) =>
+        transaction.status === TRANSACTION_STATUS.APPROVED &&
+        transaction.autoCaptureEnabled &&
+        Date.now() - Date.parse(transaction.createdAt ?? '') < AUTO_CAPTURE_WAIT_MS,
+    )
+    if (awaitingAutoCapture) {
+      throw retryReversalLater({ sessionId, orderStatus }, 'Briqpay is capturing this payment automatically')
+    }
+
+    return this.cancelPayment({ payment })
   }
 
   public async reversePayment(request: ReversePaymentRequest): Promise<PaymentProviderModificationResponse> {
@@ -395,24 +412,25 @@ export class BriqpayOperationService {
       (capture) => capture.status === TRANSACTION_STATUS.APPROVED || capture.status === TRANSACTION_STATUS.PENDING,
     )
     const [capture] = captures
-    if (captures.length !== 1 || capture.status !== TRANSACTION_STATUS.APPROVED) {
+    const captureSummary = allCaptures.map(({ captureId, status }) => ({ captureId, status }))
+    if (captures.length === 1 && capture.status === TRANSACTION_STATUS.PENDING) {
+      throw retryReversalLater(
+        { sessionId: briqpaySessionId, captures: captureSummary },
+        'Cannot reverse a payment whose Briqpay capture is still pending',
+      )
+    }
+
+    if (captures.length !== 1) {
       appLogger.error(
-        {
-          sessionId: briqpaySessionId,
-          captures: allCaptures.map(({ captureId, status }) => ({ captureId, status })),
-        },
+        { sessionId: briqpaySessionId, captures: captureSummary },
         'Cannot reverse the Briqpay payment automatically',
       )
 
-      let reason =
-        'Cannot reverse a payment whose Briqpay capture is still pending; retry the reversal in a few minutes'
-      if (captures.length === 0) {
-        reason = 'Cannot reverse a payment whose Briqpay captures were all rejected or cancelled'
-      } else if (captures.length > 1) {
-        reason = 'Cannot reverse a payment with more than one Briqpay capture'
-      }
-
-      throw new ErrorInvalidOperation(reason)
+      throw new ErrorInvalidOperation(
+        captures.length === 0
+          ? 'Cannot reverse a payment whose Briqpay captures were all rejected or cancelled'
+          : 'Cannot reverse a payment with more than one Briqpay capture',
+      )
     }
 
     const amount: RefundPaymentRequest['amount'] = {

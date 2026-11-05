@@ -230,13 +230,29 @@ describe('BriqpayOperationService amount reconciliation', () => {
     moduleStatus: { payment: { orderStatus } },
   })
 
+  const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString()
+
   const authorizationOf = (status: TRANSACTION_STATUS, autoCaptureEnabled: boolean): BriqpayTransaction => ({
     transactionId: `transaction-${status}`,
     status,
     amountIncVat: PRE_SHIPPING_TOTAL,
     currency: 'EUR',
     autoCaptureEnabled,
+    createdAt: minutesAgo(1),
   })
+
+  // A refusal that clears on its own once Briqpay moves on, so it must not page anyone.
+  const expectRetryLater = async (reversal: Promise<unknown>, message: string) => {
+    await expect(reversal).rejects.toMatchObject({ message, skipLog: true })
+    expect(appLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: SESSION_ID }),
+      'Briqpay payment is not ready to reverse yet',
+    )
+    expect(appLogger.error).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'Cannot reverse the Briqpay payment automatically',
+    )
+  }
 
   // 24MX refunds the shipping fee on its own, so a capture carrying an earlier refund is routine.
   const refundOn = (parentCaptureId: string | undefined, status: TRANSACTION_STATUS): BriqpayRefund => ({
@@ -693,12 +709,16 @@ describe('BriqpayOperationService amount reconciliation', () => {
         async (orderStatus) => {
           const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
           mockedBriqpay.getSession.mockResolvedValue(sessionHolding([], { orderStatus }) as never)
+          jest.mocked(mockCtPaymentService.updatePayment).mockClear()
 
-          await expect(reverse(withAuthorizationPending(payment))).rejects.toThrow(
+          await expectRetryLater(
+            reverse(withAuthorizationPending(payment)),
             'Briqpay has not approved the payment yet; retry the reversal in a few minutes',
           )
           expect(mockedBriqpay.cancel).not.toHaveBeenCalled()
           expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+          // The Authorization stays Pending: Briqpay has not approved anything yet
+          expect(mockCtPaymentService.updatePayment).not.toHaveBeenCalled()
         },
       )
     })
@@ -715,11 +735,31 @@ describe('BriqpayOperationService amount reconciliation', () => {
           }) as never,
         )
 
-        await expect(reverse(payment)).rejects.toThrow(
+        await expectRetryLater(
+          reverse(payment),
           'Briqpay is capturing this payment automatically; retry the reversal in a few minutes',
         )
         expect(mockedBriqpay.cancel).not.toHaveBeenCalled()
         expect(mockedBriqpay.refund).not.toHaveBeenCalled()
+      })
+
+      // Briqpay retries a failed capture only every two hours; waiting past its first attempt would hold the
+      // shopper's money for days while the reversal keeps asking for a retry.
+      test.each([
+        ['is overdue', minutesAgo(16)],
+        ['carries no creation time', undefined],
+      ])('cancels as before when the capture %s', async (_case, createdAt) => {
+        const payment = await paymentPlannedOn(cartAtTotal(PRE_SHIPPING_TOTAL))
+        mockedBriqpay.getSession.mockResolvedValue(
+          sessionHolding([], {
+            orderStatus: ORDER_STATUS.ORDER_APPROVED_NOT_CAPTURED,
+            transactions: [{ ...authorizationOf(TRANSACTION_STATUS.APPROVED, true), createdAt }],
+          }) as never,
+        )
+
+        await reverse(payment)
+
+        expect(mockedBriqpay.cancel).toHaveBeenCalledWith(SESSION_ID)
       })
 
       test('refunds once the capture has landed', async () => {
@@ -883,13 +923,9 @@ describe('BriqpayOperationService amount reconciliation', () => {
         sessionHolding([captureOf(PRE_SHIPPING_TOTAL, { status: TRANSACTION_STATUS.PENDING })]) as never,
       )
 
-      await expect(reverse(payment)).rejects.toThrow(
+      await expectRetryLater(
+        reverse(payment),
         'Cannot reverse a payment whose Briqpay capture is still pending; retry the reversal in a few minutes',
-      )
-
-      expect(appLogger.error).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: SESSION_ID }),
-        'Cannot reverse the Briqpay payment automatically',
       )
       expect(mockedBriqpay.refund).not.toHaveBeenCalled()
       expect(mockedBriqpay.cancel).not.toHaveBeenCalled()

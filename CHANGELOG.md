@@ -15,22 +15,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
   that amount, since Briqpay would refuse it.
 - A reversal now follows Briqpay's state instead of the Payment's transactions. It cancels only an
   order Briqpay holds as approved with nothing captured. It refunds the single approved capture,
-  also when the capture webhook has not reached commercetools yet. It refuses a capture that is
-  still pending, a payment with more than one capture, or one whose captures were all rejected or
-  cancelled (Briqpay will not cancel those), and logs
-  `Cannot reverse the Briqpay payment automatically` at error level.
+  also when the capture webhook has not reached commercetools yet. It refuses a payment with more
+  than one capture, or one whose captures were all rejected or cancelled (Briqpay will not cancel
+  those), and logs `Cannot reverse the Briqpay payment automatically` at error level.
 - A reversal no longer waits for the Authorization to turn Success in commercetools, which trails
   Briqpay's approval by the webhook delay (about a minute). While Briqpay itself has not approved
   the payment, the reversal is refused with
-  `Briqpay has not approved the payment yet; retry the reversal in a few minutes`, and a pending
-  capture's refusal now also asks for a retry. An order Briqpay holds as cancelled (including an
-  expired authorization) or rejected is refused without calling Briqpay. A payment Briqpay captures
-  automatically (`autoCaptureEnabled`) is not cancelled before its capture lands: the reversal is
+  `Briqpay has not approved the payment yet; retry the reversal in a few minutes`, and a capture
+  that is still pending is refused with
+  `Cannot reverse a payment whose Briqpay capture is still pending; retry the reversal in a few minutes`.
+  An order Briqpay holds as cancelled (including an expired authorization) or rejected is refused
+  without calling Briqpay. A payment Briqpay captures automatically (`autoCaptureEnabled`) is not
+  cancelled before its capture lands: for up to 15 minutes after the purchase the reversal is
   refused with `Briqpay is capturing this payment automatically; retry the reversal in a few minutes`
   and refunds once captured, since Briqpay's capture job keeps retrying on a cancelled order and a
-  payment method that takes the money at purchase refuses the cancel. A cancel records a still
-  Pending Authorization as Success first, as captures and refunds already do, so the Authorization
-  never turns Success after the cancellation.
+  payment method that takes the money at purchase refuses the cancel. A payment still uncaptured
+  after that, because Briqpay's first capture attempt failed, is cancelled as before. These three
+  refusals clear on their own, so they log `Briqpay payment is not ready to reverse yet` as a
+  warning and stay out of the request error log. A cancel records a still Pending Authorization as
+  Success first, as captures and refunds already do, so the Authorization never turns Success after
+  the cancellation.
 - A refund or reversal is refused, without calling Briqpay, when the capture already carries a
   refund that Briqpay counts against it, also when its webhook has not reached commercetools yet.
   Briqpay would refuse it.
