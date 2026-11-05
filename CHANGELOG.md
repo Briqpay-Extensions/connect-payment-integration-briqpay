@@ -3,7 +3,7 @@
 All notable changes to the Briqpay commercetools Connect plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [3.0.3] - 2026-11-05
 
 ### Fixed
 
@@ -46,6 +46,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 - `refundPayment` now expects the full captured amount, in the capture's currency, instead of the
   cart total, and no longer reads the cart.
 - The `Briqpay refund completed` log no longer includes the shopper's email from Briqpay's response.
+
+### Upgrade notes
+
+- A caller of `reversePayment` should retry a 400 whose message ends in
+  `retry the reversal in a few minutes`. The reversal goes through once Briqpay has approved the
+  payment and, where Briqpay captures automatically, captured it.
+- No configuration change and no commercetools change are required.
 
 ## [3.0.2] - 2026-11-03
 
